@@ -1,8 +1,10 @@
 // The user's spendable CASH, read from the host purse once on mount and again on demand. Outside a
 // host there is no purse, so the screen shows no pill.
 
-import { onMounted, onUnmounted, ref, type Ref } from "vue";
+import { onMounted, onUnmounted, ref, watch, type Ref } from "vue";
 import { isHosted } from "~~/lib/host-account";
+import { devLog } from "~~/lib/log";
+import { reasonOf, reportFailure } from "~~/lib/telemetry";
 
 /** Each state named so loading and no-purse can never swap: the withdrawal gate fails closed
  *  on unknown, open only where there is provably nothing to cap. */
@@ -26,7 +28,10 @@ const RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
 // Past the quick ladder, a slow walk heals a host that recovers while the screen is up.
 const RETRY_STEADY_MS = 30_000;
 
-export function usePurseBalance(): PurseBalance {
+/** `enabled` keeps the purse unread until it answers true, and reads it when it turns true: a
+ *  screen that only sometimes needs the balance asks the host only then. */
+export function usePurseBalance(options: { enabled?: () => boolean } = {}): PurseBalance {
+  const enabled = options.enabled ?? (() => true);
   // Known at once outside a host, so the screen never shows a pill it is about to drop.
   const state = ref<PurseBalanceState>(isHosted() ? { kind: "unknown" } : { kind: "none" });
   const failed = ref(false);
@@ -71,12 +76,16 @@ export function usePurseBalance(): PurseBalance {
     } catch (error: unknown) {
       // Unknown, not absent — "no purse" would lift the withdrawal cap. A balance already read
       // stands, so a hiccup mid-refresh never collapses the pill or closes the gate.
-      console.warn("[withdraw] purse balance unavailable:", error);
+      devLog("withdraw", "purse balance unavailable", error, "warn");
       if (run !== epoch) return;
       const delay = RETRY_DELAYS_MS[attempt];
       if (state.value.kind !== "known") {
         state.value = { kind: "unknown" };
-        if (delay === undefined) failed.value = true;
+        // Reported once, when the quick retries run out; the slow walk past them stays quiet.
+        if (delay === undefined && !failed.value) {
+          failed.value = true;
+          reportFailure("purse-unreadable", { reason: reasonOf(error), error });
+        }
       }
       retryTimer = setTimeout(() => {
         retryTimer = null;
@@ -91,6 +100,9 @@ export function usePurseBalance(): PurseBalance {
   }
 
   async function refresh(options?: { spent?: boolean }): Promise<void> {
+    // Off, nothing is read: a caller's refresh in the same tick the screen stopped needing the
+    // balance must not leave a reading for the next enable to find.
+    if (!enabled()) return;
     cancelRetry();
     // Drawn-down purse: the skeleton and the closed gate stand in until the new read lands.
     if (options?.spent === true && state.value.kind === "known") state.value = { kind: "unknown" };
@@ -98,8 +110,20 @@ export function usePurseBalance(): PurseBalance {
   }
 
   onMounted(() => {
-    void refresh();
+    if (enabled()) void refresh();
     document.addEventListener("visibilitychange", releaseHeldRetry);
+  });
+  watch(enabled, (on) => {
+    if (on) {
+      void refresh();
+      return;
+    }
+    // Off: the pending retry goes, a read in flight lands nowhere, and nothing read stands for
+    // the next enable, which starts from unknown as a mount does.
+    cancelRetry();
+    epoch += 1;
+    state.value = isHosted() ? { kind: "unknown" } : { kind: "none" };
+    failed.value = false;
   });
   onUnmounted(() => {
     cancelRetry();

@@ -46,6 +46,7 @@ import { CLAIM_UNIT, fundingStatus, startFunding } from "./engine.js";
 import { readParams } from "./params.js";
 import { exactPaymentOut, PAY_TIMEOUT_MS, payRail, payRailExact, railFor } from "./providers.js";
 import {
+  adapterFetchFor,
   anchorFor,
   asBig,
   bounded,
@@ -115,7 +116,7 @@ const saveJobs = () => store.save();
  *                                            // its `amount` is exactly what the key pays, PAS
  *                                            // or, for a sale of USDT, USDT
  *   swap?,                                   // a lane sale's Chainflip channel, proxy and sealed deadline
- *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
+ *   meld?: { baseUrl?, productId?, auth?, offline? }, // Meld only: the adapter the sale is read from
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
@@ -1166,7 +1167,8 @@ const PROXY_RETURN_WAIT_MS = 7 * 86_400_000;
 function saleVaultProxyClient(record) {
   const meld = meldOf(record.meld);
   if (meld?.baseUrl === undefined) throw new Error("sale vault proxy: no adapter for this sale");
-  return createMeldClient(meld);
+  const fetchImpl = adapterFetchFor(meld);
+  return createMeldClient({ baseUrl: meld.baseUrl, ...(fetchImpl ? { fetchImpl } : {}) });
 }
 
 /** Leaves a proxy sale's residue, and the dust on its key, for a person. */

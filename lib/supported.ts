@@ -13,6 +13,8 @@ import {
   type SaleVaultProxyContracts,
 } from "@getsome/chainflip/sale-vault-proxy";
 import { isMeldAssetId, meldCodeOf, type MeldAssetId } from "@getsome/core";
+import { adapterFetch } from "./adapter-fetch";
+import { SALE_VAULT_PROXY } from "./config";
 import { pageMeldAssets } from "./meld-assets";
 
 /** The catalog's default destination: what the pool tier's rail asks Meld to deliver. By the app's
@@ -38,6 +40,9 @@ export interface SupportedMethod {
   max: string;
   currency: string;
   providers: string[];
+  /** Every provider behind the method is failing the adapter's probes. The bounds are the last
+   *  known ones. */
+  temporarilyUnavailable?: true;
   /** An off-ramp method only: every lane the adapter found routing it, in the adapter's order,
    *  each with its own limits. The sale picks among them (see useMeldSellQuote). */
   lanes?: OfframpLaneRef[];
@@ -91,26 +96,58 @@ export function countryName(country: string): string {
   }
 }
 
+/** "in Germany", "in the United Kingdom": English puts "the" before plural and descriptive names. */
+export function inCountry(name: string): string {
+  const the =
+    /^United |Republic$|Islands$|^(Netherlands|Philippines|Bahamas|Gambia|Maldives|Comoros)$/.test(
+      name,
+    );
+  return `in ${the ? "the " : ""}${name}`;
+}
+
 function baseUrl(): string | undefined {
   return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
 }
 
-function headers(): Record<string, string> {
-  return {
-    accept: "application/json",
-    "x-dev-product-id":
-      (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-  };
-}
+const HEADERS = { accept: "application/json" };
 
 /** Which way value moves through a corridor: a buy delivers the crypto, a sale takes it. The two
  *  are separate catalogs on Meld's side, with their own regions, methods and limits. */
 export type SupportedDirection = "buy" | "sell";
 
+/** How long a corridor read is reused. The adapter re-probes providers every ten minutes, so an
+ *  older read can miss an outage or a recovery. */
+const CORRIDOR_TTL_MS = 600_000;
+
+/** A cache whose entries are fresh for `ttlMs`, and kept past it as the last known value. */
+function expiring<V>(ttlMs: number) {
+  const entries = new Map<string, { value: V; at: number }>();
+  return {
+    get(key: string): V | undefined {
+      const entry = entries.get(key);
+      return entry !== undefined && Date.now() - entry.at < ttlMs ? entry.value : undefined;
+    },
+    last(key: string): V | undefined {
+      return entries.get(key)?.value;
+    },
+    set(key: string, value: V): void {
+      entries.set(key, { value, at: Date.now() });
+    },
+    clear(): void {
+      entries.clear();
+    },
+  };
+}
+
 // All three keyed by direction and destination asset; a second destination is a second catalog.
 const countriesCache = new Map<string, SupportedCountry[]>();
-const corridorCache = new Map<string, SupportedCorridor>();
-const corridorsCache = new Map<string, Map<string, SupportedCorridor>>();
+const corridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);
+const corridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
+
+/** A corridor with a method down is read again on the next call rather than reused, so a recovery
+ *  shows at once and the answer cannot lag the catalog read after it. */
+const reusable = (corridor: SupportedCorridor): boolean =>
+  corridor.methods.every((m) => m.temporarilyUnavailable !== true);
 
 /** Cache key for a catalog: a buy keeps the bare destination it always had. */
 const catalogKey = (destination: MeldAssetId, direction: SupportedDirection) =>
@@ -134,6 +171,7 @@ function toMethod(raw: Record<string, unknown>, fiat: string): SupportedMethod {
     max: String(raw.max ?? ""),
     currency: String(raw.currency ?? fiat),
     providers: Array.isArray(raw.providers) ? raw.providers.map(String) : [],
+    ...(raw.availability === "temporarily_unavailable" ? { temporarilyUnavailable: true } : {}),
     ...lanesOf(raw.lanes),
   };
 }
@@ -171,9 +209,9 @@ export async function fetchSupportedCountries(
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as { countries?: Record<string, unknown>[] };
@@ -190,8 +228,9 @@ export async function fetchSupportedCountries(
 }
 
 /**
- * The methods and limits a country's corridor offers. Cached per country. Returns `null` when
- * discovery is unreachable; an empty `methods` array means nothing routes here.
+ * The methods and limits a country's corridor offers. Cached per country for ten minutes while
+ * every method is up. Returns
+ * `null` when discovery is unreachable; an empty `methods` array means nothing routes here.
  */
 export async function fetchCorridor(
   destination: MeldAssetId,
@@ -203,9 +242,9 @@ export async function fetchCorridor(
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -220,28 +259,32 @@ export async function fetchCorridor(
       fiat,
       methods: (data.methods ?? []).map((m) => toMethod(m, fiat)),
     };
-    corridorCache.set(corridorKey(destination, country, direction), corridor);
+    if (reusable(corridor))
+      corridorCache.set(corridorKey(destination, country, direction), corridor);
     return corridor;
   } catch {
     return null;
   }
 }
 
-// Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
+// Every supported corridor as a country -> corridor map, DB-backed and cached for ten minutes. A
+// read that fails or comes back empty answers the last map read, or null before the first.
 export async function fetchSupportedCorridors(
   destination: MeldAssetId,
   direction: SupportedDirection = "buy",
 ): Promise<Map<string, SupportedCorridor> | null> {
-  const cached = corridorsCache.get(catalogKey(destination, direction));
+  const key = catalogKey(destination, direction);
+  const cached = corridorsCache.get(key);
   if (cached !== undefined) return cached;
+  const last = corridorsCache.last(key) ?? null;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
-    if (!res.ok) return null;
+    if (!res.ok) return last;
     const data = (await res.json()) as {
       corridors?: {
         country?: string;
@@ -262,11 +305,12 @@ export async function fetchSupportedCorridors(
         ...(typeof c.name === "string" && c.name !== "" ? { name: c.name } : {}),
       });
     }
-    // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) corridorsCache.set(catalogKey(destination, direction), map);
+    // An empty result (the adapter's cold cache) is no answer: it is retried on the next call.
+    if (map.size === 0) return last ?? map;
+    corridorsCache.set(key, map);
     return map;
   } catch {
-    return null;
+    return last;
   }
 }
 
@@ -312,7 +356,8 @@ function widerBound(a: string, b: string, sign: -1 | 1): string {
 /**
  * One country's two corridors as one: a category is routed when either routes it, and where both
  * do, the first method of each is bounded by the smaller minimum and the larger maximum. Bounds in
- * two currencies are never mixed: the preferred method's stand.
+ * two currencies are never mixed: the preferred method's stand. Where only one of the two is
+ * available, it stands alone.
  */
 export function mergeCorridor(
   preferred: SupportedCorridor | null,
@@ -324,6 +369,9 @@ export function mergeCorridor(
   const widened = (method: SupportedMethod): SupportedMethod => {
     const twin = first(other, method.category);
     if (method !== first(preferred, method.category) || twin === undefined) return method;
+    if (method.temporarilyUnavailable !== twin.temporarilyUnavailable) {
+      return method.temporarilyUnavailable ? twin : method;
+    }
     if (twin.currency !== method.currency) return method;
     return {
       ...method,
@@ -361,8 +409,8 @@ export function mergeCorridorMaps(
 // first lane that routes it. A sale reads this instead of one destination's sell catalog, so a
 // region no provider buys the Asset Hub asset in still sells, through the swap.
 
-let offrampCorridors: Map<string, SupportedCorridor> | null = null;
-const offrampCorridorCache = new Map<string, SupportedCorridor>();
+const offrampCorridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
+const offrampCorridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);
 // The deployment-wide SaleVaultProxy factory, learned from either offramp read
 let offrampSaleVaultProxy: SaleVaultProxyTarget | null = null;
 
@@ -382,13 +430,21 @@ function proxyOf(v: unknown): SaleVaultProxyTarget | undefined {
   return contracts === null ? undefined : { chain: o.chain, ...contracts };
 }
 
-// Takes the latest read's SaleVaultProxy target, and drops the caches once a read names none
+// Takes the latest read's SaleVaultProxy target. A build that sells the Arbitrum lane drops its
+// cached corridors once a read names no proxy, since the lane is gone; a build that does not sell it
+// keeps whatever it cached, the proxy being nothing to it.
 function learnSaleVaultProxy(v: unknown): void {
   offrampSaleVaultProxy = proxyOf(v) ?? null;
-  if (offrampSaleVaultProxy === null) {
-    offrampCorridors = null;
+  if (SALE_VAULT_PROXY !== null && offrampSaleVaultProxy === null) {
+    offrampCorridorsCache.clear();
     offrampCorridorCache.clear();
   }
+}
+
+// Whether off-ramp corridors are safe to cache. A build that does not sell the Arbitrum lane always
+// is; one that does only once the adapter names its proxy, since a pre-proxy catalog omits the lane.
+function proxyLaneReady(): boolean {
+  return SALE_VAULT_PROXY === null || offrampSaleVaultProxy !== null;
 }
 
 function corridorOf(c: Record<string, unknown>, country: string): SupportedCorridor {
@@ -402,16 +458,19 @@ function corridorOf(c: Record<string, unknown>, country: string): SupportedCorri
   };
 }
 
-/** Every off-ramp corridor by country, cached once a SaleVaultProxy is named, null when unreachable. */
+/** Every off-ramp corridor as a country -> corridor map, cached for ten minutes once a SaleVaultProxy
+ *  is named. A read that fails or comes back empty answers the last map read, or null before the first. */
 export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorridor> | null> {
-  if (offrampCorridors !== null) return offrampCorridors;
+  const cached = offrampCorridorsCache.get("all");
+  if (cached !== undefined) return cached;
+  const last = offrampCorridorsCache.last("all") ?? null;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(`${base.replace(/\/$/, "")}/supported/offramp/corridors`, {
-      headers: headers(),
+    const res = await adapterFetch()(`${base.replace(/\/$/, "")}/supported/offramp/corridors`, {
+      headers: HEADERS,
     });
-    if (!res.ok) return null;
+    if (!res.ok) return last;
     const data = (await res.json()) as {
       corridors?: Record<string, unknown>[];
       saleVaultProxy?: unknown;
@@ -422,30 +481,34 @@ export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorr
       if (country !== "") map.set(country, corridorOf(c, country));
     }
     learnSaleVaultProxy(data.saleVaultProxy);
-    // An empty result (cold cache) or one read before the adapter verified its proxy is read again
-    if (map.size > 0 && offrampSaleVaultProxy !== null) offrampCorridors = map;
+    // An empty result (the adapter's cold cache) is no answer: it is retried on the next call.
+    if (map.size === 0) return last ?? map;
+    if (proxyLaneReady()) offrampCorridorsCache.set("all", map);
     return map;
   } catch {
-    return null;
+    return last;
   }
 }
 
-/** One country's off-ramp corridor, cached once a SaleVaultProxy is named, null when unreachable. */
+/** One country's off-ramp corridor, read live. Cached per country for ten minutes once a
+ *  SaleVaultProxy is named; null when unreachable. */
 export async function fetchOfframpCorridor(country: string): Promise<SupportedCorridor | null> {
   const hit = offrampCorridorCache.get(country);
   if (hit !== undefined) return hit;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported/offramp?country=${encodeURIComponent(country)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as Record<string, unknown>;
     learnSaleVaultProxy(data.saleVaultProxy);
     const corridor = corridorOf(data, String(data.country ?? country));
-    if (offrampSaleVaultProxy !== null) offrampCorridorCache.set(country, corridor);
+    if (reusable(corridor) && proxyLaneReady()) {
+      offrampCorridorCache.set(country, corridor);
+    }
     return corridor;
   } catch {
     return null;
@@ -461,6 +524,9 @@ export interface CountryOption {
   /** Supported, but this purchase is under the corridor's minimum: greyed, and the row says so
    *  rather than letting the buyer pick a region the quote would then refuse. */
   belowMinimum?: boolean;
+  /** Supported, but every provider behind the method is failing right now: greyed under its own
+   *  heading, apart from the regions nothing routes to. */
+  temporarilyUnavailable?: true;
   /** The corridor's fiat minimum, on a row that carries one. */
   min?: string;
   /** The corridor's fiat, e.g. "GBP": names the row's currency, and denominates `min`. */
@@ -497,41 +563,18 @@ export function trimAmount(s: string): string {
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
-// A plain, always-selectable row (no greying, no min).
-function plainRow(c: SupportedCountry): CountryOption {
-  return { country: c.country, name: c.name };
-}
-
-// Picker rows for the active method: supported carries its fiat min, unsupported is disabled, and a
-// minimum above `floor` greys the row it belongs to; a null/empty map leaves all rows plain.
-/**
- * The regions a fiat route's picker lists before `corridorOptions` says what each row can take.
- *
- * Both rails list the whole live catalog, so a buyer looking for their own country always finds
- * it, pickable or greyed under "Unsupported country". Bank needs the corridors to tell a region
- * with a transfer rail from one without; until they are read it lists the regions known to have
- * one, rather than a catalog where every row would look pickable. With no live catalog at all,
- * each rail falls back to its own short list.
- */
-export function pickerBase(
-  ui: "card" | "bank",
-  catalog: readonly SupportedCountry[] | null,
-  corridors: Map<string, SupportedCorridor> | null,
-  fallback: { card: readonly SupportedCountry[]; bank: readonly SupportedCountry[] },
-): readonly SupportedCountry[] {
-  const live = catalog !== null && catalog.length > 0 ? catalog : null;
-  if (ui === "card") return live ?? fallback.card;
-  return live !== null && corridors !== null && corridors.size > 0 ? live : fallback.bank;
-}
-
+// Picker rows for the active method: supported carries its fiat min, unsupported is disabled, a
+// method whose providers are all failing is temporarily unavailable, and a minimum above `floor`
+// greys the row it belongs to. Null while the corridors are unread: rows nothing can grey would
+// offer regions the adapter may know to be down, so the picker offers a retry instead.
 export function corridorOptions(
   base: readonly SupportedCountry[],
   corridors: Map<string, SupportedCorridor> | null,
   ui: "card" | "bank",
   floor?: FiatFloor | null,
-): CountryOption[] {
-  if (corridors === null || corridors.size === 0) return base.map(plainRow);
-  const rows = base.map((c): CountryOption => {
+): CountryOption[] | null {
+  if (corridors === null || corridors.size === 0) return null;
+  return base.map((c): CountryOption => {
     const corridor = corridors.get(c.country) ?? null;
     const method = corridor?.methods.find((m) => m.category === ui) ?? null;
     // A region names its currency whether or not this method is routed from it: the picker greys
@@ -542,13 +585,12 @@ export function corridorOptions(
       ...(corridor ? { fiat: corridor.fiat } : {}),
     };
     if (method === null) return { ...named, disabled: true };
+    if (method.temporarilyUnavailable) return { ...named, temporarilyUnavailable: true };
     // A supported method with no bound or no currency stays selectable but shows no min.
     if (method.min === "" || method.currency === "") return named;
     const row: CountryOption = { ...named, min: method.min, fiat: method.currency };
     return overFloor(method.min, floor, method.currency) ? { ...row, belowMinimum: true } : row;
   });
-  // Never brick: a map that disables every row (case skew, disjoint fallback) degrades to plain selectable rows.
-  return rows.some((r) => !r.disabled) ? rows : base.map(plainRow);
 }
 
 /** The region's name as the live catalog writes it, else the one Intl has, else the code. Both
@@ -563,13 +605,19 @@ export interface RegionGroup {
   rows: CountryOption[];
 }
 
+/** Whether a picker row commits when tapped. */
+export function isPickable(o: CountryOption): boolean {
+  return !o.disabled && !o.belowMinimum && !o.temporarilyUnavailable;
+}
+
 /**
  * The region list as the design sections it: what can be picked, then what cannot and why.
  *
  * A region the buyer's own device reports leads, so the common case is one tap away, and the rest
- * are what is left to choose from. Below the pickable regions come the two that are not — this purchase is under the region's minimum, or
- * nothing routes there at all — kept in the list rather than dropped, because a buyer looking for
- * their own country needs to be told why it is not on offer.
+ * are what is left to choose from. Below the pickable regions come the three that are not — this
+ * purchase is under the region's minimum, its providers are failing right now, or nothing routes
+ * there at all — kept in the list rather than dropped, because a buyer looking for their own
+ * country needs to be told why it is not on offer.
  *
  * While a filter is running there is no detected pin and the matches lead unheaded: what is being
  * shown is the search's answer, not the whole list.
@@ -579,8 +627,9 @@ export function regionGroups(
   detected: string | null,
   filtering = false,
 ): RegionGroup[] {
-  const pickable = (o: CountryOption) => !o.disabled && !o.belowMinimum;
-  const pin = filtering ? null : (rows.find((o) => o.country === detected && pickable(o)) ?? null);
+  const pin = filtering
+    ? null
+    : (rows.find((o) => o.country === detected && isPickable(o)) ?? null);
   const rest = pin ? rows.filter((o) => o !== pin) : rows;
   const groups: RegionGroup[] = [];
   const add = (title: string | null, list: CountryOption[]) => {
@@ -589,11 +638,15 @@ export function regionGroups(
   if (pin) add("Detected country", [pin]);
   add(
     filtering ? null : pin ? "Or choose another country" : "All countries",
-    rest.filter(pickable),
+    rest.filter(isPickable),
   );
   add(
     "Minimum payment amount",
     rest.filter((o) => o.belowMinimum && !o.disabled),
+  );
+  add(
+    "Temporarily unavailable",
+    rest.filter((o) => o.temporarilyUnavailable),
   );
   add(
     "Unsupported country",
@@ -611,6 +664,21 @@ export function methodFor(
   return corridor.methods.find((m) => m.category === ui) ?? null;
 }
 
+/** The fiat methods no region offers right now. None while the catalog is unread: the picker's
+ *  retry answers that, not a disabled route. */
+export function unservedMethods(
+  corridors: ReadonlyMap<string, SupportedCorridor> | null,
+): ("card" | "bank")[] {
+  if (corridors === null || corridors.size === 0) return [];
+  return (["card", "bank"] as const).filter(
+    (ui) =>
+      ![...corridors.values()].some((c) => {
+        const method = methodFor(c, ui);
+        return method !== null && !method.temporarilyUnavailable;
+      }),
+  );
+}
+
 /** The method's minimum in the corridor's fiat, or `null` when the corridor prices none. */
 export function methodMinimum(
   corridor: SupportedCorridor | null,
@@ -621,11 +689,7 @@ export function methodMinimum(
   return { amount: method.min, fiat: method.currency };
 }
 
-/** The other fiat method (bank for card, card for bank) when the corridor routes it, else null. */
-export function otherMethod(
-  corridor: SupportedCorridor | null,
-  ui: "card" | "bank",
-): "card" | "bank" | null {
-  const other = ui === "card" ? "bank" : "card";
-  return methodFor(corridor, other) === null ? null : other;
+/** Whether the corridor routes the method but every provider behind it is failing right now. */
+export function isMethodDown(corridor: SupportedCorridor | null, ui: "card" | "bank"): boolean {
+  return methodFor(corridor, ui)?.temporarilyUnavailable === true;
 }

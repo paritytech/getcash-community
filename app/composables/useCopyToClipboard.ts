@@ -1,4 +1,5 @@
 import { onUnmounted, ref } from "vue";
+import { devLog } from "~~/lib/log";
 
 /**
  * When the last successful copy happened, for anything that confirms one screen-wide.
@@ -22,7 +23,7 @@ export function useCopyToClipboard(resetMs = 2000) {
       if (timer !== null) clearTimeout(timer);
       timer = setTimeout(() => (copied.value = false), resetMs);
     } catch (e) {
-      console.warn("[clipboard] write failed:", e);
+      devLog("clipboard", "write failed", e, "warn");
     }
   }
   onUnmounted(() => {

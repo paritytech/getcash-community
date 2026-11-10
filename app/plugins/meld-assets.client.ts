@@ -5,15 +5,18 @@
 // waits on this same read (or asks again after it failed) before it does.
 import { pageMeldAssets } from "~~/lib/meld-assets";
 import { useSessionStore } from "../stores/session";
+import { devLog } from "~~/lib/log";
 
 export default defineNuxtPlugin(() => {
   const session = useSessionStore();
   pageMeldAssets()
     .then(() => session.loadSupportedCatalog())
     .catch((error: unknown) => {
-      console.warn(
-        "[meld] could not read the adapter's asset codes at boot; retrying on first use",
+      devLog(
+        "meld",
+        "could not read the adapter's asset codes at boot; retrying on first use",
         error,
+        "warn",
       );
     });
 });

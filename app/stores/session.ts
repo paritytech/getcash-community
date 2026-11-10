@@ -58,6 +58,7 @@ import {
 } from "@getsome/meld";
 import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
+import { adapterFetch } from "~~/lib/adapter-fetch";
 import {
   countryName,
   fetchCorridor,
@@ -104,7 +105,11 @@ import {
   sourceIdFor,
   type DepositAsset,
 } from "~~/lib/config";
+import { requestCreated } from "../funding/requests/telemetry";
 import { useRequestsStore } from "./requests";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
+import { failureCauseOf, reportQuoteFailure, type QuoteRail } from "../funding/quote-failure";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
@@ -202,7 +207,7 @@ export interface ActiveFlowRecord {
 
 /** Awaits `work` with a timeout, logging the stage label before and after. */
 async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
-  console.warn(`[coinage] step: ${label}...`);
+  devLog("coinage", `step: ${label}...`, undefined, "warn");
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -212,7 +217,7 @@ async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> 
   });
   try {
     const r = await Promise.race([work, timeout]);
-    console.warn(`[coinage] step: ${label} done`);
+    devLog("coinage", `step: ${label} done`, undefined, "warn");
     return r;
   } finally {
     clearTimeout(timer!);
@@ -348,9 +353,12 @@ function warnOnFeeSplitDrift(raw: MeldQuoteRaw): void {
   const summed = sumMoney(transactionFee, networkFee, partnerFee);
   if (summed === null || !isMoneyAmount(totalFee)) return;
   if (Math.abs(summed - Number(totalFee)) < FEE_SPLIT_TOLERANCE) return;
-  console.warn(
-    `[meld] fee split does not add up: components sum to ${summed} against a reported total of ` +
+  devLog(
+    "meld",
+    `fee split does not add up: components sum to ${summed} against a reported total of ` +
       `${totalFee} ${raw.context.fiat}; the breakdown totals the reported figure`,
+    undefined,
+    "warn",
   );
 }
 
@@ -417,6 +425,9 @@ export const useSessionStore = defineStore("session", () => {
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
   const corridorByCountry = shallowRef<Map<string, SupportedCorridor> | null>(null);
+  /** A catalog read is in flight. */
+  const catalogLoading = ref(false);
+  let catalogRead: Promise<void> | null = null;
   /** The selected country's corridor: its resolved fiat and the methods it routes. Null when
    *  discovery is unreachable. */
   const meldCorridor = shallowRef<SupportedCorridor | null>(null);
@@ -502,7 +513,7 @@ export const useSessionStore = defineStore("session", () => {
       // does not know, comes back null rather than deriving against the wrong chain.
       return await probeRefundKey(sourceId as SourceId, tradeN);
     } catch (e) {
-      console.warn("[coinage] refund key recovery failed:", e);
+      devLog("coinage", "refund key recovery failed", e, "warn");
       return null;
     }
   }
@@ -603,7 +614,12 @@ export const useSessionStore = defineStore("session", () => {
    * continues.
    */
   function reconnectChains() {
-    console.warn("[coinage] chain follow died: evicting clients; the session reconnects in place");
+    devLog(
+      "coinage",
+      "chain follow died: evicting clients; the session reconnects in place",
+      undefined,
+      "warn",
+    );
     void import("~~/lib/host-chain").then((h) => h.evictChains());
   }
 
@@ -615,32 +631,51 @@ export const useSessionStore = defineStore("session", () => {
     requests.setTransientError(null);
     requests.fundingNotice = null;
     // Warn level with message strings: a host logger may forward only warn and error.
-    console.warn("[coinage] funding: handing off to the worker (fund the burner to begin)");
+    devLog(
+      "coinage",
+      "funding: handing off to the worker (fund the burner to begin)",
+      undefined,
+      "warn",
+    );
     void world
       .runFunding({
         onStep: (s) => {
-          console.warn(`[coinage] funding step: ${s}`);
+          devLog("coinage", `funding step: ${s}`, undefined, "warn");
           recordSharedFundingStep(ref, s);
         },
         onTransientError: (e) => {
-          console.warn(
-            `[coinage] funding transient: ${e instanceof Error ? e.message : String(e)}`,
+          devLog(
+            "coinage",
+            `funding transient: ${e instanceof Error ? e.message : String(e)}`,
+            undefined,
+            "warn",
           );
         },
         onTx: ({ call, txHash, block }) => {
-          console.warn(
-            `[coinage] funding tx: ${call} ${txHash} @ block ${block ?? "?"}${ahBlockLink(block)}`,
+          devLog(
+            "coinage",
+            `funding tx: ${call} ${txHash} @ block ${block ?? "?"}${ahBlockLink(block)}`,
+            undefined,
+            "warn",
           );
         },
         onClaimed: (amount) => {
-          console.warn(`[coinage] funding: the worker claimed ${amount} into the purse`);
+          devLog(
+            "coinage",
+            `funding: the worker claimed ${amount} into the purse`,
+            undefined,
+            "warn",
+          );
           // The record first, so the list is right whatever core makes of the resume below.
           markSettled(ref, amount);
           // The worker claims in the tick the CASH lands. A resume re-enters probe-first and
           // isSettled answers with the worker's claim.
           world.session.resume().catch((e: unknown) => {
-            console.warn(
-              `[coinage] funding: resume after the claim failed: ${e instanceof Error ? e.message : String(e)}`,
+            devLog(
+              "coinage",
+              `funding: resume after the claim failed: ${e instanceof Error ? e.message : String(e)}`,
+              undefined,
+              "warn",
             );
           });
         },
@@ -648,7 +683,7 @@ export const useSessionStore = defineStore("session", () => {
       .catch((e: unknown) => {
         // Shortfall, a refused hand-off, no worker: the session keeps waiting; say why.
         const reason = e instanceof Error ? e.message : String(e);
-        console.error(`[coinage] funding: failed: ${reason}`);
+        devLog("coinage", `funding: failed: ${reason}`, undefined, "error");
         // The screen shows the delay now; the record waits for the worker's verdict.
         requests.setTransientError({ message: reason, source: "handoff" });
         recordDriverFailure(ref, reason);
@@ -826,7 +861,11 @@ export const useSessionStore = defineStore("session", () => {
       region = { country, fiat: live.fiat };
       corridor = live;
       const liveMethod = methodFor(live, uiMethod);
-      paymentMethodType = liveMethod?.paymentMethodType ?? null;
+      // A method whose providers all fail the adapter's probes is not quoted until they answer.
+      paymentMethodType =
+        liveMethod === null || liveMethod.temporarilyUnavailable
+          ? null
+          : liveMethod.paymentMethodType;
       if (liveMethod !== null && liveMethod.currency === live.fiat) {
         limits = {
           ...(liveMethod.min !== "" ? { min: liveMethod.min } : {}),
@@ -845,7 +884,7 @@ export const useSessionStore = defineStore("session", () => {
     const baseClient = meldBaseUrl
       ? createMeldClient({
           baseUrl: meldBaseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          fetchImpl: adapterFetch(),
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
@@ -905,7 +944,7 @@ export const useSessionStore = defineStore("session", () => {
         }),
       );
     } catch (e) {
-      console.warn("[meld] live pool pricing unavailable:", e);
+      devLog("meld", "live pool pricing unavailable", e, "warn");
       return null;
     }
   }
@@ -1026,11 +1065,18 @@ export const useSessionStore = defineStore("session", () => {
     return nearest;
   }
 
-  /** A quote that could not be had: the message for the screen, and one more failure in a row. */
-  function failQuote(message: string): void {
+  /** A quote that could not be had: the message for the screen, one more failure in a row, and
+   *  the failure reported as the rail and its cause. */
+  function failQuote(
+    message: string,
+    rail: QuoteRail,
+    why: string,
+    details: { error?: unknown; context?: Record<string, string> } = {},
+  ): void {
     quoted.value = null;
     quoteError.value = message;
     quoteFailures.value += 1;
+    reportQuoteFailure(rail, why, details);
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates
@@ -1087,7 +1133,11 @@ export const useSessionStore = defineStore("session", () => {
           const pooled = await poolNativeBudget(amountBase.value, sizing);
           if (epoch !== quoteEpoch) return;
           if (pooled === null) {
-            failQuote("Couldn't price this amount right now. Please try again.");
+            failQuote(
+              "Couldn't price this amount right now. Please try again.",
+              method.value === "bank" ? "bank" : "card",
+              "no-price",
+            );
             return;
           }
           nativeBudget = pooled;
@@ -1099,7 +1149,11 @@ export const useSessionStore = defineStore("session", () => {
           );
           if (epoch !== quoteEpoch) return;
           if (quotedBudget === null) {
-            failQuote("No provider offers this payment method or region. Try another.");
+            failQuote(
+              "No provider offers this payment method or region. Try another.",
+              method.value === "bank" ? "bank" : "card",
+              "no-provider",
+            );
             return;
           }
           nativeBudget = quotedBudget + sizing.keepNativeForFees;
@@ -1211,7 +1265,12 @@ export const useSessionStore = defineStore("session", () => {
         refusal === undefined
           ? ""
           : ` (HTTP ${refusal.status} ${refusal.tag ?? "untagged"}${refusal.code ? ` ${refusal.code}` : ""})`;
-      console.error(`[meld] quote failed${said}: ${e instanceof Error ? e.message : String(e)}`);
+      devLog(
+        "meld",
+        `quote failed${said}: ${e instanceof Error ? e.message : String(e)}`,
+        undefined,
+        "error",
+      );
       if (e instanceof MeldAmountOutOfRangeError) {
         quoted.value = null;
         quoteOutOfRange.value = outOfRangeOf(e);
@@ -1222,7 +1281,15 @@ export const useSessionStore = defineStore("session", () => {
         quoteAmountRejected.value = true;
         return;
       }
-      failQuote(e instanceof Error ? e.message : String(e));
+      failQuote(
+        e instanceof Error ? e.message : String(e),
+        method.value === "bank" ? "bank" : "card",
+        failureCauseOf(e),
+        {
+          error: e,
+          ...(refusal?.tag ? { context: { tag: refusal.tag } } : {}),
+        },
+      );
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -1253,9 +1320,7 @@ export const useSessionStore = defineStore("session", () => {
       return;
     }
     loading.value = true;
-    console.info(
-      `[coinage] quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`,
-    );
+    devLog("coinage", `quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`);
     try {
       // A direct Polkadot pick names the token it deposits; a Chainflip pick leaves the route to
       // the amount. Either way the world runs under the pick's own source.
@@ -1312,8 +1377,9 @@ export const useSessionStore = defineStore("session", () => {
         const depositToken = chainflipTokenOf(depositTokenOf(route));
         if ("minimum" in value) {
           const e = value.minimum;
-          console.info(
-            `[coinage] quote: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededFormatted}`,
+          devLog(
+            "coinage",
+            `quote: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededFormatted}`,
           );
           // Under the source's floor is not an error to show: the picker greys the row, held
           // against the budget the world sized before Chainflip was asked, and the other sources
@@ -1390,7 +1456,7 @@ export const useSessionStore = defineStore("session", () => {
                 }))(),
             );
           } catch (e) {
-            console.warn("[coinage] live pool pricing unavailable, using demo rates:", e);
+            devLog("coinage", "live pool pricing unavailable, using demo rates", e, "warn");
           }
         }
         if (epoch !== quoteEpoch) return;
@@ -1447,13 +1513,23 @@ export const useSessionStore = defineStore("session", () => {
       const msg = e instanceof Error ? e.message : String(e);
       // A dead chainHead follow poisons the cached clients. Reconnect and retry once.
       if (/disjointed/i.test(msg) && !isRetry) {
-        console.warn("[coinage] chain follow died: reconnecting and retrying the quote");
+        devLog(
+          "coinage",
+          "chain follow died: reconnecting and retrying the quote",
+          undefined,
+          "warn",
+        );
         const { evictChains } = await import("~~/lib/host-chain");
         evictChains();
         return fetchQuote(chain, asset, true);
       }
-      console.error(`[coinage] quote failed: ${e instanceof Error ? e.message : String(e)}`);
-      failQuote(msg);
+      devLog(
+        "coinage",
+        `quote failed: ${e instanceof Error ? e.message : String(e)}`,
+        undefined,
+        "error",
+      );
+      failQuote(msg, "crypto", failureCauseOf(e), { error: e, context: { chain, asset } });
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -1662,10 +1738,15 @@ export const useSessionStore = defineStore("session", () => {
         },
         witnesses: {},
       };
+      // This page starts the request: its journey begins here, even if the record's write fails.
+      requestCreated(record);
       await requests.create(ref, record);
     } catch (e) {
-      console.warn(
-        `[coinage] request record write failed (it will not be re-openable): ${e instanceof Error ? e.message : String(e)}`,
+      devLog(
+        "coinage",
+        `request record write failed (it will not be re-openable): ${e instanceof Error ? e.message : String(e)}`,
+        undefined,
+        "warn",
       );
     }
   }
@@ -1682,10 +1763,20 @@ export const useSessionStore = defineStore("session", () => {
       depositExpiresAt,
     });
     if (requests.get(ref)?.status.kind !== "cancelled") {
-      console.warn(`[coinage] cancel refused: request #${ref.tradeN} is past its deposit`);
+      devLog(
+        "coinage",
+        `cancel refused: request #${ref.tradeN} is past its deposit`,
+        undefined,
+        "warn",
+      );
       return false;
     }
-    console.warn(`[coinage] request #${ref.tradeN} tombstoned (cancelled; deposit window watched)`);
+    devLog(
+      "coinage",
+      `request #${ref.tradeN} tombstoned (cancelled; deposit window watched)`,
+      undefined,
+      "warn",
+    );
     void cancelWorkerJob(workerSessionId(ref.sourceId, ref.tradeN));
     void reconcileBackground(); // drops the row
     return true;
@@ -1698,8 +1789,11 @@ export const useSessionStore = defineStore("session", () => {
       const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
       await getStorageWorkerManager().call("cancelFunding", { sessionId });
     } catch (e) {
-      console.warn(
-        `[coinage] worker cancel for ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`,
+      devLog(
+        "coinage",
+        `worker cancel for ${sessionId} failed: ${e instanceof Error ? e.message : String(e)}`,
+        undefined,
+        "warn",
       );
     }
   }
@@ -1725,7 +1819,7 @@ export const useSessionStore = defineStore("session", () => {
       })
       .then(() => reconcileBackground()) // refreshes the list
       .catch((e: unknown) => {
-        console.warn("[coinage] could not record the finished purchase:", e);
+        devLog("coinage", "could not record the finished purchase", e, "warn");
       });
   }
 
@@ -1795,8 +1889,11 @@ export const useSessionStore = defineStore("session", () => {
       // truth, as the note on the mock world below says.
       if (isHosted() && record.meldFundingRequestId !== undefined) meldPayUrlPending.value = true;
       const status = requests.get(ref)?.status.kind ?? "?";
-      console.warn(
-        `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
+      devLog(
+        "coinage",
+        `reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
+        undefined,
+        "warn",
       );
       // Display context for the journey, from the record itself; neither path re-quotes.
       const displayQuote: QuotedView = {
@@ -1829,8 +1926,11 @@ export const useSessionStore = defineStore("session", () => {
       if (!isHosted()) {
         const amount = amountBase.value;
         if (amount === null) {
-          console.warn(
-            `[coinage] reopen request #${record.tradeN}: "${record.amountHuman}" is not an amount`,
+          devLog(
+            "coinage",
+            `reopen request #${record.tradeN}: "${record.amountHuman}" is not an amount`,
+            undefined,
+            "warn",
           );
           return false;
         }
@@ -1888,8 +1988,11 @@ export const useSessionStore = defineStore("session", () => {
       if (world.session.peek() === null) {
         // A record with no slot: keep it, note the conflict on it, and fall back to a fresh entry.
         world.dispose();
-        console.warn(
-          `[coinage] reopen request #${record.tradeN}: no flow slot to resume; the record is kept`,
+        devLog(
+          "coinage",
+          `reopen request #${record.tradeN}: no flow slot to resume; the record is kept`,
+          undefined,
+          "warn",
         );
         void requests.flag(ref, "core slot missing on resume");
         reset();
@@ -1914,18 +2017,17 @@ export const useSessionStore = defineStore("session", () => {
         const meldBaseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
         if (!meldBaseUrl) {
           // This build has no adapter to ask; say which request is going unwatched.
-          console.warn(
-            `[meld] request #${String(record.tradeN)} persisted funding id ${record.meldFundingRequestId}, but VITE_MELD_BASE_URL is unset; its payment status cannot be resumed`,
+          devLog(
+            "meld",
+            `request #${String(record.tradeN)} persisted funding id ${record.meldFundingRequestId}, but VITE_MELD_BASE_URL is unset; its payment status cannot be resumed`,
+            undefined,
+            "warn",
           );
           meldPayUrlPending.value = false;
         } else {
           // The pay-page lookup below and the poll's first tick share one read.
           const client = shareStatusReads(
-            createMeldClient({
-              baseUrl: meldBaseUrl,
-              productId:
-                (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-            }),
+            createMeldClient({ baseUrl: meldBaseUrl, fetchImpl: adapterFetch() }),
           );
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;
@@ -1957,7 +2059,7 @@ export const useSessionStore = defineStore("session", () => {
     } catch (e) {
       if (epoch !== quoteEpoch) return false; // a newer quote owns the state now
       // The record survives a failed resume.
-      console.warn("[coinage] resume failed, falling back to a fresh start:", e);
+      devLog("coinage", "resume failed, falling back to a fresh start", e, "warn");
       reset();
       return false;
     } finally {
@@ -2123,7 +2225,7 @@ export const useSessionStore = defineStore("session", () => {
         mismatchPrice.value = { key, at: Date.now(), route, value };
       }
     } catch (e) {
-      console.warn("[coinage] could not price the deposit that arrived; trying again:", e);
+      devLog("coinage", "could not price the deposit that arrived; trying again", e, "warn");
       setTimeout(() => {
         const current = foregroundMismatch.value;
         if (current?.key === key && mismatchPrice.value?.key !== key) {
@@ -2218,7 +2320,7 @@ export const useSessionStore = defineStore("session", () => {
       requests.restartDepositWatch();
       return true;
     } catch (e) {
-      console.warn("[coinage] could not continue with the deposit that arrived:", e);
+      devLog("coinage", "could not continue with the deposit that arrived", e, "warn");
       mismatchError.value = "Couldn't continue with this deposit. Try again in a moment.";
       return false;
     } finally {
@@ -2357,15 +2459,21 @@ export const useSessionStore = defineStore("session", () => {
   function retry() {
     const s = session();
     if (!s) return;
+    trackAction("top-up.retry");
     const confirmed =
       foregroundRef === null ? Promise.resolve(true) : requests.retry(foregroundRef);
     void confirmed.then((ok) => {
       if (!ok) return;
       return s
         .retry()
-        .then(() => console.info(`[coinage] retry() resolved, phase now ${s.getState().phase}`))
+        .then(() => devLog("coinage", `retry() resolved, phase now ${s.getState().phase}`))
         .catch((e: unknown) =>
-          console.error(`[coinage] retry() threw: ${e instanceof Error ? e.message : String(e)}`),
+          devLog(
+            "coinage",
+            `retry() threw: ${e instanceof Error ? e.message : String(e)}`,
+            undefined,
+            "error",
+          ),
         );
     });
   }
@@ -2376,6 +2484,7 @@ export const useSessionStore = defineStore("session", () => {
   async function cancelTopUp(): Promise<boolean> {
     // Declined, not failed: the request still stands.
     if (cancelling.value || requests.claiming || resuming.value || !cancelReady.value) return false;
+    trackAction("top-up.cancel");
     cancelling.value = true;
     cancelNotice.value = null;
     try {
@@ -2388,7 +2497,7 @@ export const useSessionStore = defineStore("session", () => {
           readBurner: () => world.readBurnerDepositOnAh(),
         });
         if (verdict === "refused") {
-          console.warn("[coinage] cancel refused: the burner already holds funds");
+          devLog("coinage", "cancel refused: the burner already holds funds", undefined, "warn");
           driveFunding();
           return false;
         }
@@ -2397,7 +2506,12 @@ export const useSessionStore = defineStore("session", () => {
           // the screen that asked stays put, so it has to say why the cancel didn't take.
           cancelNotice.value =
             "Couldn't confirm this top-up can still be cancelled, so nothing was cancelled. Please try again.";
-          console.warn("[coinage] cancel declined: could not confirm the burner is empty");
+          devLog(
+            "coinage",
+            "cancel declined: could not confirm the burner is empty",
+            undefined,
+            "warn",
+          );
           return false;
         }
       }
@@ -2418,12 +2532,20 @@ export const useSessionStore = defineStore("session", () => {
           if (outcome.outcome === "not-cancellable") {
             cancelNotice.value =
               "Your payment is already on its way and can no longer be cancelled. It will finish on its own.";
-            console.warn("[meld] cancel refused by the adapter: a payment is already in flight");
+            devLog(
+              "meld",
+              "cancel refused by the adapter: a payment is already in flight",
+              undefined,
+              "warn",
+            );
             return false;
           }
         } catch (e) {
-          console.warn(
-            `[meld] adapter cancel failed (cancelling locally anyway): ${e instanceof Error ? e.message : String(e)}`,
+          devLog(
+            "meld",
+            `adapter cancel failed (cancelling locally anyway): ${e instanceof Error ? e.message : String(e)}`,
+            undefined,
+            "warn",
           );
         }
       }
@@ -2444,8 +2566,11 @@ export const useSessionStore = defineStore("session", () => {
           }
         } catch (e) {
           // An unwritable tombstone leaves the record active.
-          console.warn(
-            `[coinage] tombstone write failed (record left as-is): ${e instanceof Error ? e.message : String(e)}`,
+          devLog(
+            "coinage",
+            `tombstone write failed (record left as-is): ${e instanceof Error ? e.message : String(e)}`,
+            undefined,
+            "warn",
           );
         }
       }
@@ -2454,13 +2579,19 @@ export const useSessionStore = defineStore("session", () => {
         if (s) await step("cancel top-up", 20_000, s.cancel());
       } catch (e) {
         // The slot clear is best effort; everything below still detaches the request.
-        console.warn(
-          `[coinage] cancel: core cancel failed (continuing): ${e instanceof Error ? e.message : String(e)}`,
+        devLog(
+          "coinage",
+          `cancel: core cancel failed (continuing): ${e instanceof Error ? e.message : String(e)}`,
+          undefined,
+          "warn",
         );
       }
       teardownWorld();
-      console.warn(
-        `[coinage] top-up cancelled${tradeN !== undefined ? ` (request #${tradeN})` : ""}`,
+      devLog(
+        "coinage",
+        `top-up cancelled${tradeN !== undefined ? ` (request #${tradeN})` : ""}`,
+        undefined,
+        "warn",
       );
       return true;
     } finally {
@@ -2475,10 +2606,21 @@ export const useSessionStore = defineStore("session", () => {
    * region listed from them alone would vanish rather than show as unsupported, which is how a
    * buyer looking for their own country learns why it is not on offer. The corridors grey the list
    * and carry each region's limits, and stand in for it when no countries read answers. A null or
-   * empty read is no answer, so a cold catalog greys nothing, and when nothing answers
-   * `supportedCountries` stays null and the screen keeps its static list.
+   * empty read is no answer: it keeps what an earlier read found, and with nothing found the
+   * picker offers a retry. Concurrent calls share one read.
    */
-  async function loadSupportedCatalog(): Promise<void> {
+  function loadSupportedCatalog(): Promise<void> {
+    if (catalogRead === null) {
+      catalogLoading.value = true;
+      catalogRead = readSupportedCatalog().finally(() => {
+        catalogRead = null;
+        catalogLoading.value = false;
+      });
+    }
+    return catalogRead;
+  }
+
+  async function readSupportedCatalog(): Promise<void> {
     const [countryLists, corridorMaps] = await Promise.all([
       Promise.all(catalogDestinations.map((d) => fetchSupportedCountries(d))),
       Promise.all(catalogDestinations.map((d) => fetchSupportedCorridors(d))),
@@ -2514,6 +2656,7 @@ export const useSessionStore = defineStore("session", () => {
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,
+    catalogLoading,
     meldCorridor,
     meldResumeWidgetUrl,
     meldPayUrlPending,

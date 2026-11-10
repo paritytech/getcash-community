@@ -103,7 +103,12 @@ const worker = (time: number, view: WithdrawJobView | null): Observation => ({
 const host = (
   time: number,
   status: "processing" | "completed" | "failed" | "partiallyClaimed" | "not-found",
-  extra: { attempt?: number; reason?: string; actualClaimed?: string } = {},
+  extra: {
+    attempt?: number;
+    reason?: string;
+    refusal?: "declined" | "insufficient-balance" | "other";
+    actualClaimed?: string;
+  } = {},
 ): Observation => ({
   source: "host",
   at: time,
@@ -174,6 +179,14 @@ describe("withdrawal: the payment", () => {
       message: "Declined",
       recoverable: true,
     });
+  });
+
+  it("keeps which refusal the host gave, so a decline reads as the person's own answer", () => {
+    const failed = run(
+      prompted(),
+      host(at(2), "failed", { reason: "Declined", refusal: "declined" }),
+    );
+    expect(failed.payment.refusal).toBe("declined");
   });
 
   it("pays short with the amount the host says reached the key", () => {

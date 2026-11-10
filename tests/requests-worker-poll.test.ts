@@ -43,6 +43,15 @@ import {
   type WorkerJobRecord,
 } from "./fixtures/requests";
 
+// Request telemetry as it is, its journey start watched: only the places that start a request on
+// this page open a journey, never the store.
+const { requestCreated } = vi.hoisted(() => ({ requestCreated: vi.fn() }));
+vi.mock("../app/funding/requests/telemetry", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../app/funding/requests/telemetry")>();
+  requestCreated.mockImplementation(real.requestCreated);
+  return { ...real, requestCreated };
+});
+
 /** The ref a fixture is stored under: its own source id and trade number. */
 const refOf = (record: ActiveFlowRecord): RequestRef =>
   requestRefOf(record.sourceId, record.tradeN!);
@@ -145,7 +154,7 @@ function doneJob(
 }
 
 /** Boots the store over the awaiting request and has the worker convert it and register its
- *  claim, read on the poll's next 6 s tick: from here the claim is in flight. Returns the store
+ *  claim, read on the poll's next regular tick: from here the claim is in flight. Returns the store
  *  and the blob reads so far. */
 async function bootIntoClaim(): Promise<{
   requests: ReturnType<typeof useRequestsStore>;
@@ -158,7 +167,7 @@ async function bootIntoClaim(): Promise<{
   await requests.flush();
   const readsAtBoot = host.blobReads();
 
-  const registeredAt = FIXTURE_NOW + 5_000;
+  const registeredAt = FIXTURE_NOW + JOB_POLL_MS / 2;
   await writeJobs({
     "dot-assethub:3": doneJob(AWAITING_JOB, registeredAt, {
       phase: "claiming",
@@ -237,12 +246,12 @@ describe("requests store: the worker poll", () => {
     const readsAtBoot = host.blobReads();
 
     // The worker saw the deposit and started the swap between two ticks.
-    const seenAt = FIXTURE_NOW + 3_000;
+    const seenAt = FIXTURE_NOW + JOB_POLL_MS / 2;
     await writeJobs({
       "dot-assethub:3": {
         ...AWAITING_JOB,
         phase: "swap",
-        lastTickAt: seenAt + 1_000,
+        lastTickAt: seenAt + JOB_POLL_MS / 4,
         state: { ...AWAITING_JOB.state, swapSubmitted: true, fundsSeenAt: seenAt },
       },
     });
@@ -314,7 +323,10 @@ describe("requests store: the worker poll", () => {
   it("a job without a record creates a record with the job's amount and deadline", async () => {
     await seed(fixtureRecords);
     const requests = useRequestsStore();
+    requestCreated.mockClear();
     await requests.reconcile("boot");
+    // started on an earlier open: no journey
+    expect(requestCreated).not.toHaveBeenCalled();
 
     const job = fixtureWorkerJobs["dot-assethub:9"]!;
     const ref = requestRefOf("dot-assethub", 9);
@@ -443,21 +455,21 @@ describe("requests store: the worker poll", () => {
 
   it("poll reads the blob every second while a top-up's claim is in flight", async () => {
     const { requests, reads } = await bootIntoClaim();
-    // The claim's own timer took the 6 s one's place: the poll and the second hand, no more.
+    // The claim's own timer took the regular one's place: the poll and the second hand, no more.
     expect(vi.getTimerCount()).toBe(2);
 
     await elapse(JOB_POLL_CLAIMING_MS);
     expect(host.blobReads()).toBe(reads + 1);
     await elapse(JOB_POLL_CLAIMING_MS);
     expect(host.blobReads()).toBe(reads + 2);
-    // Through the instant a stale 6 s timer would have fired: one read a second, no extra.
+    // Through the instant a stale regular timer would have fired: one read a second, no extra.
     await elapse(4 * JOB_POLL_CLAIMING_MS);
     expect(host.blobReads()).toBe(reads + 6);
     expect(vi.getTimerCount()).toBe(2);
     expect(requests.get(AWAITING_REF)).toMatchObject({ status: { kind: "claiming" } });
   });
 
-  it("poll goes back to 6 s once the host's early word is on the record", async () => {
+  it("poll goes back to its regular pace once the host's early word is on the record", async () => {
     const { requests, reads } = await bootIntoClaim();
 
     // The host reports the claim in a block: credited, while the record stays `claiming`.
@@ -475,7 +487,7 @@ describe("requests store: the worker poll", () => {
     expect(host.blobReads()).toBe(reads + 1);
     expect(requests.get(AWAITING_REF)).toMatchObject({ status: { kind: "claiming" }, creditedAt });
 
-    // One read per 6 s from here, on one timer.
+    // One read per regular tick from here, on one timer.
     await elapse(JOB_POLL_MS - JOB_POLL_CLAIMING_MS);
     expect(host.blobReads()).toBe(reads + 1);
     await elapse(JOB_POLL_CLAIMING_MS);
@@ -484,7 +496,7 @@ describe("requests store: the worker poll", () => {
     expect(vi.getTimerCount()).toBe(2);
   });
 
-  it("poll goes back to 6 s once the claiming request settles and another is still followed", async () => {
+  it("poll goes back to its regular pace once the claiming request settles and another is still followed", async () => {
     vi.useFakeTimers();
     await seed(
       [awaitingDepositCryptoRecord, fundedCryptoRecord],
@@ -496,7 +508,7 @@ describe("requests store: the worker poll", () => {
     const readsAtBoot = host.blobReads();
 
     // The funded request's claim is registered: the poll reads every second.
-    const registeredAt = FIXTURE_NOW + 5_000;
+    const registeredAt = FIXTURE_NOW + JOB_POLL_MS / 2;
     const claim = { phase: "claiming" as const, amount: "40000000", at: registeredAt, attempts: 1 };
     await writeJobs({
       "dot-assethub:3": AWAITING_JOB,
@@ -508,7 +520,7 @@ describe("requests store: the worker poll", () => {
     await elapse(JOB_POLL_CLAIMING_MS);
     expect(host.blobReads()).toBe(readsAtBoot + 2);
 
-    // The worker's final word settles it; the awaiting request keeps the poll running, at 6 s.
+    // The worker's final word settles it; the awaiting request keeps the poll running, at the regular pace.
     const settledAt = now + 500;
     await writeJobs({
       "dot-assethub:3": AWAITING_JOB,

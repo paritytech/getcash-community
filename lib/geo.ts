@@ -13,6 +13,8 @@
 
 /** How long a screen waits before falling back to the locale. The fetch itself keeps going and
  *  fills the cache for the next caller. */
+
+import { devLog } from "./log";
 const WAIT_MS = 3_000;
 
 const GEO_URL = "https://get.geojs.io/v1/ip/country.json";
@@ -37,7 +39,7 @@ export async function fetchGeoCountry(): Promise<string | null> {
     try {
       const res = await fetch(GEO_URL, { headers: { accept: "application/json" } });
       if (!res.ok) {
-        console.warn(`[geo] lookup failed: ${res.status}`);
+        devLog("geo", `lookup failed: ${res.status}`, undefined, "warn");
         return null;
       }
       // GeoJS has no success flag: a miss (reserved or unknown address) is a missing `country`.
@@ -45,11 +47,11 @@ export async function fetchGeoCountry(): Promise<string | null> {
       const country =
         typeof data.country === "string" && /^[A-Z]{2}$/.test(data.country) ? data.country : null;
       if (country !== null) cached = country;
-      else console.warn("[geo] lookup answered no country");
+      else devLog("geo", "lookup answered no country", undefined, "warn");
       return country;
     } catch (e) {
       // Offline, no Remote grant, or the origin blocked the request: the locale decides.
-      console.warn("[geo] lookup failed (falling back to the locale):", e);
+      devLog("geo", "lookup failed (falling back to the locale)", e, "warn");
       return null;
     } finally {
       inflight = null;

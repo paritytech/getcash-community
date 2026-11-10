@@ -9,13 +9,11 @@ export const TOP_UP_TIMELINE: TimelineSpec<Milestone> = {
   designWidth: 370,
   milestones: [
     { id: "started", label: "Started", centre: 34.5 },
-    // A small milestone grown on failure leans its label away from its nearer labelled
-    // neighbour, toward the longer line beside it.
-    { id: "accepted", centre: 77, failedLabelAlign: "start" },
-    { id: "sent", centre: 141, failedLabelAlign: "end" },
+    { id: "accepted", centre: 77 },
+    { id: "sent", centre: 141 },
     { id: "received", label: "Received", centre: 187.5 },
-    { id: "converted", centre: 234, failedLabelAlign: "start" },
-    { id: "moved", centre: 298, failedLabelAlign: "end" },
+    { id: "converted", centre: 234 },
+    { id: "moved", centre: 298 },
     { id: "added", label: "Added", centre: 338 },
   ],
 };

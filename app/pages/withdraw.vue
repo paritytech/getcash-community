@@ -39,6 +39,9 @@ import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { useRouter } from "vue-router";
 import { WITHDRAWAL_LIST_WORDING, WITHDRAWAL_WORDING } from "../withdraw/rows";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
+import { unservedMethods, type SupportedCorridor } from "~~/lib/supported";
+import { readSellableCorridors } from "../composables/useMeldSellQuote";
+import { devLog } from "~~/lib/log";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
@@ -57,9 +60,19 @@ const {
   cancelPendingLoad: cancelPackageLoad,
   returnToShell,
 } = useRoutePackageLoader(getcashWithdrawPackages, routeLabel);
-const availableRoutes = availableFundingRoutes(
-  getcashWithdrawPackages,
-  withdrawalSelectorConfig.routes.map(({ id }) => id),
+/** The off-ramp catalog the card and bank pills are judged by; null until a read succeeds. */
+const sellCorridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
+async function readSellCatalog() {
+  const read = await readSellableCorridors();
+  if (read !== null) sellCorridors.value = read;
+}
+const unservedRoutes = computed(() => unservedMethods(sellCorridors.value));
+const availableRoutes = computed(() =>
+  availableFundingRoutes(
+    getcashWithdrawPackages,
+    withdrawalSelectorConfig.routes.map(({ id }) => id),
+    unservedRoutes.value,
+  ),
 );
 
 const purse = usePurseBalance();
@@ -126,7 +139,7 @@ async function openTopUp(topUp: FundingTopUp, target: FundingTopUpReturnTarget) 
     topUpError.value = `${routeLabel(topUp.route)} withdrawals aren't available in this build yet.`;
     return;
   }
-  console.error(`[withdraw] could not load ${result.packageId} status:`, result.error);
+  devLog("withdraw", `could not load ${result.packageId} status`, result.error, "error");
   topUpError.value = `${routeLabel(topUp.route)} status couldn't be opened. Try again.`;
 }
 
@@ -234,12 +247,12 @@ onMounted(async () => {
       ),
     ]);
   } catch (error: unknown) {
-    console.warn("[host] permission front-load failed (continuing):", error);
+    devLog("host", "permission front-load failed (continuing)", error, "warn");
   }
   try {
     await Promise.all(adapters.map((adapter) => adapter.refresh()));
   } catch (error: unknown) {
-    console.warn("[withdraw] could not refresh the withdrawals:", error);
+    devLog("withdraw", "could not refresh the withdrawals", error, "warn");
   }
 });
 </script>
@@ -264,6 +277,7 @@ onMounted(async () => {
     @use-amount="useAmount"
   />
   <FundingSelectorScreen
+    kind="withdraw"
     v-else-if="topUpsReady"
     :amount-screen="WithdrawAmountScreen"
     :config="withdrawalSelectorConfig"
@@ -272,6 +286,7 @@ onMounted(async () => {
     :available="available"
     :initial-selection="selection"
     :available-routes="availableRoutes"
+    :unserved-routes="unservedRoutes"
     :initial-screen="shellEntry"
     :history-return="historyReturn"
     :error="amountError"
@@ -284,9 +299,11 @@ onMounted(async () => {
     @change="cancelPendingLoad"
     @continue="continueToPackage"
     @open-top-up="openTopUp"
+    @opened="readSellCatalog"
   />
   <!-- The purse's read state carries into the skeleton, so the column doesn't jump on mount. -->
   <FundingSelectorScreen
+    kind="withdraw"
     v-else
     :amount-screen="WithdrawAmountScreen"
     :config="withdrawalSelectorConfig"

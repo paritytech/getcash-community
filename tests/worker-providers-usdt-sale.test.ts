@@ -10,12 +10,15 @@ const mocks = vi.hoisted(() => ({
   payExactOnce: vi.fn(),
   exactPaymentLanded: vi.fn(),
   readAssetHubAccount: vi.fn(),
+  createMeldClient: vi.fn(),
+  getHostLocalStorage: vi.fn(),
+  proveLitePersonhood: vi.fn(),
 }));
 
 vi.mock("@getsome/meld", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   MELD_SELL_ENABLED: true,
-  createMeldClient: () => ({}),
+  createMeldClient: mocks.createMeldClient,
   saleRail: mocks.saleRail,
 }));
 
@@ -29,7 +32,8 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
 vi.mock("../worker/src/host.js", () => ({
   deriveEntropy: vi.fn(),
   getHostProvider: vi.fn(),
-  getHostLocalStorage: vi.fn(),
+  getHostLocalStorage: mocks.getHostLocalStorage,
+  proveLitePersonhood: mocks.proveLitePersonhood,
 }));
 
 const API = { fake: "asset-hub" };
@@ -73,6 +77,7 @@ describe("a direct sale's provider and payment", () => {
     mocks.payExactOnce.mockResolvedValue(undefined);
     mocks.exactPaymentLanded.mockResolvedValue(false);
     mocks.readAssetHubAccount.mockResolvedValue({ free: 0n, nonce: 0 });
+    mocks.createMeldClient.mockReturnValue({});
   });
 
   it("reads a sale of USDT's deposit in USDT, and a sale of PAS's in PAS", async () => {
@@ -113,5 +118,26 @@ describe("a direct sale's provider and payment", () => {
     const [input] = mocks.exactPaymentLanded.mock.calls[0]!;
     await input.readKey();
     expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, TOKENS.USDT);
+  });
+
+  it("reads a personhood sale with the token the page stored", async () => {
+    const fetchSpy = vi.fn(async (_input: string, _init?: RequestInit) => new Response("{}"));
+    vi.stubGlobal("fetch", fetchSpy);
+    mocks.getHostLocalStorage.mockResolvedValue({
+      readJSON: async () => ({ token: "stored", expiresAtMs: Date.now() + 3_600_000 }),
+      writeJSON: vi.fn(),
+    });
+    const { railFor } = await import("../worker/src/providers.js");
+    const meld = { baseUrl: "https://adapter.test", productId: "getcash.dot", auth: "personhood" };
+
+    railFor("meld", { ...dotSale, meld });
+    const [{ fetchImpl }] = mocks.createMeldClient.mock.calls[0]!;
+    await fetchImpl("https://adapter.test/funding/funding-sell-1");
+
+    expect(new Headers(fetchSpy.mock.calls[0]![1]?.headers).get("authorization")).toBe(
+      "Bearer stored",
+    );
+    expect(mocks.proveLitePersonhood).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

@@ -603,6 +603,7 @@ function applyHost(record: WithdrawalRecord, observation: HostObservation): With
     status: payment.status,
     updatedAt: at,
     ...(payment.reason === undefined ? {} : { reason: payment.reason }),
+    ...(payment.refusal === undefined ? {} : { refusal: payment.refusal }),
     ...(payment.actualClaimed === undefined ? {} : { actualClaimed: payment.actualClaimed }),
   };
   const stamped = { ...next, payment: updated };
@@ -769,6 +770,7 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
     case "meld-submitted":
     case "deposit-skipped":
     case "deposit-accepted":
+    case "recovery-token-picked":
       return record;
   }
 }

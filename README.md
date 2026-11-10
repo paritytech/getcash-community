@@ -256,8 +256,9 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | `VITE_FAUCET_SEED`                     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                                                                                                                                                                                                                                                                                                |
 | `VITE_DEPLOYER_SEED`                   | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `VITE_MELD_BASE_URL`                   | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                                                                                                                                                                                                                                                                  |
-| `VITE_MELD_PRODUCT_ID`                 | product id the adapter expects in the `x-dev-product-id` header                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `VITE_OFFRAMP_LANES`                   | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum`), not Meld code; unset, the direct Asset Hub sales only. Solana lanes are never sold through                                                                                                                                                                                                                                                     |
+| `VITE_MELD_PRODUCT_ID`                 | this product's id, which the adapter's `allowed_products` must list; in `personhood` mode, the id the Host gives getcash (its domain)                                                                                                                                                                                                                                                                                                                                      |
+| `VITE_ADAPTER_AUTH`                    | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                                                                                                                                                                                                                                                                        |
+| `VITE_OFFRAMP_LANES`                   | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only                                                                                                                                                                                                                                                                              |
 | `VITE_SALE_VAULT_PROXY_FACTORY`        | the SaleVaultProxyFactory an Arbitrum sale delivers to, as `pnpm --filter @getsome/sale-vault-proxy run deploy --network arbitrumSepolia` (or `arbitrumOne`) prints it; the adapter's `sale_vault_proxy.factory` must be the same, and it reads the implementation from it. Its chain and least sale come from the build's network. Unset, `usdc@arbitrum` is not sold through, and a deploy build that lists it with either value unset or not a nonzero 0x address fails |
 | `VITE_SALE_VAULT_PROXY_IMPLEMENTATION` | the factory's SaleVaultProxy implementation, from the same deploy output; needed with the factory                                                                                                                                                                                                                                                                                                                                                                          |
 | `VITE_CHAINFLIP_BROKER_API_KEY`        | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                                                                                                                                                                                                                                                            |
@@ -298,10 +299,41 @@ in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
-build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
-`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets, and `VITE_OFFRAMP_LANES`,
-`VITE_SALE_VAULT_PROXY_FACTORY`, `VITE_SALE_VAULT_PROXY_IMPLEMENTATION`, `VITE_TOP_UP_MINIMUM` and
-`VITE_TOP_UP_MAXIMUM` from repository variables.
+build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID`,
+`VITE_CHAINFLIP_BROKER_API_KEY` and `VITE_SENTRY_DSN` from repository secrets, and
+`VITE_OFFRAMP_LANES`, `VITE_SALE_VAULT_PROXY_FACTORY`, `VITE_SALE_VAULT_PROXY_IMPLEMENTATION`,
+`VITE_TOP_UP_MINIMUM` and `VITE_TOP_UP_MAXIMUM` from repository variables.
+
+## Telemetry
+
+Telemetry is a deployment's opt-in. A build with `VITE_SENTRY_DSN` reports to that Sentry
+project; a build without it carries no Sentry code and makes no request to any Sentry host. The
+SDK is reached only through one guarded dynamic import in `lib/telemetry/index.ts`, which the
+bundler drops when the DSN is unset, and CI fails a DSN-less build whose output still holds any
+Sentry code.
+
+Inside a host, nothing is sent until the person allows Sentry's domain. The app asks for it in a
+request of its own, after its launch prompts have been answered, and holds what it captures until
+then (`lib/telemetry/grant.ts`). A refusal means nothing is sent for that open.
+
+What a deployment with a DSN sends:
+
+- **Failures**, one event of a fixed kind each (`lib/telemetry/catalogue.ts`): a top-up or
+  withdrawal that ended failed, a hand-off the worker refused, a record the host would not store,
+  an unreadable purse, a host that cannot run the build, a quote that could not be had, and
+  unhandled errors.
+- **Journeys**, as spans: the app opening, and each top-up and withdrawal started on the page,
+  step by step (`app/funding/requests/telemetry.ts`).
+- **Counts**: time on each screen and the main actions.
+- **The log**: every `devLog` line (`lib/log.ts`) rides on events as a breadcrumb, and the page's
+  whole log is attached to its first errors. A quiet session sends no log line.
+
+A page the phone or the person killed is not reported on the next open: that cannot be told
+apart from a person leaving, and the worker carries a request on without the page.
+
+Recovery phrases, 32-byte hex values (the shape of a key's entropy, so transaction hashes too)
+and URL queries are scrubbed from everything that leaves the device; the console keeps the line
+as written. Addresses are sent as they are.
 
 ## License
 

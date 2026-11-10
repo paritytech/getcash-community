@@ -21,8 +21,8 @@ import SkeletonRow from "../ui/SkeletonRow.vue";
 
 const props = defineProps<{
   method: "card" | "bank";
-  /** The other fiat method, when the country pays out by it. */
-  other: "card" | "bank" | null;
+  /** The country routes the method, but its providers are failing right now. */
+  temporarily: boolean;
   /** The CASH leaving the balance, as typed. */
   amount: string;
   quote: MeldSellQuote | null;
@@ -44,7 +44,6 @@ const emit = defineEmits<{
   continue: [];
   fees: [];
   region: [];
-  useOther: [];
   retry: [];
   useCrypto: [];
 }>();
@@ -71,10 +70,9 @@ const canContinue = computed(
     :country="country"
     :country-name="countryName ?? country"
     :minimum="minimum"
-    :other="other"
+    :temporarily="temporarily"
     @region="emit('region')"
     @use-crypto="emit('useCrypto')"
-    @use-other="emit('useOther')"
   />
 
   <RateErrorScreen

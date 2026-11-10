@@ -185,6 +185,12 @@ describe("availableFundingRoutes", () => {
     expect(availableFundingRoutes({}, ["card", "bank", "crypto"])).toEqual([]);
   });
 
+  it("leaves out a route the backend cannot serve right now", () => {
+    expect(
+      availableFundingRoutes(getcashRoutePackages, ["card", "bank", "crypto"], ["card"]),
+    ).toEqual(["bank", "crypto"]);
+  });
+
   it("this build runs card, bank and crypto", () => {
     expect(availableFundingRoutes(getcashRoutePackages, ["card", "bank", "crypto"])).toEqual([
       "card",

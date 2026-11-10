@@ -3,6 +3,7 @@
 // `createFakeMeldClient` is the offline stand-in.
 
 import { parseMeldAssets, type MeldAsset } from "@getsome/core";
+import { isPersonhoodUnavailable } from "./auth";
 
 /** Forward-quote request. Meld quotes are source-denominated: the buyer names the fiat they pay
  *  and Meld returns the crypto delivered. `computeMeldQuote` iterates this for a reverse target. */
@@ -262,13 +263,11 @@ export interface MeldClientLike extends Partial<MeldSellClientLike> {
 export interface MeldEndpointConfig {
   /** Base URL of the onramp adapter service, e.g. '/api/meld'. */
   baseUrl: string;
-  /** Sent as `x-dev-product-id` for the adapter's dev auth. */
-  productId?: string;
   /** Idempotency key per session create. Defaults to a key derived from the purchase intent. */
   idempotencyKey?: () => string;
   /** Where the embedded widget lands the buyer on completion; forwarded to Meld's redirectUrl. */
   redirectUrl?: string;
-  /** Injectable fetch (tests / non-browser). Defaults to global fetch. */
+  /** Proves the caller: `devAdapterFetch` or `personhoodAdapterFetch`. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
   /** Key an address compares by, so SS58 can compare by public key. Defaults to EVM lowercased. */
   walletKey?: (address: string) => string;
@@ -348,18 +347,44 @@ class AdapterRefusal extends Error {
     readonly limit?: MeldFiatLimit,
     /** The adapter's failure tag (`NoQuotesAvailable`, `Other`, …), for logs and branching. */
     readonly tag?: string,
+    /** The adapter's id for the refused call, which its own logs carry. */
+    readonly requestId?: string,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
   }
 }
 
-/** True when a call failed because the adapter did not answer: no response at all, which `fetch`
- *  rejects with a `TypeError`, a 5xx (the adapter's `ProviderTimeout` when Meld did not answer
- *  it), or a 429. A refusal the adapter answered with is not one. */
+/** A request the adapter never answered: `fetch` itself rejected, offline, blocked or timed out. */
+class AdapterUnreachable extends Error {
+  constructor(cause: unknown) {
+    super("The adapter did not answer.", { cause });
+    this.name = "AdapterUnreachable";
+  }
+}
+
+export function isAdapterUnreachable(error: unknown): boolean {
+  return error instanceof AdapterUnreachable;
+}
+
+/** A sale guard that failed with a message already worded for the person, shown as it is. */
+export class SaleGuardError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SaleGuardError";
+  }
+}
+
+export function isSaleGuardError(error: unknown): boolean {
+  return error instanceof SaleGuardError;
+}
+
+/** True when a call failed because the adapter did not answer: no response at all, a 5xx (the
+ *  adapter's `ProviderTimeout` when Meld did not answer it), or a 429. A refusal the adapter
+ *  answered with is not one. */
 export function isAdapterOutage(error: unknown): boolean {
   if (error instanceof AdapterRefusal) return error.status >= 500 || error.status === 429;
-  return error instanceof TypeError;
+  return error instanceof AdapterUnreachable;
 }
 
 /** A buy's fiat bound, as the adapter reports it on a refused quote. */
@@ -370,11 +395,13 @@ export interface MeldFiatLimit {
   readonly currency: string;
 }
 
-/** What the adapter said when it refused: its tag, the `Other` code under it, and the status. */
+/** What the adapter said when it refused: its tag, the `Other` code under it, the status, and
+ *  its id for the call. */
 export interface MeldRefusal {
   readonly tag?: string;
   readonly code?: string;
   readonly status: number;
+  readonly requestId?: string;
 }
 
 /** The adapter's refusal behind `error`, when it is one. */
@@ -384,6 +411,7 @@ export function refusalOf(error: unknown): MeldRefusal | undefined {
     status: error.status,
     ...(error.tag === undefined ? {} : { tag: error.tag }),
     ...(error.code === undefined ? {} : { code: error.code }),
+    ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
   };
 }
 
@@ -569,7 +597,15 @@ function saleVaultProxyOf(data: Record<string, unknown>): MeldSaleVaultProxy {
 export function createMeldClient(
   config: MeldEndpointConfig,
 ): MeldClientLike & MeldSellClientLike & MeldSaleVaultProxyClientLike {
-  const doFetch = config.fetchImpl ?? fetch;
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const doFetch = async (url: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await fetchImpl(url, init);
+    } catch (cause) {
+      if (isPersonhoodUnavailable(cause)) throw cause;
+      throw new AdapterUnreachable(cause);
+    }
+  };
   const walletKey = config.walletKey ?? defaultWalletKey;
   const base = config.baseUrl.replace(/\/$/, "");
   /**
@@ -601,10 +637,7 @@ export function createMeldClient(
     ].join("-");
   const nextKey = config.idempotencyKey;
 
-  const headers = (): Record<string, string> => ({
-    accept: "application/json",
-    ...(config.productId ? { "x-dev-product-id": config.productId } : {}),
-  });
+  const headers = (): Record<string, string> => ({ accept: "application/json" });
 
   /**
    * Parses the adapter's JSON body. On a non-OK response, maps `{ error: { tag, value } }` to an
@@ -634,6 +667,7 @@ export function createMeldClient(
         res.status === 429 ? retryAfterMsOf(res) : undefined,
         limitOf(tag, value),
         tag,
+        typeof data["request_id"] === "string" ? data["request_id"] : undefined,
       );
     }
     return data;
@@ -820,8 +854,11 @@ export function createMeldClient(
       }
     }
     // Every attempt this walk can name has already concluded.
-    throw new Error(
+    throw new AdapterRefusal(
       walk.exhaustedMessage,
+      409,
+      "ATTEMPTS_EXHAUSTED",
+      undefined,
       lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
     );
   }
@@ -940,7 +977,7 @@ export function createMeldClient(
         (session.walletAddress === undefined ||
           walletKey(session.walletAddress) !== walletKey(expected))
       ) {
-        throw new Error("The sale's sending address does not match. Nothing was sent.");
+        throw new SaleGuardError("The sale's sending address does not match. Nothing was sent.");
       }
       return session;
     },

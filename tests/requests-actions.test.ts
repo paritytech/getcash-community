@@ -697,6 +697,7 @@ describe("requests store: foreground, clock and user actions", () => {
       "resuming",
       "supportedCountries",
       "corridorByCountry",
+      "catalogLoading",
       "meldCorridor",
       "meldMethodUnavailable",
       "quoteOutOfRange",

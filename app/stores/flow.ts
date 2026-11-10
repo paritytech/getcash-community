@@ -5,9 +5,12 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { FUNDING_CHAINS, sourceIdFor } from "~~/lib/config";
 import type { DepositMismatch } from "../funding/deposit-mismatch";
+import type { PurseWord } from "../funding/timeline/recovery";
 import { useOffersStore } from "./offers";
 import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const JOURNEY_PHASES = new Set([
   "awaiting-deposit",
@@ -28,7 +31,8 @@ export type Step = "amount" | "method" | "network" | "token";
  * The drill-ins are the route's own refs, so a scene has no way into them: this is the one door,
  * read behind `isDemoBuild()` and null in every build that is not the deck's.
  */
-export type PreviewDrillIn = "currency" | "fees" | "refund";
+export type PreviewDrillIn =
+  "currency" | "fees" | "refund" | "recovery-fee" | "recovery-token" | "recovery-deposit";
 
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();
@@ -46,6 +50,9 @@ export const useFlowStore = defineStore("flow", () => {
   const previewDrillIn = ref<PreviewDrillIn | null>(null);
   /** Demo deck only: the deposit mismatch a scene wants the sheet to show over the deposit. */
   const previewMismatch = ref<DepositMismatch | null>(null);
+  /** Demo deck only: the purse as a scene wants the journey to read it, base units of CASH or
+   *  its word for one that cannot be read. */
+  const previewPurse = ref<PurseWord | null>(null);
   /** The recovery screen for a mismatched direct deposit has taken the deposit screen. */
   const recoveringDeposit = ref(false);
 
@@ -86,6 +93,7 @@ export const useFlowStore = defineStore("flow", () => {
   function selectSource(chain: string, asset: string) {
     const position = positionOf(chain, asset);
     if (position === null) return;
+    trackAction("token.pick", { chain, asset });
     // Re-quote unless the pickers already point here and the quote on hand is for this source.
     const quotedHere =
       session.quoted?.sourceChain === chain && session.quoted?.sourceAsset === asset;
@@ -103,7 +111,7 @@ export const useFlowStore = defineStore("flow", () => {
     try {
       await session.start();
     } catch (e) {
-      console.warn("[flow] could not start the purchase:", e);
+      devLog("flow", "could not start the purchase", e, "warn");
     } finally {
       starting.value = false;
     }
@@ -115,6 +123,7 @@ export const useFlowStore = defineStore("flow", () => {
    * the token step.
    */
   function pickNetwork(chain: string): Step | null {
+    trackAction("network.pick", { chain });
     const c = FUNDING_CHAINS.findIndex((entry) => entry.chain === chain);
     const tokens = offers.offeredTokens(chain);
     if (c >= 0 && tokens.length === 1 && tokens[0]!.asset === FUNDING_CHAINS[c]!.native) {
@@ -179,6 +188,7 @@ export const useFlowStore = defineStore("flow", () => {
     confirmingCancel,
     previewDrillIn,
     previewMismatch,
+    previewPurse,
     recoveringDeposit,
     screen,
     setSourceByName,

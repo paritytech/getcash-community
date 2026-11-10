@@ -67,12 +67,11 @@ const timeline = computed(() => requests.withdrawalTimelineOf(props.record, now.
 const timelineMessage = computed(
   () => props.notice ?? timeline.value.failure?.text ?? timeline.value.message?.text ?? null,
 );
-const timelineDetail = computed(() => timeline.value.detail ?? null);
 const { success, successShown, successPlaying, drawn, band } = useJourneySuccess({
   succeeded: sent,
   view: () => timeline.value.view,
   message: timelineMessage,
-  detail: timelineDetail,
+  detail: null,
 });
 
 const sentWhen = computed(() =>

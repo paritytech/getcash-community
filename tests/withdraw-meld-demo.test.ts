@@ -71,6 +71,7 @@ describe("the offline sale", () => {
       expect(meldHandoffConfig()).toEqual({
         baseUrl: "https://adapter.test",
         productId: "getcash.dev",
+        auth: "dev",
       });
     }
   });

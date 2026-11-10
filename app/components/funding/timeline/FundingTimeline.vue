@@ -294,18 +294,6 @@ const insets = computed(() => {
   transition: color 300ms ease;
 }
 
-/* A grown failed milestone's label leans away from its nearer labelled neighbour. */
-.timeline-label-start {
-  left: 50%;
-  translate: none;
-}
-
-.timeline-label-end {
-  right: 50%;
-  left: auto;
-  translate: none;
-}
-
 .timeline-milestone-complete .timeline-label {
   color: var(--fg-success);
 }
@@ -341,6 +329,11 @@ const insets = computed(() => {
     width 380ms ease-out,
     height 380ms ease-out,
     background-color 300ms ease;
+}
+
+/* The lines beside it give up the grown ring's width at its pace, so at design width no other node moves */
+.timeline-failing .timeline-step {
+  transition: flex-grow 380ms ease-out;
 }
 
 .timeline-failing .timeline-milestone-failed :is(.timeline-cross, .timeline-label) {

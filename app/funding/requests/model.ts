@@ -32,7 +32,7 @@ export const CONFIRMED_TTL_MS = 60_000;
 /** Hidden longer than this resets the session epoch on return. */
 export const HIDDEN_RESET_MS = 5_000;
 /** Worker job blob poll while visible and any record is at rank 0–3. */
-export const JOB_POLL_MS = 6_000;
+export const JOB_POLL_MS = 2_000;
 /** The same poll while a top-up's claim is in flight and the host's word on it is due. */
 export const JOB_POLL_CLAIMING_MS = 1_000;
 /** Foreground Meld status poll. */
@@ -266,7 +266,8 @@ export interface WorkerRecoveryView {
   claimerHex: string;
   phase: RecoveryStep | "done";
   /** The fee's round: it moves on when a claim spent the fee or the fee grew, so a payment
-   *  made in an earlier round no longer counts. */
+   *  made in an earlier round no longer counts once the host has answered it; one still on its
+   *  way is judged when it lands. */
   round: number;
   /** What the purse is asked for: the claim's fee with its margin less what the burner holds,
    *  rounded up to the claim unit. Absent until the worker sized it. */
@@ -276,7 +277,16 @@ export interface WorkerRecoveryView {
   minimums?: Partial<Record<RecoveryToken, string | null>>;
   /** The step a deposit made that way reached in the pipeline, once one arrived. */
   deposit?: string;
+  /** A deposit was found on the top-up's own account and is the worker's to convert, before
+   *  its conversion has a step on record and while a tick of it fails. */
+  depositFound?: boolean;
+  /** A deposit the worker let go in this round, and why: the chain would not take its
+   *  conversion, it landed short of the fee, or it trapped on People. */
+  depositUnused?: { at: number; kind: DepositUnusedKind };
 }
+
+/** Why the worker let a deposit go. */
+export type DepositUnusedKind = "held" | "short" | "trapped";
 
 /** What the store extracts from one job in the worker's blob. */
 export interface WorkerJobView {
@@ -319,10 +329,14 @@ export interface TopUpRecovery extends Omit<WorkerRecoveryView, "phase"> {
   /** Each prompt is one attempt under an id derived from the top-up's own key and the attempt,
    *  stamped before the host is asked, as a withdrawal's payment is. */
   payment?: HostPayment;
+  /** The token the buyer picked to send for the fee: the deposit screen was opened on it, and
+   *  the top-up opens on that screen again. */
+  depositToken?: RecoveryToken;
 }
 
 /** The fee payment no longer counts: the worker's round moved past the one the purse was asked
- *  in, so a claim spent the fee or the fee grew, and it is asked for again. */
+ *  in, so a claim spent the fee or the fee grew, and it is asked for again once the host has
+ *  answered it. The band waits on one still unanswered or on its way. */
 export const paymentOutOfRound = (recovery: TopUpRecovery): boolean =>
   recovery.payment !== undefined && (recovery.payment.round ?? 0) < recovery.round;
 
@@ -565,7 +579,8 @@ export interface HostPayment {
   actualClaimed?: string;
   updatedAt?: number;
   /** A trapped top-up's claim fee: the fee's round when the purse was asked. A round the worker
-   *  has moved past means the fee was spent or grew, and this payment no longer counts. */
+   *  has moved past means the fee was spent or grew, and this payment no longer counts once the
+   *  host has answered it. */
   round?: number;
 }
 
@@ -601,8 +616,10 @@ export interface WithdrawalHandoffPayload {
   channel?: WithdrawalChannel;
   /** A fiat sale only: the adapter the worker reads the sale from, or `offline` for a build that
    *  ran the stand-in sale and has no adapter. */
-  meld?: { baseUrl?: string; productId?: string; offline?: boolean };
-  /** A lane sale only: the Chainflip channel that swaps the key's USDT to the SaleVaultProxyFactory. */
+  meld?: { baseUrl?: string; productId?: string; auth?: "dev" | "personhood"; offline?: boolean };
+  /** A fiat sale through an offramp lane only: the Chainflip channel the key pays, swapping its
+   *  USDT for the lane's asset. A usdc@arbitrum lane swaps to the SaleVaultProxyFactory; other
+   *  lanes pay the provider's deposit address (`channel`). Opened by the page once that is known. */
   swap?: WithdrawalChannel;
 }
 
@@ -901,6 +918,8 @@ export type Observation =
       /** A trapped top-up's claim fee: the fee's round the purse is asked in. */
       round?: number;
     }
+  /** The buyer picked the token to send for a trapped top-up's claim fee. */
+  | { source: "user"; at: number; event: "recovery-token-picked"; token: RecoveryToken }
   /** The pool can no longer fund what a sale promised its provider, checked before the purse was
    *  asked; the sale ends with nothing taken. */
   | { source: "user"; at: number; event: "sale-unfundable" }
@@ -915,6 +934,13 @@ export type Observation =
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;
+
+/** The top-up's own Asset Hub account: the hand-off's burner, else the deposit's address, else
+ *  the one a record rebuilt from the worker's job keeps outside its deposit block. */
+export const burnerAddressOf = (
+  record: Pick<TopUpRecord, "handoff" | "deposit" | "depositAddress">,
+): string | null =>
+  record.handoff?.burnerAddress ?? record.deposit?.address ?? record.depositAddress ?? null;
 
 /** A top-up the buyer pays by sending a Polkadot token straight to its account. */
 export const isDirectDeposit = (record: Pick<TopUpRecord, "ref">): boolean =>

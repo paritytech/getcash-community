@@ -13,9 +13,15 @@ import {
   type FailureDetails,
   type PartFailure,
 } from "./failure";
-import { joinDetail, reader } from "./live";
 import { factAt, observedFrom } from "./observed";
-import { delay, normal, type TextState, type TimelineMessage, type TimelineRoute } from "./route";
+import {
+  delay,
+  normal,
+  withDetail,
+  type TextState,
+  type TimelineMessage,
+  type TimelineRoute,
+} from "./route";
 import type { PhasePart } from "./types";
 
 const SECOND = 1_000;
@@ -119,22 +125,13 @@ function meldRoute(method: MeldMethod): TimelineRoute {
     seenExpectedMs: 30 * SECOND,
     lastReadAt: (record) => record.witnesses.provider?.at,
     text(record, index, state) {
-      const polled = reader(state);
       if (index === 0) {
-        const first = method.firstDetail?.(record, state);
-        return {
-          message: method.firstMessage(record),
-          detail:
-            first === undefined
-              ? polled("Checked with the provider")
-              : joinDetail(first, polled("checked with the provider")),
-        };
+        return withDetail(method.firstMessage(record), method.firstDetail?.(record, state));
       }
       return {
         message: providerError(record)
           ? delay(method.retryingText)
           : normal("Your money is on its way"),
-        detail: polled("Checked with the provider"),
       };
     },
     failure: (record) => method.failures[meldEnding(record)](endingWords(record)),
@@ -185,10 +182,7 @@ const TRANSFER_CURVE_MS = 3 * DAY;
 export const meldBankRoute = meldRoute({
   firstPart: { weight: 1, expectedMs: TRANSFER_CURVE_MS },
   errorDelaysFirst: false,
-  firstMessage: () =>
-    normal(
-      "If you've sent the money from your bank, it's on its way. Bank transfers can take a few days. This page will update when it arrives.",
-    ),
+  firstMessage: () => normal("Waiting for your bank transfer"),
   firstDetail(record, { now, locale }) {
     const sentAt = startedAt(record);
     return sentAt === undefined ? undefined : `Sent ${formatWhenInline(sentAt, locale, now)}`;

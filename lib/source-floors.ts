@@ -13,6 +13,7 @@ import {
 import { mainnetSdk } from "./chainflip-backend";
 import { SOURCE_CHAINS, sourceIdFor } from "./config";
 import { withTimeout } from "./timeout";
+import { devLog } from "./log";
 
 /** The sources the pay flow offers: every UI pair with a Chainflip source behind it. */
 export const OFFERED_SOURCE_IDS: readonly SourceId[] = SOURCE_CHAINS.flatMap((chain) =>
@@ -45,11 +46,11 @@ export async function learnSourceFloors(args: {
       args.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       "source floors",
     );
-    console.info(`[coinage] source floors: ${describe(floors, args.egress)}`);
+    devLog("coinage", `source floors: ${describe(floors, args.egress)}`);
     return floors;
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
-    console.warn(`[coinage] source floors unavailable: ${reason}`);
+    devLog("coinage", `source floors unavailable: ${reason}`, undefined, "warn");
     return new Map(sources.map((s) => [s.sourceId, { kind: "unavailable", reason }]));
   }
 }

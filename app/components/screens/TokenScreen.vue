@@ -2,12 +2,13 @@
 // Token picker: every coin on the chosen network, the ones that clear their floor for this
 // amount first and the rest greyed with why, under a reminder of the network already picked.
 // While any of them is still being answered, skeleton rows stand in for the list, one per token.
-// Picking a row starts the purchase, and a pick in flight keeps its rows on screen, spinner and
-// all.
+// Picking a row starts the purchase, and a pick in flight keeps its rows on screen as they stood
+// at the tap, spinner and all.
 import { computed } from "vue";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import { groupTokens, tokenSubtitle } from "../../funding/source-groups";
 import { useFreshFloors } from "../../composables/useFreshFloors";
+import { useHeldRows } from "../../composables/useHeldRows";
 import { useFlowStore } from "../../stores/flow";
 import { isPickable, useOffersStore, type TokenRow } from "../../stores/offers";
 
@@ -16,10 +17,14 @@ const offers = useOffersStore();
 useFreshFloors();
 
 const tokens = computed(() => offers.tokensOf(flow.srcChain.chain));
-const groups = computed(() => groupTokens(tokens.value));
+const { rows: groups, hold } = useHeldRows(
+  () => groupTokens(tokens.value),
+  () => flow.starting,
+);
 
 function pick(token: TokenRow) {
   if (flow.starting) return;
+  hold();
   flow.selectSource(flow.srcChain.chain, token.asset);
   void flow.startPurchase();
 }

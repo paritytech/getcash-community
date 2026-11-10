@@ -703,7 +703,7 @@ describe("createMeldClient: a 429's retry-after", () => {
 });
 
 describe("the asset table", () => {
-  it("reads GET /assets with the dev product header, keeping the rows the app knows", async () => {
+  it("reads GET /assets, keeping the rows the app knows", async () => {
     const { impl, calls } = stubSequence([
       {
         status: 200,
@@ -715,14 +715,9 @@ describe("the asset table", () => {
         },
       },
     ]);
-    const client = createMeldClient({
-      baseUrl: "https://adapter.test/",
-      productId: "app.dot",
-      fetchImpl: impl,
-    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test/", fetchImpl: impl });
     expect(await client.getAssets()).toEqual([{ asset: "dot@assethub", code: "DOT" }]);
     expect(calls[0]?.url).toBe("https://adapter.test/assets");
-    expect(new Headers(calls[0]?.init?.headers).get("x-dev-product-id")).toBe("app.dot");
     // Bounded, so an adapter that hangs cannot hold every caller sharing the read.
     expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
   });
@@ -764,15 +759,11 @@ describe("createMeldClient sale vault proxy", () => {
     ]);
     const client = createMeldClient({
       baseUrl: "https://adapter.test/",
-      productId: "getcash.dev",
       fetchImpl: impl,
     });
     expect(await client.getSaleVaultProxy("funding/1")).toEqual(SALE);
     expect(calls[0]!.url).toBe("https://adapter.test/offramp/sale/funding%2F1");
-    expect(calls[0]!.init?.headers).toEqual({
-      accept: "application/json",
-      "x-dev-product-id": "getcash.dev",
-    });
+    expect(calls[0]!.init?.headers).toEqual({ accept: "application/json" });
   });
 
   it("asks for a return with an empty body and reads the sale it answers", async () => {

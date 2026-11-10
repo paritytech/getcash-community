@@ -681,10 +681,11 @@ describe("a fiat sale through its SaleVaultProxy", () => {
     proxySays({ status: "held", balance: "98000000", returnable: true, attempts: 0 });
     const engine = await failedAfterDelivery();
     await engine.tickAllWithdraw();
-    expect(fetchMock).toHaveBeenCalledWith(SALE_URL, {
-      headers: { accept: "application/json", "x-dev-product-id": "getcash.dev" },
-      signal: expect.any(AbortSignal),
-    });
+    const saleCall = fetchMock.mock.calls.find(([url]) => url === SALE_URL);
+    expect(saleCall).toBeDefined();
+    const saleHeaders = new Headers(saleCall![1].headers);
+    expect(saleHeaders.get("accept")).toBe("application/json");
+    expect(saleHeaders.get("x-dev-product-id")).toBe("getcash.dev");
     expect(posts()).toHaveLength(1);
     expect(posts()[0]![0]).toBe(RETURN_URL);
     expect(posts()[0]![1]).toMatchObject({ method: "POST", body: "{}" });
@@ -1153,7 +1154,7 @@ describe("a fiat sale through its SaleVaultProxy", () => {
     waitOut();
     await engine.tickAllWithdraw();
     expect(storedJob().residue).toBeUndefined();
-    expect(storedJob().residueError).toMatch(/network down/);
+    expect(storedJob().residueError).toMatch(/adapter did not answer/i);
   });
 
   it.each([

@@ -4,10 +4,10 @@
 // the provider's details for the buyer to pay from their own banking app. Both hand off to the
 // journey once the payment is approved, asserted, or fails.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { bankRailCountries } from "~~/lib/region";
-import { corridorOptions, countryName, pickerBase, type CountryOption } from "~~/lib/supported";
+import { corridorOptions, type CountryOption } from "~~/lib/supported";
 import { detectCountry, useDetectedCountry } from "../../../composables/useDetectedCountry";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
+import { useScreen } from "../../../composables/useScreen";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { fundingSelectorConfig } from "../../../funding/config";
@@ -93,6 +93,13 @@ function goBack() {
 }
 /** The widget stage, card only: a request exists and the payment is still to be made. */
 const paying = computed(() => !isBank && flow.screen === "journey");
+useScreen(() => {
+  if (session.resuming) return null;
+  if (showingCurrency.value) return "region";
+  if (showingFees.value) return "fees";
+  if (paying.value) return "top-up.card.widget";
+  return isBank ? "top-up.bank" : "top-up.card";
+});
 // The widget supersedes the drill-in (its template branch wins). Without this, a flow that moves
 // on while the fee screen is up leaves the flag set, and the next Back tap is silently spent
 // clearing it instead of leaving.
@@ -123,29 +130,6 @@ async function cancelTopUp() {
 const selectedCountry = computed(() => session.meldCountry ?? "DE");
 
 /**
- * The regions known to have a bank transfer rail, named by the live catalog where it has them,
- * alphabetically. The bank picker's list only until the corridors are read: those say for every
- * region whether a transfer can be made from it.
- */
-const bankRails = computed(() => {
-  const named = new Map((session.supportedCountries ?? []).map((c) => [c.country, c.name]));
-  return bankRailCountries()
-    .map((country) => ({ country, name: named.get(country) ?? countryName(country) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-});
-
-/** Fallback region list, used when the adapter's live catalog is unreachable. Remove once
- *  geolocation lands. */
-const FALLBACK_COUNTRIES = [
-  { country: "US", name: "United States" },
-  { country: "CA", name: "Canada" },
-  { country: "GB", name: "United Kingdom" },
-  { country: "DE", name: "Germany" },
-  { country: "AU", name: "Australia" },
-  { country: "BR", name: "Brazil" },
-];
-
-/**
  * What this purchase costs, for the regions priced in the same currency.
  *
  * A corridor's minimum is written in its own fiat, and nothing here holds a rate to cross from one
@@ -165,12 +149,9 @@ const quotedFloor = computed(() => {
  * to end; the transfer screen's copy assumes a push transfer. Others (ACH, iDEAL, Interac, PayID…)
  * are kept for now: disable any that misbehaves.
  */
-const pickerCountries = computed<CountryOption[]>(() =>
+const pickerCountries = computed<CountryOption[] | null>(() =>
   corridorOptions(
-    pickerBase(isBank ? "bank" : "card", session.supportedCountries, session.corridorByCountry, {
-      card: FALLBACK_COUNTRIES,
-      bank: bankRails.value,
-    }),
+    session.supportedCountries ?? [],
     session.corridorByCountry,
     isBank ? "bank" : "card",
     quotedFloor.value,
@@ -290,11 +271,13 @@ onUnmounted(() => {
       <CurrencySelectScreen
         v-else-if="showingCurrency"
         :options="pickerCountries"
+        :loading="session.catalogLoading"
         :model-value="selectedCountry"
         :detected="detectedCountry"
         :busy="session.cancelling"
         :notice="session.cancelNotice"
         @pick="pickCurrency"
+        @retry="session.loadSupportedCatalog()"
       />
       <MeldBankTransferScreen
         v-show="!showingFees && !showingCurrency"
@@ -329,12 +312,14 @@ onUnmounted(() => {
     <CurrencySelectScreen
       v-else-if="showingCurrency"
       :options="pickerCountries"
+      :loading="session.catalogLoading"
       :model-value="selectedCountry"
       :detected="detectedCountry"
       :busy="session.cancelling"
       :notice="session.cancelNotice"
       placeholder="Search for a country"
       @pick="pickCurrency"
+      @retry="session.loadSupportedCatalog()"
     />
     <MeldPayScreen
       v-else

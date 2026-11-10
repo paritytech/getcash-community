@@ -10,6 +10,7 @@ import {
   type QuoteBackend,
 } from "@getsome/chainflip";
 import { mainnetSdk } from "./chainflip-backend";
+import { devLog } from "./log";
 
 export interface SourcePrice {
   /** Ready to render, e.g. "0.00042", in the source asset's own units. */
@@ -88,20 +89,22 @@ export async function priceSourceLeg(args: {
     const raw = quote.raw as { estimatedDurationSeconds?: unknown } | null;
     const eta =
       typeof raw?.estimatedDurationSeconds === "number" ? raw.estimatedDurationSeconds : null;
-    console.info(
-      `[coinage] source price: ${price.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
+    devLog(
+      "coinage",
+      `source price: ${price.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
         (eta === null ? "" : `, eta ${Math.round(eta)}s`),
     );
     return { kind: "price", price };
   } catch (e) {
     if (e instanceof SourceMinimumNotMetError) {
-      console.info(
-        `[coinage] source price: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededBaseUnits} base units`,
+      devLog(
+        "coinage",
+        `source price: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededBaseUnits} base units`,
       );
       return { kind: "minimum", minimum: sourceMinimumOf(e) };
     }
     const reason = e instanceof Error ? e.message : String(e);
-    console.warn(`[coinage] source price unavailable: ${reason}`);
+    devLog("coinage", `source price unavailable: ${reason}`, undefined, "warn");
     return { kind: "unavailable", reason };
   }
 }

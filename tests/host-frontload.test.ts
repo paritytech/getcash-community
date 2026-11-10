@@ -3,7 +3,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const env = vi.hoisted(() => ({ saleNetwork: "mainnet" as "mainnet" | "perseverance" }));
-const requestPermission = vi.hoisted(() => vi.fn(async (_: unknown) => undefined));
+const requestPermission = vi.hoisted(() =>
+  vi.fn(async (_: unknown) => ({ ok: true, value: true })),
+);
 
 vi.mock("@parity/product-sdk-host", () => ({
   requestPermission,

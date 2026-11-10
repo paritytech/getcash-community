@@ -1487,7 +1487,9 @@ describe("worker funding engine", () => {
     expect(storedJob().recovery.state).toBeUndefined();
     expect(storedJob().recovery.deposit).toBeUndefined();
     expect(storedJob().recovery.depositError).toMatchObject({
+      kind: "held",
       message: expect.stringContaining("funding held"),
+      round: 1,
       token: "PAS",
       held: "10000",
     });
@@ -1521,6 +1523,7 @@ describe("worker funding engine", () => {
     mocks.tickOnce.mockRejectedValueOnce(new FundingShortfallError(100n, 123_456n));
     await engine.tickAllFunding();
     expect(storedJob().recovery.depositError.message).toContain("funding shortfall");
+    expect(storedJob().recovery.depositError.kind).toBe("short");
     expect(storedJob().recovery.depositError.token).toBeUndefined();
     mocks.tickRecovery.mockResolvedValueOnce({
       step: "funding",

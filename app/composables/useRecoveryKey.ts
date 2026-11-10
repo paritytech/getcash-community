@@ -6,6 +6,7 @@
 // whose job is getting money back.
 
 import { computed, readonly, ref, watch } from "vue";
+import { devLog } from "~~/lib/log";
 
 /** Address and secret from one derivation. `RefundKey` and `WithdrawRefundKey` both satisfy it. */
 export interface RecoveryKeyMaterial {
@@ -50,7 +51,12 @@ export function useRecoveryKey(options: RecoveryKeyOptions) {
         // The root answering now is not the one this key was written under, so the address on
         // screen and this secret are different accounts. Handing it over sends the user to import
         // a key that opens nothing.
-        console.warn("[recovery] the derived address is not the record's; withholding the key");
+        devLog(
+          "recovery",
+          "the derived address is not the record's; withholding the key",
+          undefined,
+          "warn",
+        );
         failed.value = true;
         return false;
       }
@@ -58,7 +64,7 @@ export function useRecoveryKey(options: RecoveryKeyOptions) {
       return true;
     } catch (error: unknown) {
       if (mine !== epoch) return false;
-      console.warn("[recovery] the key could not be derived:", error);
+      devLog("recovery", "the key could not be derived", error, "warn");
       failed.value = true;
       return false;
     } finally {

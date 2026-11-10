@@ -4,3 +4,4 @@ export * from "./deps";
 export * from "./permissions";
 export * from "./accounts";
 export * from "./env";
+export * from "./personhood";

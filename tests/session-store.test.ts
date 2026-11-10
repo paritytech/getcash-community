@@ -482,7 +482,7 @@ describe("session store: supported corridors loader against a live adapter", () 
     expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
   });
 
-  it("keeps corridorByCountry null on a cold (empty) bulk read, so the dropdown never bricks", async () => {
+  it("keeps corridorByCountry null on a cold (empty) bulk read, so the picker offers a retry", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
     vi.stubGlobal(
@@ -502,6 +502,30 @@ describe("session store: supported corridors loader against a live adapter", () 
     await store.loadSupportedCatalog();
     // Empty catalog must not be adopted (else every country greys out).
     expect(store.corridorByCountry).toBeNull();
+  });
+
+  it("shares one catalog read between concurrent loads, and flags it while it runs", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ corridors: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    const first = store.loadSupportedCatalog();
+    expect(store.catalogLoading).toBe(true);
+    await Promise.all([first, store.loadSupportedCatalog()]);
+    expect(store.catalogLoading).toBe(false);
+    const reads = fetchMock.mock.calls.length;
+    await store.loadSupportedCatalog();
+    expect(fetchMock.mock.calls.length).toBe(reads * 2);
   });
 });
 

@@ -1,20 +1,26 @@
 <script setup lang="ts">
 // The payment-region drill-in: the regions this rail can be paid from, each named by the currency
 // it charges in. The device's own region leads as the detected one; everything else follows, and
-// the regions that cannot take this purchase follow those, saying which of the two reasons it is.
+// the regions that cannot take this purchase follow those, under the reason they cannot.
 // Picking commits and returns; nothing here re-quotes on its own.
 import { computed, ref } from "vue";
 import { regionForCountry } from "~~/lib/region";
-import { regionGroups, trimAmount, type CountryOption } from "~~/lib/supported";
+import { isPickable, regionGroups, trimAmount, type CountryOption } from "~~/lib/supported";
 import { currencyName } from "../../../utils/currency";
+import ErrorState from "../../ui/ErrorState.vue";
 import FlagCircle from "../../ui/FlagCircle.vue";
+import PillButton from "../../ui/PillButton.vue";
 import SearchField from "../../ui/SearchField.vue";
+import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 
 const props = withDefaults(
   defineProps<{
-    /** Every region the caller will accept, in its own order. A row carrying `disabled` or
-     *  `belowMinimum` is listed under the reason it cannot be picked, and does not commit. */
-    options: readonly CountryOption[];
+    /** Every region the caller will accept, in its own order. A row carrying `disabled`,
+     *  `belowMinimum` or `temporarilyUnavailable` is listed under the reason it cannot be picked,
+     *  and does not commit. Null when the catalog could not be read. */
+    options: readonly CountryOption[] | null;
+    /** The catalog is being read; with no options yet, the list's shapes stand in for it. */
+    loading?: boolean;
     /** The committed region, as an ISO 3166-1 alpha-2 code. */
     modelValue: string;
     /** The region read off the device, shown first. Null when there is none, or it is not offered. */
@@ -28,9 +34,9 @@ const props = withDefaults(
     /** What the search field prompts for, when "currency" is not the word for this list. */
     placeholder?: string;
   }>(),
-  { placeholder: "Search for a currency/country", notice: null },
+  { placeholder: "Search for a currency/country", notice: null, loading: false },
 );
-const emit = defineEmits<{ pick: [country: string] }>();
+const emit = defineEmits<{ pick: [country: string]; retry: [] }>();
 
 const query = ref("");
 
@@ -57,15 +63,16 @@ function subtitle(o: CountryOption): string | null {
 }
 
 /** A row that says why it is listed but cannot be chosen. */
-const unpickable = (o: CountryOption) => o.disabled === true || o.belowMinimum === true;
+const unpickable = (o: CountryOption) => !isPickable(o);
 
 const filtering = computed(() => query.value.trim() !== "");
 
 /** Matches the region's name, its currency's name, or either code. */
 const matches = computed(() => {
+  const options = props.options ?? [];
   const q = query.value.trim().toLowerCase();
-  if (q === "") return props.options;
-  return props.options.filter((o) => {
+  if (q === "") return options;
+  return options.filter((o) => {
     const fiat = fiatFor(o);
     return (
       o.name.toLowerCase().includes(q) ||
@@ -83,7 +90,38 @@ const sections = computed(() =>
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <div
+    v-if="options === null && !loading"
+    class="flex min-h-0 flex-1 flex-col items-center justify-center gap-6"
+  >
+    <ErrorState
+      title="Couldn't load countries"
+      body="This is usually temporary. Try again in a moment"
+    />
+    <PillButton class="w-full" @click="emit('retry')">Try again</PillButton>
+  </div>
+  <!-- The list's own shapes while the catalog is read, so nothing jumps when it lands. -->
+  <div
+    v-else-if="options === null"
+    class="flex min-h-0 flex-1 flex-col"
+    aria-busy="true"
+    aria-label="Loading countries"
+  >
+    <SkeletonBlock class="h-9 w-full shrink-0" />
+    <div class="mt-6 flex flex-col">
+      <SkeletonBlock class="mb-3 h-4 w-24" />
+      <div class="flex flex-col gap-2">
+        <div v-for="n in 6" :key="n" class="flex items-center gap-3 py-2 pr-4 pl-2">
+          <SkeletonBlock class="size-12 shrink-0" />
+          <div class="flex flex-1 flex-col gap-2">
+            <SkeletonBlock class="h-4 w-2/5" />
+            <SkeletonBlock class="h-3 w-3/5" />
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div v-else class="flex min-h-0 flex-1 flex-col">
     <SearchField
       v-model="query"
       class="shrink-0"

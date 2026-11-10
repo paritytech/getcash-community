@@ -11,12 +11,13 @@ import {
   type FailureAction,
   type PartFailure,
 } from "./failure";
-import { checked, joinDetail, reader, stepLine } from "./live";
 import { factAt, observedFrom } from "./observed";
-import { delay, normal, type TextState, type TimelineRoute, type TimelineText } from "./route";
+import { stepLine } from "./progress";
+import { delay, normal, withDetail, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
 
 const SECOND = 1_000;
+const MINUTE = 60 * SECOND;
 
 type Stage = "deposit" | "swap" | "egress";
 
@@ -134,58 +135,46 @@ function exchangePhase(record: TopUpRecord, facts: ChainflipFacts): PhaseInput {
   };
 }
 
-/** The time left of a stage Chainflip scheduled and estimated, while some is left. */
-function countdown(
+/** The time left of a stage Chainflip scheduled and estimated, in whole minutes, while some is
+ *  left. Both ends are Chainflip's, so time the app was closed does not skew it. */
+function timeLeft(
   scheduledAt: number | undefined,
   seconds: number | undefined,
   now: number,
 ): string | undefined {
-  const endsAt =
-    scheduledAt === undefined || seconds === undefined ? undefined : scheduledAt + seconds * SECOND;
-  return endsAt !== undefined && endsAt > now
-    ? `About ${Math.ceil((endsAt - now) / SECOND)}s left`
-    : undefined;
+  if (scheduledAt === undefined || seconds === undefined) return undefined;
+  const leftMs = scheduledAt + seconds * SECOND - now;
+  if (leftMs <= 0) return undefined;
+  return leftMs < MINUTE ? "Less than a minute" : `About ${Math.round(leftMs / MINUTE)} min`;
 }
 
 /** The step in progress of `count`, or the last once all are done. */
-function exchangeText(record: TopUpRecord, facts: ChainflipFacts, state: TextState): TimelineText {
+function exchangeText(record: TopUpRecord, facts: ChainflipFacts, now: number): TimelineText {
   // The token the user sent; the source id names the Asset Hub token the swap arrives as.
   const source = record.asset;
-  const { now, live } = state;
-  const read = reader(state);
   if (confirmedAt(record, facts) === undefined) {
     const required = requiredOf(facts);
-    return {
-      message: normal(`Confirming your ${source} deposit`),
-      detail:
-        required === undefined
-          ? read("Checked")
-          : joinDetail(
-              stepLine("Confirmation", facts.depositConfirmations ?? 0, required),
-              checked("last block", facts.confirmationsAt, live) ?? read("checked"),
-            ),
-    };
+    return withDetail(
+      normal(`Confirming your ${source} deposit`),
+      required === undefined
+        ? undefined
+        : stepLine("Confirmation", facts.depositConfirmations ?? 0, required),
+    );
   }
   if (waitingForPrice(facts)) {
-    return {
-      message: delay(`Waiting for a stable price to exchange your ${source}`),
-      detail: read("Price checked"),
-    };
+    return { message: delay(`Waiting for a stable price to exchange your ${source}`) };
   }
   const chunks = chunkCount(facts);
   if (chunks !== undefined) {
     return {
       message: normal(`Exchanging your ${source} in a few steps`),
-      detail: joinDetail(
-        stepLine("Part", facts.chunks?.executed ?? 0, chunks),
-        checked("last part", facts.chunksAt, live) ?? read("checked"),
-      ),
+      detail: stepLine("Swap", facts.chunks?.executed ?? 0, chunks),
     };
   }
-  return {
-    message: normal(`Exchanging your ${source}`),
-    detail: countdown(facts.swapScheduledAt, estimated(facts, "swap"), now) ?? read("Checked"),
-  };
+  return withDetail(
+    normal(`Exchanging your ${source}`),
+    timeLeft(facts.swapScheduledAt, estimated(facts, "swap"), now),
+  );
 }
 
 /** Chainflip's own reason for the failure: the record keeps its message with its code. */
@@ -283,18 +272,15 @@ export const chainflipRoute: TimelineRoute = {
     const core = record.witnesses.core;
     return core?.phase === "swapping" ? core.at : undefined;
   },
-  text(record, index, state) {
+  text(record, index, { delayed, now }) {
     const facts = record.chainflip ?? {};
-    if (index === 0) return exchangeText(record, facts, state);
-    const { delayed, now } = state;
-    return {
-      message: delayed
+    if (index === 0) return exchangeText(record, facts, now);
+    return withDetail(
+      delayed
         ? delay(`Your ${record.asset} is exchanged and the network is processing the transfer`)
         : normal("Your money is on its way"),
-      detail:
-        countdown(facts.egressScheduledAt, estimated(facts, "egress"), now) ??
-        reader(state)("Checked"),
-    };
+      timeLeft(facts.egressScheduledAt, estimated(facts, "egress"), now),
+    );
   },
   failure: chainflipFailure,
   failureDetails: (record) => ({ provider: "Chainflip", reason: chainflipReason(record) }),

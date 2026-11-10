@@ -3,6 +3,9 @@ export {
   fiatLimitOf,
   refusalOf,
   isAdapterOutage,
+  isAdapterUnreachable,
+  isSaleGuardError,
+  SaleGuardError,
   type MeldFiatLimit,
   type MeldRefusal,
   type MeldClientLike,
@@ -21,6 +24,13 @@ export {
   type MeldSaleVaultProxyClientLike,
   type MeldSaleVaultProxyPayout,
 } from "./client";
+export {
+  type CredentialStorage,
+  devAdapterFetch,
+  isPersonhoodUnavailable,
+  personhoodAdapterFetch,
+  type PersonhoodFetchConfig,
+} from "./auth";
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export { ensureMeldAssets } from "./assets";
 export {

@@ -1,6 +1,12 @@
 import { deriveKeypairWithSecret, deriveRefundKey } from "@getsome/ephemeral";
+import { devAdapterFetch, personhoodAdapterFetch } from "@getsome/meld";
 import { createClient } from "polkadot-api";
-import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
+import {
+  deriveEntropy,
+  getHostLocalStorage,
+  getHostProvider,
+  proveLitePersonhood,
+} from "./host.js";
 
 // What both engines need of the host and the chains: a job map in product storage, a bounded
 // wait, a chain client for one tick, the anchor of a submit, and the keys a label derives.
@@ -161,5 +167,31 @@ export function meldOf(meld) {
   return {
     baseUrl: meld.baseUrl,
     ...(typeof meld.productId === "string" && meld.productId ? { productId: meld.productId } : {}),
+    ...(meld.auth === "personhood" ? { auth: "personhood" } : {}),
   };
+}
+
+const personhoodFetches = new Map();
+
+/** Proves the worker to the adapter as the page that handed the sale off did. A personhood fetch
+ *  is kept per adapter and product, and shares the page's stored token. */
+export function adapterFetchFor({ baseUrl, productId, auth }) {
+  if (typeof productId !== "string" || !productId) return undefined;
+  if (auth !== "personhood") return devAdapterFetch(productId);
+  const key = `${baseUrl} ${productId}`;
+  if (!personhoodFetches.has(key)) {
+    personhoodFetches.set(
+      key,
+      personhoodAdapterFetch({
+        baseUrl,
+        productId,
+        storage: {
+          readJSON: async (k) => (await getHostLocalStorage()).readJSON(k),
+          writeJSON: async (k, value) => (await getHostLocalStorage()).writeJSON(k, value),
+        },
+        prove: (message) => proveLitePersonhood(productId, message),
+      }),
+    );
+  }
+  return personhoodFetches.get(key);
 }

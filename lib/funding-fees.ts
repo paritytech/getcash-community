@@ -53,6 +53,7 @@ import {
   type StablePoolRoute,
   withHeadroom,
 } from "@getsome/funding";
+import { devLog } from "./log";
 
 /** The pool tier's costs. */
 export interface PoolFundingSizing {
@@ -206,7 +207,7 @@ export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundi
     };
   } catch (e) {
     if (e instanceof NoCashTransferError) throw e;
-    console.warn("[coinage] funding sizing estimate failed; using static fallbacks:", e);
+    devLog("coinage", "funding sizing estimate failed; using static fallbacks", e, "warn");
     return null;
   }
 }
@@ -465,7 +466,7 @@ export async function estimatePublicFundingSizing(args: {
     );
   } catch (e) {
     if (e instanceof NoCashTransferError) throw e;
-    console.warn("[coinage] funding sizing unreachable; using static fallbacks:", e);
+    devLog("coinage", "funding sizing unreachable; using static fallbacks", e, "warn");
     return FALLBACK_FUNDING_SIZING;
   }
 }

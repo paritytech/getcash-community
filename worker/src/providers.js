@@ -26,6 +26,7 @@ import {
 } from "@getsome/withdraw";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import {
+  adapterFetchFor,
   ANCHOR_TIMEOUT_MS,
   anchorFor,
   bounded,
@@ -74,7 +75,9 @@ export function railFor(provider, record) {
     if (meld.offline === true) {
       return NETWORK.testnet ? { status: async () => ({ status: "receiving" }) } : null;
     }
-    const client = createMeldClient(meld);
+    if (typeof meld?.baseUrl !== "string" || meld.baseUrl === "") return null;
+    const fetchImpl = adapterFetchFor(meld);
+    const client = createMeldClient({ baseUrl: meld.baseUrl, ...(fetchImpl ? { fetchImpl } : {}) });
     // A direct sale is paid in the token the hand-off's sale lands on the key.
     const rail = record?.swap
       ? swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record)

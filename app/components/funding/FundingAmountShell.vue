@@ -21,6 +21,8 @@ const props = withDefaults(
     route: FundingRoute | null;
     /** Routes this build can run. Any other renders dimmed, marked "Soon", and unclickable. */
     availableRoutes?: readonly FundingRoute[];
+    /** Routes the backend cannot serve right now; see `AmountScreenProps`. */
+    unservedRoutes?: readonly FundingRoute[];
     history: boolean;
     /** A top-up or send still running: the clock wears a dot, and Back returns to its screen. */
     historyBadge?: boolean;
@@ -122,6 +124,7 @@ function requestContinue() {
           :routes="config.routes"
           :selected="route"
           :available="availableRoutes"
+          :unserved="unservedRoutes"
           :skeleton="skeleton"
           @select="emit('route', $event)"
         />

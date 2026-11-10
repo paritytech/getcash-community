@@ -8,6 +8,9 @@ import { brokerConfigured, NETWORK } from "./chainflip-backend";
 import { SALE_SWAP_NETWORK } from "./config";
 import { isHosted } from "./host-account";
 import { readPurseBalance } from "./coinage";
+import { describeError, reportFailure, requestTelemetryGrant } from "./telemetry";
+import { appOpenHostPermissions, appOpenOutsideHost } from "./app-open";
+import { devLog } from "./log";
 
 /** Chainflip's swap API and state chain RPC on each network this build opens channels on. */
 function chainflipDomains(): string[] {
@@ -37,29 +40,52 @@ function meldDomains(): string[] {
   }
 }
 
+/** A refused network grant is reported once per page, though each page's mount asks. */
+let refusalReported = false;
+
 export async function frontloadHostPermissions(): Promise<void> {
-  if (!isHosted()) return;
+  if (!isHosted()) {
+    appOpenOutsideHost();
+    return;
+  }
   const { requestPermission, getPaymentManager } = await import("@parity/product-sdk-host");
 
   // Network first: the amount screen's floor-learning fires as soon as this resolves.
-  await requestPermission({
-    tag: "Remote",
-    value: {
-      domains: [...chainflipDomains(), ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
-    },
-  }).catch((e) => console.warn("[host] network grant failed (continuing):", e));
-
-  // These do not gate the first quote and queue behind the network dialog.
-  void requestPermission({ tag: "ChainSubmit", value: undefined }).catch((e) =>
-    console.warn("[host] chain-submit grant failed (continuing):", e),
+  await appOpenHostPermissions(() =>
+    requestPermission({
+      tag: "Remote",
+      value: {
+        domains: [...chainflipDomains(), ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
+      },
+    }).then(
+      (result) => {
+        if ((!result.ok || !result.value) && !refusalReported) {
+          refusalReported = true;
+          reportFailure("permission-refused", {
+            reason: "network",
+            context: { answer: result.ok ? "no" : describeError(result.error) },
+          });
+        }
+      },
+      (e) => devLog("host", "network grant failed (continuing)", e, "warn"),
+    ),
   );
 
-  void (async () => {
+  // These do not gate the first quote and queue behind the network dialog.
+  const chainSubmit = requestPermission({ tag: "ChainSubmit", value: undefined }).catch((e) =>
+    devLog("host", "chain-submit grant failed (continuing)", e, "warn"),
+  );
+
+  const balance = (async () => {
     try {
       const payments = await getPaymentManager();
       if (payments) await readPurseBalance(payments);
     } catch (e) {
-      console.warn("[host] balance grant failed (continuing):", e);
+      devLog("host", "balance grant failed (continuing)", e, "warn");
     }
   })();
+
+  // Telemetry's own domain, in a request of its own and only once every launch prompt has
+  // answered: the host shows one modal at a time and refuses a request made beside one.
+  void Promise.allSettled([chainSubmit, balance]).then(requestTelemetryGrant);
 }

@@ -29,6 +29,14 @@ export function isFundingRouteAvailable(
   return available === null || available === undefined || available.includes(route);
 }
 
+/** `route` while it can be taken, or none. */
+export function selectableRoute(
+  route: FundingRoute | null,
+  available: readonly FundingRoute[] | null | undefined,
+): FundingRoute | null {
+  return route !== null && isFundingRouteAvailable(route, available) ? route : null;
+}
+
 export function isFundingRoute(value: string): value is FundingRoute {
   return FUNDING_ROUTES.some((route) => route === value);
 }

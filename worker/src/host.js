@@ -1,9 +1,12 @@
+import { proveLitePersonhood as proveWith } from "@getsome/host";
 import {
+  createAccountsProvider,
   createPapiProvider,
   deriveEntropy as hostDeriveEntropy,
   hostLocalStorage,
   paymentManager,
 } from "@novasamatech/host-api-wrapper";
+import { fromHex, toHex } from "polkadot-api/utils";
 
 /**
  * The worker's host-api client, presented in the shapes the engine consumes. Only one host-api
@@ -45,4 +48,37 @@ export function followTopUpStatus(id, onStatus, onInterrupt) {
   const subscription = paymentManager.subscribeTopUpStatus(id, onStatus);
   subscription.onInterrupt(onInterrupt);
   return () => subscription.unsubscribe();
+}
+
+const accounts = createAccountsProvider();
+
+const mapCollection = (ring, map) => ({
+  ...ring,
+  junctions: ring.junctions.map((j) =>
+    j.tag === "CollectionId" ? { tag: j.tag, value: map(j.value) } : j,
+  ),
+});
+
+/** The Host's lite personhood proof of `message` in `productId`'s context. */
+export function proveLitePersonhood(productId, message) {
+  return proveWith(
+    {
+      listRingVrfKeys: async (owner) =>
+        (await accounts.listRingVrfKeys(owner)).map((keys) =>
+          keys.map(({ handle, rings }) => ({
+            handle,
+            rings: rings.map((ring) => mapCollection(ring, toHex)),
+          })),
+        ),
+      createRingVRFProof: async (handle, context, ring, proofMessage) =>
+        accounts.createRingVRFProof(
+          handle,
+          [context.productId, context.suffix.value],
+          mapCollection(ring, fromHex),
+          proofMessage,
+        ),
+    },
+    productId,
+    message,
+  );
 }
