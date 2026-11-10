@@ -28,6 +28,6 @@ export const ASSET_HUB_CASH_TX_OPTIONS = { asset: asLocation(TOKENS.CASH.locatio
 
 /** Where the withdrawal reads both chains and runs its dry runs: the best head, as the top up
  *  does. Every step acts on what its own transactions did a block ago, and the finalized head
- *  lags it by 12 to 60 s. Only the mortality checks read finality, since only a finalized block
- *  can say an attempt will never land. */
+ *  lags it by 12 to 60 s. Finality is read only to settle what a best block showed: whether the
+ *  block a transaction was seen in still stands, and whether one never seen can still land. */
 export const AT_BEST = { at: "best" } as const;

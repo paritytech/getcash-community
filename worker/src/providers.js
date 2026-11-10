@@ -20,9 +20,11 @@ import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   exactPaymentLanded,
+  finalizedChainOf,
   payExactOnce,
   readAssetHubAccount,
   readDestinationBalance,
+  settleBlock,
   sweepOnce,
 } from "@getsome/withdraw";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
@@ -241,6 +243,24 @@ export async function exactPaymentOut(record, amount, exact) {
         readFinalizedNumber: async () => (await client.getFinalizedBlock()).number,
       },
       exact,
+    );
+  } finally {
+    client.destroy();
+  }
+}
+
+/**
+ * What Asset Hub's finalized chain says of the block a payment to the channel was seen in:
+ * "pending" until it is past that block, then "final" when the block stands or "dropped" when
+ * another took its place and the payment with it.
+ */
+export async function paymentVerdict(record, seen) {
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    return await settleBlock(
+      finalizedChainOf(client.getTypedApi(paseo_next_v2)),
+      seen,
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
     );
   } finally {
     client.destroy();

@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   psmDebt: 0n,
   /** The key's nonce on Asset Hub. */
   keyNonce: 0,
+  /** Asset Hub's finalized head, and the hash it holds for the block the exit was seen in. */
+  finalizedAh: 5,
+  exitBlockHash: "0xblock-7",
   /** The transactions the key signed on Asset Hub. */
   submits: [] as { pallet: string; name: string; args: unknown; options: unknown }[],
 }));
@@ -51,7 +54,7 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
     getEstimatedFees: async () => 10_000_000n,
     signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       mocks.submits.push({ pallet, name, args, options });
-      return { ok: true, txHash: "0x1", block: { number: 7 } };
+      return { ok: true, txHash: "0x1", block: { number: 7, hash: "0xblock-7" } };
     }),
   });
   const assetHubApi = {
@@ -70,6 +73,8 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
       },
       System: {
         Account: { getValue: async () => ({ nonce: mocks.keyNonce, data: { free: 0n } }) },
+        Number: { getValue: async () => mocks.finalizedAh },
+        BlockHash: { getValue: async () => mocks.exitBlockHash },
       },
       Assets: {
         Asset: {
@@ -220,6 +225,8 @@ describe("the worker's redeem step", () => {
     mocks.submits.length = 0;
     mocks.psmDebt = 500_000_000n;
     mocks.keyNonce = 0;
+    mocks.finalizedAh = 5;
+    mocks.exitBlockHash = "0xblock-7";
     hold(CASH_ID, KEY_SS58, 10_000_000n);
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -275,6 +282,9 @@ describe("the worker's redeem step", () => {
         redeemSubmitted: true,
         redeemNonce: 0,
         redeemAnchor: 1,
+        // The best block the exit was seen in, kept until the finalized chain settles it.
+        redeemBlock: 7,
+        redeemHash: "0xblock-7",
         destinationBefore: "0",
         expectedLanding: "9946439",
         waitingSince: null,
@@ -289,7 +299,46 @@ describe("the worker's redeem step", () => {
     hold(USDT_ID, LANDING_SS58, 9_946_439n);
     await engine.tickAllWithdraw();
     expect(mocks.submits).toHaveLength(1);
-    expect(storedJob()).toMatchObject({ phase: "done", landed: true, done: true });
+    // Done at the best block, and watched on until the exit's block is final.
+    expect(storedJob()).toMatchObject({
+      phase: "done",
+      landed: true,
+      done: true,
+      state: { arrived: true, redeemBlock: 7 },
+    });
+    expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 1 });
+    expect(storedJob().state.redeemBlock).toBe(7);
+    // The finalized chain is past the block and holds it: let go, and the job is ticked no more.
+    mocks.finalizedAh = 8;
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ done: true, state: { arrived: true, redeemBlock: null } });
+    expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 0 });
+    expect(mocks.submits).toHaveLength(1);
+  });
+
+  it("takes the done back when the exit's block was replaced, and redeems again at the same nonce", async () => {
+    const engine = await engineWith(convertingJob());
+    await engine.tickAllWithdraw();
+    mocks.keyNonce = 1;
+    hold(CASH_ID, KEY_SS58, 327n);
+    hold(USDT_ID, LANDING_SS58, 9_946_439n);
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ done: true, landed: true });
+    // A fork replaced the exit's block: the CASH is back on the key, which never signed there.
+    mocks.keyNonce = 0;
+    hold(CASH_ID, KEY_SS58, 10_000_000n);
+    mocks.holdings.delete(`${USDT_ID}:${LANDING_SS58}`);
+    mocks.finalizedAh = 8;
+    mocks.exitBlockHash = "0xfork-7";
+    await engine.tickAllWithdraw();
+    expect(mocks.submits).toHaveLength(2);
+    expect(mocks.submits[1]!.options).toEqual(EXIT_OPTIONS);
+    expect(storedJob()).toMatchObject({
+      phase: "redeem",
+      done: false,
+      landed: false,
+      state: { arrived: false, redeemSubmitted: true, redeemNonce: 0 },
+    });
   });
 
   it("sells the CASH on the pool from the same step once the user chose it", async () => {

@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   payRail: vi.fn(),
   payRailExact: vi.fn(),
   exactPaymentOut: vi.fn(),
+  /** The finalized chain's word on the block a payment was seen in. */
+  paymentVerdict: vi.fn(),
+  /** The head each read of the key on People was made at. */
+  peopleReads: [] as unknown[],
   status: vi.fn(),
   channel: vi.fn(),
   startFunding: vi.fn(),
@@ -54,6 +58,7 @@ vi.mock("../worker/src/providers.js", () => ({
   payRail: mocks.payRail,
   payRailExact: mocks.payRailExact,
   exactPaymentOut: mocks.exactPaymentOut,
+  paymentVerdict: mocks.paymentVerdict,
 }));
 
 vi.mock("../worker/src/engine.js", () => ({
@@ -110,10 +115,13 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
         query: {
           Assets: {
             Account: {
-              getValue: (id: unknown) =>
-                Promise.resolve({
+              getValue: (id: unknown, _who: unknown, options?: { at?: string }) => {
+                // The CASH on People is keyed by its location; a token on Asset Hub by its id.
+                if (typeof id !== "number") mocks.peopleReads.push(options?.at);
+                return Promise.resolve({
                   balance: typeof id === "number" ? mocks.keyToken : mocks.keyCash,
-                }),
+                });
+              },
             },
           },
           System: {
@@ -220,6 +228,8 @@ beforeEach(() => {
   mocks.fundingStatus.mockReset();
   mocks.fundingStatus.mockResolvedValue({ phase: "convert", claim: null });
   mocks.keyFreeFinalized = null;
+  mocks.paymentVerdict.mockReset();
+  mocks.peopleReads.length = 0;
 });
 
 async function engineWith(jobs: Record<string, StoredJob>): Promise<Engine> {
@@ -352,6 +362,80 @@ describe("the worker's side of a fiat sale", () => {
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(storedJob().residue).toMatchObject({ amount: "7000000000", returning: true });
+  });
+
+  /** A sale whose payment was seen in a best block the finalized chain has not settled yet. */
+  const paidAtBest = (): StoredJob => {
+    const job = landedJob();
+    job.leg.paid = true;
+    job.leg.exact = {
+      nonce: 0,
+      inFlight: true,
+      balanceBefore: "27000000000",
+      rejections: 0,
+      seen: { number: 7, hash: "0xpaid" },
+    };
+    return job;
+  };
+
+  it("keeps what is left on the key while the payment's block is still to be settled", async () => {
+    mocks.paymentVerdict.mockResolvedValue("pending");
+    const engine = await engineWith({ "s-1": paidAtBest() });
+    await engine.tickAllWithdraw();
+    expect(mocks.paymentVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "s-1" }),
+      { number: 7, hash: "0xpaid" },
+    );
+    // The provider is followed meanwhile; nothing is paid again and nothing goes home.
+    expect(mocks.status).toHaveBeenCalledTimes(1);
+    expect(mocks.payRailExact).not.toHaveBeenCalled();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().leg).toMatchObject({
+      paid: true,
+      exact: { seen: { number: 7, hash: "0xpaid" } },
+    });
+  });
+
+  it("lets the payment's block go once it is final, and sends the residue home", async () => {
+    mocks.paymentVerdict.mockResolvedValue("final");
+    const engine = await engineWith({ "s-1": paidAtBest() });
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg).toMatchObject({ paid: true, exact: { seen: null } });
+    expect(mocks.payRailExact).not.toHaveBeenCalled();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    // Settled once: the chain is not asked about that block again.
+    await engine.tickAllWithdraw();
+    expect(mocks.paymentVerdict).toHaveBeenCalledTimes(1);
+  });
+
+  it("pays again when the payment's block was replaced, the attempt still in flight at its nonce", async () => {
+    mocks.paymentVerdict.mockResolvedValue("dropped");
+    const engine = await engineWith({ "s-1": paidAtBest() });
+    await engine.tickAllWithdraw();
+    // The chain is asked first whether the attempt landed in another block after all.
+    expect(mocks.exactPaymentOut).toHaveBeenCalledTimes(1);
+    expect(mocks.payRailExact).toHaveBeenCalledTimes(1);
+    const [, , , exact] = mocks.payRailExact.mock.calls[0]!;
+    expect(exact).toMatchObject({
+      nonce: 0,
+      inFlight: true,
+      balanceBefore: "27000000000",
+      seen: null,
+    });
+  });
+
+  it("leaves a failed sale's replaced payment to the settling of an attempt that may still land", async () => {
+    mocks.paymentVerdict.mockResolvedValue("dropped");
+    const job = paidAtBest();
+    Object.assign(job, { phase: "failed", failure: "rail-failed", failedAt: NOW });
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg).toMatchObject({ paid: false, exact: { inFlight: true, seen: null } });
+    // Unpaid again with the attempt in flight: the chain says whether it lands before anything
+    // goes home.
+    expect(mocks.exactPaymentOut).toHaveBeenCalledTimes(1);
+    expect(mocks.payRailExact).not.toHaveBeenCalled();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 
   it("keeps a residue too small to be worth the way back", async () => {
@@ -826,25 +910,147 @@ describe("a sale's way to the provider and back", () => {
     expect(storedJob().state.arrivalFloor).toBe("18000000000");
   });
 
-  it("anchors the message leg on People's best block, and keeps the block its XCM is anchored at for the next pass", async () => {
+  /** What the message leg keeps of its blocks between passes. */
+  type Blocks = {
+    submitted: boolean;
+    xcmSigned: boolean;
+    xcmBlock: number | null;
+    xcmHash: string | null;
+    arrived: boolean;
+    redeemBlock: number | null;
+    redeemHash: string | null;
+  };
+  type MessageInput = {
+    readKeyOnPeople: (ss58: string, at: "best" | "finalized") => Promise<unknown>;
+  };
+
+  it("keeps the blocks the message leg's transactions were seen in for the next pass, and reads the key at the head it is asked", async () => {
     const seen: unknown[] = [];
-    mocks.withdrawTickOnce.mockImplementation(
-      async (_input: unknown, state: { xcmAnchor: number | null }) => {
-        seen.push(state.xcmAnchor);
-        state.xcmAnchor = 77;
-        return { step: "convert" };
-      },
-    );
+    mocks.withdrawTickOnce.mockImplementation(async (input: MessageInput, state: Blocks) => {
+      seen.push({ ...state });
+      await input.readKeyOnPeople("5Key", "best");
+      await input.readKeyOnPeople("5Key", "finalized");
+      Object.assign(state, {
+        submitted: true,
+        xcmSigned: true,
+        xcmBlock: 500,
+        xcmHash: "0xpeople-500",
+        redeemBlock: 1_001,
+        redeemHash: "0xah-1001",
+      });
+      return { step: "redeem" };
+    });
     const engine = await engineWith({ "s-1": unsold(NOW + 3_600_000) });
     await engine.tickAllWithdraw();
     expect(mocks.withdrawTickOnce.mock.calls[0]![0]).toMatchObject({
       signOptions: { at: "0xbest" },
-      peopleAnchorNumber: 1,
-      readPeopleFinalizedNumber: expect.any(Function),
     });
-    expect(storedJob().state.xcmAnchor).toBe(77);
+    expect(mocks.peopleReads).toEqual(["best", "finalized"]);
+    const kept = {
+      xcmSigned: true,
+      xcmBlock: 500,
+      xcmHash: "0xpeople-500",
+      redeemBlock: 1_001,
+      redeemHash: "0xah-1001",
+    };
+    expect(storedJob().state).toMatchObject(kept);
     await engine.tickAllWithdraw();
-    expect(seen).toEqual([null, 77]);
+    expect(seen[0]).toMatchObject({ xcmSigned: false, xcmBlock: null, redeemBlock: null });
+    expect(seen[1]).toMatchObject(kept);
+  });
+
+  /** A sale landed at the best block, its XCM's block still to be settled by the finalized chain. */
+  const unsettled = (): StoredJob => {
+    const job = landedJob();
+    Object.assign(job.state, { arrived: true, xcmSigned: true, xcmBlock: 500, xcmHash: "0xp" });
+    return job;
+  };
+
+  it("holds the provider's payment while a block of the message leg is still to be settled, and pays once it is final", async () => {
+    mocks.payRailExact.mockResolvedValue(undefined);
+    mocks.withdrawTickOnce.mockResolvedValue({ step: "done" });
+    const engine = await engineWith({ "s-1": unsettled() });
+    await engine.tickAllWithdraw();
+    // The message leg is ticked on, and nothing is paid out of a landing the chain may take back.
+    expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(1);
+    expect(mocks.payRailExact).not.toHaveBeenCalled();
+    expect(storedJob()).toMatchObject({ landed: true, phase: "handoff", done: false });
+    // The finalized chain holds the block: the message leg lets it go.
+    mocks.withdrawTickOnce.mockImplementation(async (_input: unknown, state: Blocks) => {
+      state.xcmBlock = null;
+      state.xcmHash = null;
+      return { step: "done" };
+    });
+    await engine.tickAllWithdraw();
+    expect(mocks.payRailExact).not.toHaveBeenCalled();
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(2);
+    expect(mocks.payRailExact).toHaveBeenCalledTimes(1);
+    expect(storedJob().leg.paid).toBe(true);
+  });
+
+  it("takes the landing back when a block of the message leg was replaced, and pays nothing", async () => {
+    mocks.withdrawTickOnce.mockImplementation(async (_input: unknown, state: Blocks) => {
+      Object.assign(state, { submitted: false, arrived: false, xcmBlock: null, xcmHash: null });
+      return { step: "convert" };
+    });
+    const engine = await engineWith({ "s-1": unsettled() });
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ landed: false, done: false, phase: "convert" });
+    expect(mocks.payRailExact).not.toHaveBeenCalled();
+  });
+
+  it("takes the landing back when the tick found the block replaced and failed after that", async () => {
+    mocks.withdrawTickOnce.mockImplementation(async (_input: unknown, state: Blocks) => {
+      Object.assign(state, { submitted: false, arrived: false, xcmBlock: null, xcmHash: null });
+      throw new Error("withdrawal sizing timed out after 30000ms");
+    });
+    const engine = await engineWith({ "s-1": unsettled() });
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({
+      landed: false,
+      done: false,
+      lastError: expect.stringMatching(/timed out/),
+      state: { arrived: false, submitted: false },
+    });
+  });
+
+  /** A withdrawal to Asset Hub itself, done at the best block with its XCM's block unsettled. */
+  const directDone = (): StoredJob => {
+    const job = unsettled();
+    Object.assign(job, { rail: "direct", done: true, phase: "done" });
+    return job;
+  };
+
+  it("ticks a done job on until its blocks are final, and no further", async () => {
+    mocks.withdrawTickOnce.mockResolvedValue({ step: "done" });
+    const engine = await engineWith({ "s-1": directDone() });
+    expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 1, holding: 1 });
+    expect(storedJob()).toMatchObject({ done: true, landed: true, phase: "done" });
+    mocks.withdrawTickOnce.mockImplementation(async (_input: unknown, state: Blocks) => {
+      state.xcmBlock = null;
+      state.xcmHash = null;
+      return { step: "done" };
+    });
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(2);
+    // Final: nothing is left to watch, and the worker is not kept awake for it.
+    expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 0, holding: 0 });
+    expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(2);
+    expect(storedJob()).toMatchObject({ done: true, landed: true });
+  });
+
+  it("takes a done back when its XCM's block was replaced, and the job is live again", async () => {
+    mocks.withdrawTickOnce.mockImplementation(async (_input: unknown, state: Blocks) => {
+      Object.assign(state, { submitted: false, arrived: false, xcmBlock: null, xcmHash: null });
+      return { step: "convert" };
+    });
+    const engine = await engineWith({ "s-1": directDone() });
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ done: false, landed: false, phase: "convert" });
+    // Live again: the next pass sends the XCM once more.
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(2);
   });
 
   it("does not call a sale unfundable while an earlier submit may still land", async () => {

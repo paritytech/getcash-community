@@ -40,7 +40,14 @@ function world(
       events.push("submit");
       const outcome = outcomes.shift() ?? { ok: true };
       return outcome.ok
-        ? { ok: true, txHash: `0x${submits.length}`, block: { number: 200 + submits.length } }
+        ? {
+            ok: true,
+            txHash: `0x${submits.length}`,
+            block: {
+              number: 200 + submits.length,
+              hash: `0xblock-${200 + submits.length}`,
+            },
+          }
         : {
             ok: false,
             txHash: `0x${submits.length}`,
@@ -120,7 +127,30 @@ describe("the exact payment", () => {
     ]);
     expect(events).toEqual(["persist", "submit"]);
     expect(txs).toEqual([{ call: "pay", txHash: "0x1", block: 201, ok: true }]);
-    expect(state).toMatchObject({ nonce: 0, inFlight: true, balanceBefore: "21000000000" });
+    // Still in flight, with the best block it was seen in kept: the driver watches that block
+    // until it is final, and a payment whose block is replaced goes out again at the same nonce.
+    expect(state).toMatchObject({
+      nonce: 0,
+      inFlight: true,
+      balanceBefore: "21000000000",
+      seen: { number: 201, hash: "0xblock-201" },
+    });
+  });
+
+  it("pays again at the same nonce, from the balance of the first attempt, when its block was replaced", async () => {
+    // The first attempt was seen in a block a fork replaced: the key is back at its nonce.
+    const { input, submits } = world([
+      { free: 21_000_000_000n, nonce: 0 },
+      { free: 21_000_000_000n, nonce: 0 },
+    ]);
+    const state = freshExactPayState();
+    await payExactOnce(input, state);
+    await payExactOnce(input, state);
+    expect(submits.map((s) => (s.options as { nonce: number }).nonce)).toEqual([0, 0]);
+    expect(state).toMatchObject({
+      balanceBefore: "21000000000",
+      seen: { number: 202, hash: "0xblock-202" },
+    });
   });
 
   it("keeps the block the attempt is anchored at with it, before it leaves", async () => {

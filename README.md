@@ -107,8 +107,11 @@ Arrival is a balance read at the head, like every other read in the engine: the 
 balance in the landing token is read just before the XCM, or on the PSM tier the redeem, leaves,
 and the run is done once it has grown by what the Asset Hub dry run said would land. Every read is
 at the best block, as on the top-up, and each transaction counts as sent once a best block holds
-it. Only the settling of a lost or dropped transaction waits for finality: once the finalized head
-is past its mortality and the chain shows it never landed, it goes out again. Hosts serve
+it. A best block can still be replaced, so the block each transaction was seen in is kept, number
+and hash, and the worker ticks the job on after it is done until the finalized chain is past that
+block: a block that stands is let go, and one that was replaced takes its transaction back, which
+then goes out again. The provider is paid only once the blocks before the payment are final, and
+what a sale leaves on its key goes home only once the payment's own block is. Hosts serve
 the current head and nothing older, so nothing follows block history. `@getsome/withdraw` holds
 the program, the sizing, the redeem and the tick; `worker/src/withdraw-engine.js` drives it.
 

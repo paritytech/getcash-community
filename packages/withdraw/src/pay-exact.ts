@@ -12,6 +12,11 @@
 //
 // A transfer the chain refused at dispatch spent its nonce and moved nothing, so the next attempt
 // takes the next one. A dry run before every broadcast keeps that rare.
+//
+// DONE AT THE BEST BLOCK. The payment resolves once a best block holds it, and that block is kept
+// on the state for the driver to watch until it is final (inclusion.ts). The attempt stays in
+// flight meanwhile, so one whose block is replaced is found unpaid at its nonce and goes out
+// again there: still one nonce, still never twice.
 
 import type { PolkadotSigner } from "polkadot-api";
 import type { TokenSpec } from "@getsome/core";
@@ -27,6 +32,7 @@ import {
 } from "@getsome/funding";
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
+import type { SeenBlock } from "./inclusion";
 import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
 import { AT_BEST } from "./paseo";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
@@ -65,6 +71,9 @@ export interface ExactPayState {
   anchor?: number | null;
   /** Refusals at dispatch so far. */
   rejections: number;
+  /** The best block the payment was seen in, kept until the finalized chain settles it. Absent
+   *  before any, once it is final, and for one whose answer was lost. */
+  seen?: SeenBlock | null;
 }
 
 export const freshExactPayState = (): ExactPayState => ({
@@ -276,13 +285,19 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
     "payment submit",
   );
   input.onTx?.({ call: "pay", txHash: res.txHash, block: res.block?.number, ok: res.ok });
-  if (res.ok) return;
+  if (res.ok) {
+    // In a best block the chain may yet replace: the driver watches it until it is final. The
+    // attempt stays in flight, so one whose block is replaced goes out again at the same nonce.
+    state.seen = { number: res.block.number, hash: res.block.hash };
+    return;
+  }
   // Included and refused: the nonce is spent and nothing moved, so the next attempt takes the
   // next nonce.
   state.nonce += 1;
   state.inFlight = false;
   state.balanceBefore = null;
   state.anchor = null;
+  state.seen = null;
   state.rejections += 1;
   const reason = describeDispatchError(res.dispatchError);
   if (state.rejections >= MAX_REJECTIONS) throw new WithdrawRejectedError("pay", reason);

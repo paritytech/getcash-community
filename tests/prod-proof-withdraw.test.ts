@@ -22,7 +22,6 @@ import {
 } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
-  AT_BEST,
   readAssetHubAccount,
   readDestinationBalance,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
@@ -74,12 +73,12 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
-      // At the best head, as the worker reads the key.
-      const readCash = async (ss58: string) =>
-        (await peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, ss58, AT_BEST))
+      // At the best head, as the worker reads the key, unless the tick asks for the finalized one.
+      const readCash = async (ss58: string, at: "best" | "finalized" = "best") =>
+        (await peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, ss58, { at }))
           ?.balance ?? 0n;
-      const readPas = async (ss58: string) =>
-        (await peopleApi.query.System.Account.getValue(ss58, AT_BEST))?.data?.free ?? 0n;
+      const readPas = async (ss58: string, at: "best" | "finalized" = "best") =>
+        (await peopleApi.query.System.Account.getValue(ss58, { at }))?.data?.free ?? 0n;
       const cashOnKey = await readCash(key.address);
       const route =
         LANDING === "native"
@@ -105,7 +104,11 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
       const steps: string[] = [];
       const deadline = Date.now() + RUN_TIMEOUT_MS;
       let step = "";
-      while (step !== "done") {
+      let doneAt: number | null = null;
+      // Done at the best block, then ticked on until the finalized chain holds the blocks the
+      // key's transactions were seen in, as the worker does.
+      const settled = () => state.xcmBlock === null && state.redeemBlock === null;
+      while (step !== "done" || !settled()) {
         if (Date.now() > deadline) throw new Error(`no completion within ${RUN_TIMEOUT_MS}ms`);
         let submitted = false;
         try {
@@ -126,9 +129,9 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               transfer,
               tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-              readKeyOnPeople: async (ss58) => ({
-                cash: await readCash(ss58),
-                pas: await readPas(ss58),
+              readKeyOnPeople: async (ss58, at) => ({
+                cash: await readCash(ss58, at),
+                pas: await readPas(ss58, at),
               }),
               readKeyOnAssetHub: async (hex) => {
                 const { free: cash, nonce } = await readAssetHubAccount(
@@ -150,8 +153,6 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               },
               readFinalizedNumber: async () => (await ahC.getFinalizedBlock()).number,
               signOptions: { at: peopleBest.hash },
-              peopleAnchorNumber: peopleBest.number,
-              readPeopleFinalizedNumber: async () => (await peC.getFinalizedBlock()).number,
               now: Date.now,
               onTx: (i) => console.log(`  TX ${i.call} block=${i.block} hash=${i.txHash}`),
               onTransientError: (e) =>
@@ -164,12 +165,16 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
             step = outcome.step;
             steps.push(step);
             console.log(`  STEP -> ${step}`);
+            if (step === "done") doneAt = Date.now();
           }
         } catch (e) {
           if (e instanceof WithdrawRejectedError) throw e;
           console.log(`  tick failed, retrying: ${e instanceof Error ? e.message : String(e)}`);
         }
-        if (step !== "done" && !submitted) await sleep(POLL_MS);
+        if (!submitted) await sleep(POLL_MS);
+      }
+      if (doneAt !== null) {
+        console.log(`blocks final ${((Date.now() - doneAt) / 1000).toFixed(1)}s after done`);
       }
 
       const aliceAfter = await readAlice();

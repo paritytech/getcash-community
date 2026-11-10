@@ -23,7 +23,14 @@ function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<Sweep
       events.push("submit");
       const outcome = outcomes.shift() ?? { ok: true };
       return outcome.ok
-        ? { ok: true, txHash: `0x${submits.length}`, block: { number: 100 + submits.length } }
+        ? {
+            ok: true,
+            txHash: `0x${submits.length}`,
+            block: {
+              number: 100 + submits.length,
+              hash: `0xblock-${100 + submits.length}`,
+            },
+          }
         : {
             ok: false,
             txHash: `0x${submits.length}`,
@@ -73,7 +80,19 @@ describe("the sweep", () => {
     ]);
     expect(events).toEqual(["persist", "submit"]);
     expect(txs).toEqual([{ call: "sweep", txHash: "0x1", block: 101, ok: true }]);
-    expect(state).toEqual({ attempts: 1, rejections: 0 });
+    // The best block it was seen in is kept, for the driver to watch until it is final.
+    expect(state).toEqual({
+      attempts: 1,
+      rejections: 0,
+      seen: { number: 101, hash: "0xblock-101" },
+    });
+  });
+
+  it("keeps no block for a sweep the chain refused", async () => {
+    const { input } = world([7_000_000_000n], [{ ok: false, error: "Frozen" }]);
+    const state = freshSweepState();
+    await expect(sweepOnce(input, state)).rejects.toThrow(/sweep rejected/);
+    expect(state.seen).toBeUndefined();
   });
 
   it("moves a pallet-assets token through its own transfer, by the token's id", async () => {

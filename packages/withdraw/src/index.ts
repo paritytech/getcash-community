@@ -60,6 +60,8 @@ export type {
   WithdrawTickState,
 } from "./tick";
 export { readAssetHubAccount, readDestinationBalance } from "./destination";
+export { finalizedChainOf, settleBlock } from "./inclusion";
+export type { BlockVerdict, FinalizedChain, SeenBlock } from "./inclusion";
 export {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
