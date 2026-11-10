@@ -317,12 +317,15 @@ function channelOf(channel) {
     isEvmAddress(channel.claimerAddress) && !/^0x0{40}$/.test(channel.claimerAddress)
       ? channel.claimerAddress
       : undefined;
+  // The lane the page sold through, checked against the channel's egress chain and asset at pay
+  const lane = typeof channel.lane === "string" && channel.lane !== "" ? channel.lane : undefined;
   return {
     id: channel.id,
     address: channel.address,
     openedAt: Number.isFinite(openedAt) && openedAt > 0 ? openedAt : 0,
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
+    ...(lane === undefined ? {} : { lane }),
     ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
     ...(proxy === null
       ? {}

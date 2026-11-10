@@ -45,6 +45,7 @@ const record = {
   swap: {
     id: "cf-channel-7",
     address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+    lane: "usdc-arbitrum",
     proxyFactory: FACTORY,
     proxyAddress: PROXY,
     claimerAddress: CLAIMER,
@@ -71,6 +72,8 @@ describe("a lane sale's provider", () => {
   const flip = {
     depositAddress: record.swap.address,
     destinationAddress: FACTORY.toUpperCase().replace("0X", "0x"),
+    destChain: "Arbitrum",
+    destAsset: "USDC",
     ccmMessage: MESSAGE,
     ccmGasBudget: vectors.gas.CCM_GAS_BUDGET,
   };
@@ -111,6 +114,16 @@ describe("a lane sale's provider", () => {
     ],
     ["the CCM gas budget is missing", { ...flip, ccmGasBudget: "" }, /gas budget of none/],
     ["the CCM gas budget is malformed", { ...flip, ccmGasBudget: "0xzz" }, /gas budget of 0xzz/],
+    [
+      "the egress is on another chain",
+      { ...flip, destChain: "Ethereum" },
+      /egresses USDC on Ethereum, not the lane's USDC on Arbitrum/,
+    ],
+    [
+      "the egress is another asset",
+      { ...flip, destAsset: "USDT" },
+      /egresses USDT on Arbitrum, not the lane's USDC on Arbitrum/,
+    ],
   ])("refuses the channel when %s", async (_, chainflip, message) => {
     const { railFor } = await import("../worker/src/providers.js");
     const { ChannelMismatchError } = await import("@getsome/withdraw");
@@ -129,6 +142,17 @@ describe("a lane sale's provider", () => {
     await expect(railFor("meld", record)!.channel!("cf-channel-7")).resolves.toMatchObject({
       ccmGasBudget: hex,
     });
+  });
+
+  it.each([undefined, "", "not-a-lane"])("refuses a swap whose lane is %s", async (lane) => {
+    const { railFor } = await import("../worker/src/providers.js");
+    const { ChannelMismatchError } = await import("@getsome/withdraw");
+    mocks.readChannelRecord.mockResolvedValue(flip);
+    mocks.saleChannel.mockResolvedValue(order);
+    const noLane = { ...record, swap: { ...record.swap, lane } };
+    const read = railFor("meld", noLane)!.channel!("cf-channel-7");
+    await expect(read).rejects.toThrow(/names no known offramp lane/);
+    await expect(read).rejects.toBeInstanceOf(ChannelMismatchError);
   });
 
   it("refuses every channel when the job names no factory", async () => {

@@ -157,6 +157,16 @@ function swapSaleRail(sale, record) {
           `channel ${id} carries a CCM gas budget of ${swap.ccmGasBudget || "none"}, not ${SALE_VAULT_PROXY_CCM_GAS_BUDGET}`,
         );
       }
+      const laneId = record.swap?.lane;
+      const lane = typeof laneId === "string" ? LANES.find((l) => l.id === laneId) : undefined;
+      if (lane === undefined) {
+        throw new ChannelMismatchError(`sale ${record.channel.id} names no known offramp lane`);
+      }
+      if (swap.destChain !== lane.chainflip.chain || swap.destAsset !== lane.chainflip.asset) {
+        throw new ChannelMismatchError(
+          `channel ${id} egresses ${swap.destAsset || "nothing"} on ${swap.destChain || "no chain"}, not the lane's ${lane.chainflip.asset} on ${lane.chainflip.chain}`,
+        );
+      }
       return order.expired ? { ...swap, expired: true } : swap;
     },
     status: async (id) => {

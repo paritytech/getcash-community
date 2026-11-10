@@ -45,10 +45,19 @@ describe("the channel record read", () => {
     expect(await readChannelRecord("42", serving(record))).toEqual({
       depositAddress: "5Channel",
       destinationAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+      destChain: "",
+      destAsset: "",
       expired: false,
       ccmMessage: "",
       ccmGasBudget: "",
     });
+  });
+
+  it("reads the egress chain and asset the provider names", async () => {
+    const egress = { ...record, destChain: "Arbitrum", destAsset: "USDC" };
+    const read = await readChannelRecord("42", serving(egress));
+    expect(read?.destChain).toBe("Arbitrum");
+    expect(read?.destAsset).toBe("USDC");
   });
 
   it("reads the channel's CCM message in lowercase, empty when it carries none", async () => {
