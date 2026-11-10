@@ -56,13 +56,17 @@ export function saleVaultProxyNote(
   if (s.returnable && !calling && saleVaultProxyHeld(s)) {
     // The keeper releases a due balance while its return is held back
     if (s.releasable !== "0") return "Your funds are being sent to your own Arbitrum address.";
-    const held =
-      s.blockedReason === "chain-unavailable"
-        ? "Arbitrum could not be reached, so sending your funds back waits."
-        : "Sending your funds back to your account is on hold for now.";
-    return s.releaseAt !== null && s.releaseAt > 0
-      ? `${held} If it stays on hold, they move to your own Arbitrum address ${formatWhen(s.releaseAt)}.`
-      : held;
+    if (s.blockedReason === "chain-unavailable") {
+      const held = "Arbitrum could not be reached, so sending your funds back waits.";
+      return s.releaseAt !== null && s.releaseAt > 0
+        ? `${held} If it stays on hold, they move to your own Arbitrum address ${formatWhen(s.releaseAt)}.`
+        : held;
+    }
+    const whenMoves =
+      s.releaseAt !== null && s.releaseAt > 0
+        ? ` If it stays on hold, they move to your own Arbitrum address ${formatWhen(s.releaseAt)}.`
+        : "";
+    return `Sending your funds back to your account is on hold for now.${whenMoves} This sale could not complete in time, so a new sale will be needed once your funds are back, with a small network fee of roughly 1% or more depending on the amount. Returning sellers can usually reuse their identity verification.`;
   }
   if (s.returnable || calling) {
     if (s.status !== "paid") {
