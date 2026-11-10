@@ -45,13 +45,14 @@ vi.mock("@getsome/funding", async (importOriginal) => ({
 // fixed rate, and takes whatever the key signs.
 vi.mock("../worker/src/shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
+  const { bestBlockWatch } = await import("@getsome/testing");
   const assetHubTx = (pallet: string, name: string) => (args: unknown) => ({
     decodedCall: { type: pallet, value: { type: name, value: args } },
     getEstimatedFees: async () => 10_000_000n,
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
+    signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       mocks.submits.push({ pallet, name, args, options });
       return { ok: true, txHash: "0x1", block: { number: 7 } };
-    },
+    }),
   });
   const assetHubApi = {
     tx: {

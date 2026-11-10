@@ -17,6 +17,7 @@ import type { PolkadotSigner } from "polkadot-api";
 import type { TokenSpec } from "@getsome/core";
 import {
   describeDispatchError,
+  includedInBlock,
   isStable,
   priceNativeFeeIn,
   signedOrigin,
@@ -27,6 +28,7 @@ import {
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
 import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
+import { AT_BEST } from "./paseo";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 /** Headroom on the payment's fee estimate, percent. */
@@ -101,7 +103,7 @@ export interface ExactPayInput {
   signOptions?: Record<string, unknown>;
   /** The number of the block `signOptions` anchors the payment at. */
   anchorNumber?: number;
-  /** The key's balance in `token` and its nonce on Asset Hub, at the finalized head. */
+  /** The key's balance in `token` and its nonce on Asset Hub, at the best head. */
   readKey: () => Promise<{ free: bigint; nonce: number }>;
   /** The finalized head's number on Asset Hub. */
   readFinalizedNumber?: () => Promise<number>;
@@ -185,8 +187,10 @@ function judge(
       `the key signed at nonce ${state.nonce} and its balance fell by ${fell}, less than the ${amount} it pays`,
     );
   }
+  // The best head can fall behind for a moment when a block with the key's last transaction is
+  // dropped. Nothing is sent meanwhile, and the next tick reads again.
   if (key.nonce < state.nonce) {
-    throw new PaymentUnresolvedError(
+    throw new Error(
       `the key is at nonce ${key.nonce} on Asset Hub, behind the payment's ${state.nonce}`,
     );
   }
@@ -216,6 +220,10 @@ export async function exactPaymentLanded(
       "finalized head read",
     );
     if (!mayStillLand(anchor, finalized)) {
+      // Read again after the finalized head, so the best head holds every block the attempt
+      // could have landed in.
+      const again = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
+      if (judge(again, state, input.amount) === "paid") return true;
       state.inFlight = false;
       state.balanceBefore = null;
       state.anchor = null;
@@ -239,6 +247,7 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
       signedOrigin(input.key.address) as never,
       tx.decodedCall as never,
       5,
+      AT_BEST,
     ),
     input.tickTimeoutMs,
     "payment dry run",
@@ -256,8 +265,8 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
   // The newest attempt's anchor: an earlier one at this nonce lands no later than this one can.
   state.anchor = input.anchorNumber ?? state.anchor ?? null;
   await input.onBeforeSubmit?.();
-  const res = await bounded(
-    tx.signAndSubmit(input.key.signer, {
+  const res = await includedInBlock(
+    tx.signSubmitAndWatch(input.key.signer, {
       ...feeOptionsOf(input.token),
       ...input.signOptions,
       nonce: state.nonce,

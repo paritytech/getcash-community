@@ -9,6 +9,13 @@
 // swap, read to the unit, and the PAS left for the transaction fee's headroom is reaped with the
 // account. The redeem takes everything but its fee's margin and the CASH account's minimum.
 //
+// EVERY READ IS AT THE BEST HEAD, and a submit is settled as soon as a best block holds it, as the
+// top up does: each step acts on what the step before did, and waiting for finality between them
+// added a minute to every withdrawal. A best block that is dropped takes its transaction back
+// with it, and the balances say so: no PAS sends the swap again, and an XCM whose CASH is still on
+// the key once People's finalized head is past its mortality goes out again. The exit's and the
+// payment's own settling read the nonce the same way.
+//
 // ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
 // not ours, so its balance in the landing asset is measured against a baseline taken just before
 // the XCM leaves, and the arrival is what the Asset Hub dry run said would land, less the
@@ -34,6 +41,7 @@
 import type { PolkadotSigner } from "polkadot-api";
 import {
   describeDispatchError,
+  includedInBlock,
   MAX_PSM_REFUSALS,
   mintingOpen,
   ProgramRejectedError,
@@ -81,7 +89,7 @@ type TickCall = "swap" | "withdraw" | "redeem" | "pool-exit";
 
 /** Bound on a tick's chain reads and dry runs. */
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
-/** Bound on a submitted transaction's resolution. */
+/** Bound on a submitted transaction's inclusion in a best block. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
 /** Headroom below the quoted sale on Asset Hub before the program fails there, percent. The sale
  *  is quoted and dry-run on Asset Hub just before the XCM leaves, so the headroom only covers the
@@ -146,6 +154,10 @@ export interface WithdrawTickState {
   rejections: number;
   /** Set once the XCM landed on People; holds the run in await-arrival. */
   submitted: boolean;
+  /** The People block the XCM is anchored at: it can land only within PAY_MORTAL_PERIOD blocks of
+   *  it, so once People's finalized head is past that with the CASH still on the key, it never
+   *  will. Null before the first XCM. */
+  xcmAnchor: number | null;
   /** The destination's balance in the landing asset on Asset Hub, read just before the XCM, or
    *  on the PSM tier the redeem, left; what the arrival adds to. */
   destinationBefore: bigint | null;
@@ -170,8 +182,8 @@ export interface WithdrawTickState {
   exit: "psm" | "pool";
   /** Set before the redeem or the pool swap is broadcast; holds the run on its landing. */
   redeemSubmitted: boolean;
-  /** The nonce that exit is signed at, the key's on Asset Hub at the finalized head just before
-   *  it; null while none is in flight. A key past it signed the exit. */
+  /** The nonce that exit is signed at, the key's on Asset Hub at the best head just before it;
+   *  null while none is in flight. A key past it signed the exit. */
   redeemNonce: number | null;
   /** The block that exit is anchored at: it can land only within PAY_MORTAL_PERIOD blocks of it,
    *  so once the finalized chain is past that with the nonce unmoved, it never will. */
@@ -182,6 +194,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   attempts: 0,
   rejections: 0,
   submitted: false,
+  xcmAnchor: null,
   destinationBefore: null,
   expectedLanding: null,
   arrivalFloor: null,
@@ -224,17 +237,21 @@ export interface WithdrawTickInput {
   /** Extra options merged into every submit on People, after its signed extension and, for the
    *  swap, its CASH fee asset. */
   signOptions?: Record<string, unknown>;
+  /** The number of the People block `signOptions` anchors the submits at. */
+  peopleAnchorNumber: number;
+  /** The finalized head's number on People. */
+  readPeopleFinalizedNumber: () => Promise<number>;
   /** The best block on Asset Hub the exit is anchored at, read once just before it is signed. An
    *  anchor from People is not valid there, so the two chains' submits never share an option. */
   assetHubAnchor: () => Promise<{ hash: string; number: number }>;
   /** The finalized head's number on Asset Hub. */
   readFinalizedNumber: () => Promise<number>;
-  /** The key's CASH and PAS on People. */
+  /** The key's CASH and PAS on People at the best head. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The key's CASH and USDT on Asset Hub, and its nonce there, at the finalized head, for the
-   *  PSM tier. */
+  /** The key's CASH and USDT on Asset Hub, and its nonce there, at the best head, for the PSM
+   *  tier. */
   readKeyOnAssetHub: (hex: string) => Promise<{ cash: bigint; usdt: bigint; nonce: number }>;
-  /** The destination's balance in the landing asset on Asset Hub at the finalized head
+  /** The destination's balance in the landing asset on Asset Hub at the best head
    *  (`readDestinationBalance`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
@@ -250,6 +267,25 @@ export interface WithdrawTickOutcome {
   submitted: boolean;
   /** The PSM has no room for the redeem: nothing was submitted, and the next tick reads again. */
   waiting?: boolean;
+}
+
+/** Whether the XCM that left can no longer land: People's finalized head is past its mortality
+ *  and the key still holds CASH, which the XCM takes whole. The finalized head is read first, so
+ *  the best head read after it holds every block the XCM could have landed in. */
+async function xcmNeverLands(input: WithdrawTickInput, state: WithdrawTickState): Promise<boolean> {
+  if (state.xcmAnchor === null) return false;
+  const finalized = await bounded(
+    input.readPeopleFinalizedNumber(),
+    input.tickTimeoutMs,
+    "People finalized head read",
+  );
+  if (mayStillLand(state.xcmAnchor, finalized)) return false;
+  const { cash } = await bounded(
+    input.readKeyOnPeople(input.key.address),
+    input.tickTimeoutMs,
+    "tick balance read",
+  );
+  return cash > 0n;
 }
 
 /** Counts a rejection at inclusion, and gives the run up at MAX_REJECTIONS. */
@@ -274,6 +310,11 @@ export async function withdrawTickOnce(
     "tick balance read",
   );
 
+  if (state.submitted && balances.cash > 0n && (await xcmNeverLands(input, state))) {
+    // The XCM's block was dropped and no other took it before its mortality ran out. The CASH and
+    // the PAS are still on the key, so it is sized and sent again below.
+    state.submitted = false;
+  }
   if (state.submitted) {
     if (input.sale.tier === "psm") return exitFromAssetHub(input, state, balances, input.sale);
     // The XCM left People; the funds show on the destination. Without the baseline the arrival
@@ -297,10 +338,16 @@ export async function withdrawTickOnce(
   }
 
   if (balances.cash === 0n) {
-    // Only the XCM empties the key of both assets. Seen CASH, a submit, and now nothing: the
+    // Only the XCM empties the key of both assets. Seen CASH, an XCM signed, and now nothing: the
     // XCM landed and its answer was lost. The baseline taken before the submit still measures
-    // the arrival.
-    if (balances.pas === 0n && state.fundsSeenAt !== null && state.attempts > 0) {
+    // the arrival. With no XCM signed, an empty key is a best block that dropped the payment, and
+    // the run waits for it to come back.
+    if (
+      balances.pas === 0n &&
+      state.fundsSeenAt !== null &&
+      state.attempts > 0 &&
+      state.xcmAnchor !== null
+    ) {
       state.submitted = true;
       return { step: "await-arrival", balances, submitted: false };
     }
@@ -310,9 +357,11 @@ export async function withdrawTickOnce(
 
   // The swap pays in CASH; the XCM pays in PAS. Both pass People's signed extension.
   const swapOptions = { ...PEOPLE_TX_OPTIONS, ...input.signOptions };
+  // The XCM is mortal by a period of its own, so a dropped one is known dead (`xcmNeverLands`).
   const xcmOptions = {
     customSignedExtensions: PEOPLE_TX_OPTIONS.customSignedExtensions,
     ...input.signOptions,
+    mortality: { mortal: true, period: PAY_MORTAL_PERIOD },
   };
 
   // No PAS on the key yet: buy the fees' PAS first. PAS on the key: the swap is done, size and
@@ -357,11 +406,12 @@ export async function withdrawTickOnce(
         state.expectedLanding = sizing.landed;
         state.arrivalFloor = arrivalFloor(sizing, input.slippagePct);
       }
+      state.xcmAnchor = input.peopleAnchorNumber;
       await input.onBeforeSubmit?.("withdraw");
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
       state.attempts += 1;
-      const res = await bounded(
-        tx.signAndSubmit(key.signer, xcmOptions as never),
+      const res = await includedInBlock(
+        tx.signSubmitAndWatch(key.signer, xcmOptions as never),
         input.submitTimeoutMs,
         "withdrawal submit",
       );
@@ -399,8 +449,8 @@ export async function withdrawTickOnce(
   );
   await input.onBeforeSubmit?.("swap");
   state.attempts += 1;
-  const res = await bounded(
-    buildSwap(input.peopleApi, swap).signAndSubmit(key.signer, swapOptions as never),
+  const res = await includedInBlock(
+    buildSwap(input.peopleApi, swap).signSubmitAndWatch(key.signer, swapOptions as never),
     input.submitTimeoutMs,
     "swap submit",
   );
@@ -421,7 +471,7 @@ function exitNeverLands(state: WithdrawTickState): void {
  * What the chain says of an exit that was broadcast, whatever became of its answer. A key past
  * the exit's nonce signed it, and the landing says whether it paid: `done` once the landing grew
  * by what the exit pays; otherwise the exit was refused at inclusion, since the nonce and the
- * landing are read at the same finalized head, and null frees the run to size afresh. A key at
+ * landing are read at the same best head, and null frees the run to size afresh. A key at
  * that nonce has not signed it: the exit may land until its mortality is out, and nothing is
  * sent meanwhile; past it unlanded, it never will, and null again. A record from before the
  * nonce was kept is judged by the landing alone, and never sent again.
@@ -442,11 +492,17 @@ async function settleExit(
       input.tickTimeoutMs,
       "finalized head read",
     );
-    if (state.redeemAnchor !== null && !mayStillLand(state.redeemAnchor, finalized)) {
-      exitNeverLands(state);
-      return null;
-    }
-    return "redeem";
+    if (state.redeemAnchor === null || mayStillLand(state.redeemAnchor, finalized)) return "redeem";
+    // Read again after the finalized head, so the best head holds every block the exit could have
+    // landed in. A nonce that moved since is settled on the next tick.
+    const again = await bounded(
+      input.readKeyOnAssetHub(input.key.publicKeyHex),
+      input.tickTimeoutMs,
+      "key read on Asset Hub",
+    );
+    if (again.nonce !== pinned) return "redeem";
+    exitNeverLands(state);
+    return null;
   }
   if (state.destinationBefore === null || state.expectedLanding === null) return "redeem";
   const landed = (await readLanding()) - state.destinationBefore >= state.expectedLanding;
@@ -607,8 +663,8 @@ async function exitFromAssetHub(
   state.redeemSubmitted = true;
   await input.onBeforeSubmit?.(call);
   state.attempts += 1;
-  const res = await bounded(
-    exit.signAndSubmit(key.signer, {
+  const res = await includedInBlock(
+    exit.signSubmitAndWatch(key.signer, {
       ...ASSET_HUB_CASH_TX_OPTIONS,
       at: anchor.hash,
       nonce: state.redeemNonce,

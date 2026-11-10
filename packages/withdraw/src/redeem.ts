@@ -23,8 +23,8 @@ import {
   withFeeMargin,
   type PsmRoute,
 } from "@getsome/funding";
-import { type AssetHubApi, quoted, SALE_READ_AT } from "./fees";
-import { ASSET_HUB_CASH_TX_OPTIONS } from "./paseo";
+import { type AssetHubApi, quoted } from "./fees";
+import { ASSET_HUB_CASH_TX_OPTIONS, AT_BEST } from "./paseo";
 import { psmRedeemOut } from "./program";
 import { buildSweep } from "./sweep";
 
@@ -177,7 +177,7 @@ export async function dryRunRedeem(
     signedOrigin(keyAddress) as never,
     call.decodedCall as never,
     5,
-    SALE_READ_AT,
+    AT_BEST,
   );
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the exit");
   if (!dr.value.execution_result.success) {

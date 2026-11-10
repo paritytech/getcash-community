@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
+import { bestBlockWatch } from "@getsome/testing";
 import { freshSweepState, sweepOnce, type SweepInput } from "./sweep";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
@@ -17,7 +18,7 @@ function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<Sweep
   const submits: Submit[] = [];
   const events: string[] = [];
   const transferAll = (pallet: string) => (args: unknown) => ({
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
+    signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       submits.push({ pallet, args, options });
       events.push("submit");
       const outcome = outcomes.shift() ?? { ok: true };
@@ -31,7 +32,7 @@ function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<Sweep
               value: { type: pallet, value: { type: outcome.error } },
             },
           };
-    },
+    }),
   });
   const api = {
     tx: {

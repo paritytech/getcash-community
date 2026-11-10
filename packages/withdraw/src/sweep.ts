@@ -11,7 +11,7 @@
 
 import type { PolkadotSigner } from "polkadot-api";
 import type { TokenSpec } from "@getsome/core";
-import { describeDispatchError } from "@getsome/funding";
+import { describeDispatchError, includedInBlock } from "@getsome/funding";
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
@@ -38,7 +38,7 @@ export interface SweepInput {
   /** Bound on the submit's resolution. */
   submitTimeoutMs: number;
   signOptions?: Record<string, unknown>;
-  /** The key's balance in `token` on Asset Hub. */
+  /** The key's balance in `token` on Asset Hub at the best head. */
   readKeyOnAssetHub: () => Promise<bigint>;
   /** Runs before the broadcast, so the driver can persist the attempt about to be made. */
   onBeforeSubmit?: () => Promise<void> | void;
@@ -69,8 +69,8 @@ export async function sweepOnce(input: SweepInput, state: SweepState): Promise<v
   // lost, or whose worker dies mid flight, is still counted and the empty key reads as swept.
   state.attempts += 1;
   await input.onBeforeSubmit?.();
-  const res = await bounded(
-    buildSweep(input.assetHubApi, input.to, input.token).signAndSubmit(
+  const res = await includedInBlock(
+    buildSweep(input.assetHubApi, input.to, input.token).signSubmitAndWatch(
       input.key.signer,
       input.signOptions as never,
     ),

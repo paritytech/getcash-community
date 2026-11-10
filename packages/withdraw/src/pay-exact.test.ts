@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
+import { bestBlockWatch } from "@getsome/testing";
 import {
   exactPaymentFloor,
   exactPaymentLanded,
@@ -34,7 +35,7 @@ function world(
   const transferKeepAlive = (pallet: string) => (args: unknown) => ({
     decodedCall: { transfer: args },
     getEstimatedFees: async () => 1_000_000n,
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
+    signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       submits.push({ pallet, args, options });
       events.push("submit");
       const outcome = outcomes.shift() ?? { ok: true };
@@ -48,7 +49,7 @@ function world(
               value: { type: pallet, value: { type: outcome.error } },
             },
           };
-    },
+    }),
   });
   const api = {
     tx: {
@@ -179,10 +180,14 @@ describe("the exact payment", () => {
     expect(submits).toEqual([]);
   });
 
-  it("stops when the key is behind the payment's nonce", async () => {
+  it("waits, sending nothing, while the key is behind the payment's nonce", async () => {
     const state = { ...freshExactPayState(), nonce: 2 };
-    const { input } = world([{ free: 21_000_000_000n, nonce: 1 }]);
-    await expect(payExactOnce(input, state)).rejects.toBeInstanceOf(PaymentUnresolvedError);
+    const { input, submits } = world([{ free: 21_000_000_000n, nonce: 1 }]);
+    const error = await payExactOnce(input, state).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PaymentUnresolvedError);
+    expect(error).toMatchObject({ message: expect.stringMatching(/behind/) });
+    expect(submits).toEqual([]);
   });
 
   it("sends nothing when the dry run says the transfer would fail", async () => {
@@ -304,6 +309,22 @@ describe("an earlier attempt, read from the chain alone", () => {
     const unanchored = inFlight();
     await exactPaymentLanded(input, unanchored);
     expect(unanchored.inFlight).toBe(true);
+  });
+
+  it("reads the key again after the finalized head before it calls an attempt dead", async () => {
+    // The first read is a best block on a fork without the payment; finality then went past its
+    // mortality on the chain that holds it.
+    const state = { ...inFlight(), anchor: 1_000 };
+    const { input } = world(
+      [
+        { free: 21_000_000_000n, nonce: 0 },
+        { free: 999_000_000n, nonce: 1 },
+      ],
+      [],
+      { overrides: { readFinalizedNumber: async () => 1_065 } },
+    );
+    expect(await exactPaymentLanded(input, state)).toBe(true);
+    expect(state).toMatchObject({ inFlight: true, anchor: 1_000 });
   });
 
   it("stops where the payment itself would", async () => {

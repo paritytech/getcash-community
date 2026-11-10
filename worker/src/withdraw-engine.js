@@ -9,6 +9,7 @@ import {
 import { MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  AT_BEST,
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
   ChannelMismatchError,
@@ -35,15 +36,7 @@ import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { CLAIM_UNIT, fundingStatus, startFunding } from "./engine.js";
 import { readParams } from "./params.js";
 import { exactPaymentOut, PAY_TIMEOUT_MS, payRail, payRailExact, railFor } from "./providers.js";
-import {
-  anchorFor,
-  asBig,
-  bounded,
-  connectChain,
-  createJobStore,
-  keypairFor,
-  signOptionsFor,
-} from "./shared.js";
+import { anchorFor, asBig, bounded, connectChain, createJobStore, keypairFor } from "./shared.js";
 
 // The withdrawal engine: the only driver of withdrawTickOnce and railTickOnce, one tick per live
 // job per pass. The message leg moves the CASH to Asset Hub as the asset the hand-off's sale
@@ -793,10 +786,11 @@ async function keyHoldsAnything(record, held, token, cash) {
   if (held >= residueReturnFloor(token) || cash >= residueReturnFloor(TOKENS.CASH)) return true;
   const people = await connectChain(record.peopleGenesis, "people");
   try {
+    // At the best head, as the tick that saw the CASH read it.
     const onPeople = await bounded(
       people
         .getTypedApi(paseo_people_next)
-        .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress),
+        .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress, AT_BEST),
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
       "key read on people",
     );
@@ -882,6 +876,18 @@ async function sendHome(record, kind) {
           record.residue = { amount: "0", returning: false, stuck: true };
           return;
         }
+      }
+      // The way home is sized from the finalized head, where a payment a best block holds has not
+      // left the key yet. It starts once both heads agree on what the key holds.
+      const settled = await bounded(
+        readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId, {
+          at: "finalized",
+        }),
+        DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        "residue read (finalized)",
+      );
+      if (settled !== held) {
+        throw new Error("waiting for the payment to be final before the residue goes home");
       }
       if (held < residueReturnFloor(token)) {
         record.residue = { amount: held.toString(), returning: false };
@@ -1115,6 +1121,7 @@ async function tickRecord(record, nowMs) {
     state.attempts = record.state.attempts ?? 0;
     state.rejections = record.state.rejections ?? 0;
     state.submitted = !!record.state.submitted;
+    state.xcmAnchor = record.state.xcmAnchor ?? null;
     state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
     state.arrivalFloor = asBig(record.state.arrivalFloor, null);
@@ -1133,6 +1140,7 @@ async function tickRecord(record, nowMs) {
         attempts: state.attempts,
         rejections: state.rejections,
         submitted: state.submitted,
+        xcmAnchor: state.xcmAnchor,
         destinationBefore:
           state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
@@ -1148,6 +1156,9 @@ async function tickRecord(record, nowMs) {
       };
     };
 
+    // One anchor on People per tick serves every submit there; the exit on Asset Hub takes its own
+    // as it is signed, and keeps its number.
+    const peopleAnchor = await anchorFor(peopleClient);
     let outcome;
     try {
       outcome = await withdrawTickOnce(
@@ -1181,15 +1192,15 @@ async function tickRecord(record, nowMs) {
               : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-          // One anchor on People per tick serves every submit there; the exit on Asset Hub takes
-          // its own as it is signed, and keeps its number.
-          signOptions: await signOptionsFor(peopleClient),
+          signOptions: { at: peopleAnchor.hash },
+          peopleAnchorNumber: peopleAnchor.number,
+          readPeopleFinalizedNumber: async () => (await peopleClient.getFinalizedBlock()).number,
           assetHubAnchor: () => anchorFor(ahClient),
           readFinalizedNumber: async () => (await ahClient.getFinalizedBlock()).number,
           readKeyOnPeople: async (ss58) => {
             const [asset, native] = await Promise.all([
-              peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58),
-              peopleApi.query.System.Account.getValue(ss58),
+              peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58, AT_BEST),
+              peopleApi.query.System.Account.getValue(ss58, AT_BEST),
             ]);
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },

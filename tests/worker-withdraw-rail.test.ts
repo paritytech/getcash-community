@@ -41,11 +41,12 @@ vi.mock("../worker/src/providers.js", () => ({
 // a transfer that records what it was asked to sign.
 vi.mock("../worker/src/shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
+  const { bestBlockWatch } = await import("@getsome/testing");
   const transferAll = (pallet: string) => (args: unknown) => ({
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
+    signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       mocks.submits.push({ pallet, args, options });
       return { ok: true, txHash: "0x1", block: { number: 7 } };
-    },
+    }),
   });
   return {
     ...actual,

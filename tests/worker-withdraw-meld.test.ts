@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   chooseRoute: vi.fn(),
   submits: [] as { args: unknown; options: unknown }[],
   keyFree: 0n,
+  /** The key's native at Asset Hub's finalized head, when it lags the best one. */
+  keyFreeFinalized: null as bigint | null,
   keyCash: 0n,
   /** The key's holding of the sale's token on Asset Hub, when the sale landed a stable. */
   keyToken: 0n,
@@ -79,6 +81,7 @@ vi.mock("@getsome/funding", async (importOriginal) => ({
 // holding under the CASH location. The real hand that pays submits through the same client.
 vi.mock("../worker/src/shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
+  const { bestBlockWatch } = await import("@getsome/testing");
   return {
     ...actual,
     keypairFor: async () => ({ address: "5Key", signer: {} }),
@@ -89,10 +92,10 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
           Assets: {
             transfer_keep_alive: (args: unknown) => ({
               decodedCall: { transfer: args },
-              signAndSubmit: async (_signer: unknown, options: unknown) => {
+              signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
                 mocks.submits.push({ args, options });
                 return { ok: true, txHash: "0xpaid", block: { number: 2 } };
-              },
+              }),
             }),
           },
         },
@@ -115,10 +118,14 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
           },
           System: {
             Account: {
-              getValue: () =>
-                mocks.keyReadHangs
-                  ? new Promise(() => {})
-                  : Promise.resolve({ data: { free: mocks.keyFree }, nonce: mocks.keyNonce }),
+              getValue: (_who: unknown, options?: { at?: string }) => {
+                if (mocks.keyReadHangs) return new Promise(() => {});
+                const lagging = options?.at === "finalized" ? mocks.keyFreeFinalized : null;
+                return Promise.resolve({
+                  data: { free: lagging ?? mocks.keyFree },
+                  nonce: mocks.keyNonce,
+                });
+              },
             },
           },
         },
@@ -212,6 +219,7 @@ function landedJob(): StoredJob {
 beforeEach(() => {
   mocks.fundingStatus.mockReset();
   mocks.fundingStatus.mockResolvedValue({ phase: "convert", claim: null });
+  mocks.keyFreeFinalized = null;
 });
 
 async function engineWith(jobs: Record<string, StoredJob>): Promise<Engine> {
@@ -328,6 +336,22 @@ describe("the worker's side of a fiat sale", () => {
     // Once only: the next pass follows the provider and starts nothing more.
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the residue's way home while the finalized head still shows the key before it paid", async () => {
+    // The payment is in a best block; the funding engine sizes the way home from the finalized
+    // head, which still holds what the key paid out.
+    mocks.keyFreeFinalized = 27_000_000_000n;
+    const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg.paid).toBe(true);
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toBeUndefined();
+    // Final: both heads agree, and the way home starts with what is left.
+    mocks.keyFreeFinalized = null;
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue).toMatchObject({ amount: "7000000000", returning: true });
   });
 
   it("keeps a residue too small to be worth the way back", async () => {
@@ -800,6 +824,27 @@ describe("a sale's way to the provider and back", () => {
     await engine.tickAllWithdraw();
     expect(seen).toEqual([17_000_000_000n]);
     expect(storedJob().state.arrivalFloor).toBe("18000000000");
+  });
+
+  it("anchors the message leg on People's best block, and keeps the block its XCM is anchored at for the next pass", async () => {
+    const seen: unknown[] = [];
+    mocks.withdrawTickOnce.mockImplementation(
+      async (_input: unknown, state: { xcmAnchor: number | null }) => {
+        seen.push(state.xcmAnchor);
+        state.xcmAnchor = 77;
+        return { step: "convert" };
+      },
+    );
+    const engine = await engineWith({ "s-1": unsold(NOW + 3_600_000) });
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce.mock.calls[0]![0]).toMatchObject({
+      signOptions: { at: "0xbest" },
+      peopleAnchorNumber: 1,
+      readPeopleFinalizedNumber: expect.any(Function),
+    });
+    expect(storedJob().state.xcmAnchor).toBe(77);
+    await engine.tickAllWithdraw();
+    expect(seen).toEqual([null, 77]);
   });
 
   it("does not call a sale unfundable while an earlier submit may still land", async () => {

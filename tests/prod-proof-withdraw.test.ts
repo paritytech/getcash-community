@@ -22,6 +22,7 @@ import {
 } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  AT_BEST,
   readAssetHubAccount,
   readDestinationBalance,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
@@ -73,11 +74,12 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
+      // At the best head, as the worker reads the key.
       const readCash = async (ss58: string) =>
-        (await peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, ss58))?.balance ??
-        0n;
+        (await peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, ss58, AT_BEST))
+          ?.balance ?? 0n;
       const readPas = async (ss58: string) =>
-        (await peopleApi.query.System.Account.getValue(ss58))?.data?.free ?? 0n;
+        (await peopleApi.query.System.Account.getValue(ss58, AT_BEST))?.data?.free ?? 0n;
       const cashOnKey = await readCash(key.address);
       const route =
         LANDING === "native"
@@ -107,6 +109,9 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
         if (Date.now() > deadline) throw new Error(`no completion within ${RUN_TIMEOUT_MS}ms`);
         let submitted = false;
         try {
+          // One anchor on People per tick, as the worker takes it.
+          const [peopleBest] = await peC.getBestBlocks();
+          if (peopleBest === undefined) throw new Error("no best block on People");
           const outcome = await withdrawTickOnce(
             {
               peopleApi,
@@ -144,6 +149,9 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
                 return { hash: best.hash, number: best.number };
               },
               readFinalizedNumber: async () => (await ahC.getFinalizedBlock()).number,
+              signOptions: { at: peopleBest.hash },
+              peopleAnchorNumber: peopleBest.number,
+              readPeopleFinalizedNumber: async () => (await peC.getFinalizedBlock()).number,
               now: Date.now,
               onTx: (i) => console.log(`  TX ${i.call} block=${i.block} hash=${i.txHash}`),
               onTransientError: (e) =>
