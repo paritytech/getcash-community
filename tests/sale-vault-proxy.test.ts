@@ -119,7 +119,7 @@ describe("saleVaultProxyNote", () => {
     const held = { ...PAID, status: "held", balance: "50000000", returnable: true };
     for (const reason of ["vault-changed", "returns-paused", "route-refused", "not-swappable"]) {
       expect(saleVaultProxyNote({ ...held, blockedReason: reason }, usdc, when)).toBe(
-        "Sending your funds back to your account is on hold for now. If it stays on hold, they move to your own Arbitrum address at 1800086400000.",
+        "Sending your funds back to your account is on hold for now. If it stays on hold, they move to your own Arbitrum address at 1800086400000. This sale could not complete in time, so a new sale will be needed once your funds are back, with a small network fee of roughly 1% or more depending on the amount. Returning sellers can usually reuse their identity verification.",
       );
     }
     expect(
@@ -131,7 +131,9 @@ describe("saleVaultProxyNote", () => {
     ).toBe("Arbitrum could not be reached, so sending your funds back waits.");
     expect(
       saleVaultProxyNote({ ...held, blockedReason: "returns-paused", releaseAt: null }, usdc, when),
-    ).toBe("Sending your funds back to your account is on hold for now.");
+    ).toBe(
+      "Sending your funds back to your account is on hold for now. This sale could not complete in time, so a new sale will be needed once your funds are back, with a small network fee of roughly 1% or more depending on the amount. Returning sellers can usually reuse their identity verification.",
+    );
     // A due release runs while the return is held, so the funds go to the seller's own address
     for (const reason of ["returns-paused", "vault-changed", "chain-unavailable"]) {
       expect(
