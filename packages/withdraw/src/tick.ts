@@ -107,6 +107,11 @@ export const MAX_REJECTIONS = 3;
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
 
+/** The most a sale can land: the dry run's landing plus the slippage. The destination is not
+ *  ours, so a gain past it also holds a deposit from elsewhere. */
+export const landingCeiling = (landed: bigint, slippagePct: number): bigint =>
+  landed + (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
+
 /** The least the destination must gain for a sized XCM to count as arrived: its landing less the
  *  slippage, or the floor the program holds the sale to when that is lower. A program that runs
  *  lands at least its floor and one that fails lands nothing, so a sale that went through is
@@ -168,6 +173,9 @@ export interface WithdrawTickState {
   /** The arrival was seen. Holds the done while the blocks stand, whatever the destination does
    *  with the funds since; a block that is replaced clears it. */
   arrived: boolean;
+  /** What the destination received, in the landing asset, as read when the arrival was seen:
+   *  what the user's success screen shows. Null until then. */
+  received: bigint | null;
   /** The destination's balance in the landing asset on Asset Hub, read just before the XCM, or
    *  on the PSM tier the redeem, left; what the arrival adds to. */
   destinationBefore: bigint | null;
@@ -217,6 +225,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   xcmBlock: null,
   xcmHash: null,
   arrived: false,
+  received: null,
   destinationBefore: null,
   expectedLanding: null,
   arrivalFloor: null,
@@ -356,6 +365,7 @@ async function settleXcm(input: WithdrawTickInput, state: WithdrawTickState): Pr
   letGo();
   state.submitted = false;
   state.arrived = false;
+  state.received = null;
 }
 
 /** Counts a rejection at inclusion, and gives the run up at MAX_REJECTIONS. */
@@ -401,11 +411,17 @@ export async function withdrawTickOnce(
     // People; and the destination gained at least what a successful sale can land. Either alone
     // is not an arrival.
     const cashGone = balances.cash === 0n;
+    const gained = destination - state.destinationBefore;
     const landed =
-      destination - state.destinationBefore >=
-      (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
+      gained >= (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
     if (!cashGone || !landed) return { step: "await-arrival", balances, submitted: false };
+    // What the sale delivered at the market's price, not what its dry run expected. A gain past
+    // what the sale can land holds someone else's deposit too, so the dry run's figure stands in.
     state.arrived = true;
+    state.received =
+      gained > landingCeiling(state.expectedLanding, input.slippagePct)
+        ? state.expectedLanding
+        : gained;
     return { step: "done", balances, submitted: false };
   }
 
@@ -486,6 +502,7 @@ export async function withdrawTickOnce(
       }
       state.xcmSigned = true;
       state.arrived = false;
+      state.received = null;
       await input.onBeforeSubmit?.("withdraw");
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
       state.attempts += 1;
@@ -600,6 +617,27 @@ async function settleExitBlock(input: WithdrawTickInput, state: WithdrawTickStat
   }
   letGo();
   state.arrived = false;
+  state.received = null;
+}
+
+/**
+ * What an exit that ran delivered. The PSM pays its net at a fixed rate, so the redeem's net is
+ * exact. The pool pays the market's price, at least its floor: what the landing gained since the
+ * exit was sized. The destination is not ours, so where the gain is under the floor it moved
+ * some on, and where it is past the quote plus the slippage someone else paid in too; the floor
+ * stands in for either.
+ */
+async function deliveredByExit(
+  state: WithdrawTickState,
+  readLanding: () => Promise<bigint>,
+  slippagePct: number,
+): Promise<bigint | null> {
+  const net = state.expectedLanding;
+  if (state.exit === "psm" || net === null || state.destinationBefore === null) return net;
+  const gained = (await readLanding()) - state.destinationBefore;
+  // The floor is the quote less the slippage (`lessHeadroom`): the quote back from it.
+  const quote = (net * 10_000n) / BigInt(Math.round((100 - slippagePct) * 100));
+  return gained >= net && gained <= landingCeiling(quote, slippagePct) ? gained : net;
 }
 
 /** An exit that ran with no block known for it is watched from the best block, and settled at
@@ -697,10 +735,12 @@ async function exitFromAssetHub(
   if (state.redeemSubmitted) {
     const settled = await settleExit(input, state, onKey);
     if (settled === "done") {
-      state.arrived = true;
+      state.received = await deliveredByExit(state, readLanding, input.slippagePct);
       // Its answer lost, or its block given up on: no block is known, so it is watched from the
       // best block, as a lost XCM is.
       if (state.redeemBlock === null) await watchExitFromBest(input, state);
+      // Last, so a read that fails above leaves the exit to be settled again on the next tick.
+      state.arrived = true;
     }
     if (settled !== null) return { step: settled, balances, submitted: false };
   }

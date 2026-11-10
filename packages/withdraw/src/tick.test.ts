@@ -20,6 +20,7 @@ import { cashInFor } from "./pool";
 import { psmRedeemOut } from "./program";
 import {
   freshWithdrawTickState,
+  landingCeiling,
   landingFloor,
   MAX_REJECTIONS,
   withdrawTickOnce,
@@ -734,6 +735,8 @@ describe("withdrawTickOnce", () => {
       // The baseline is what the destination held before the XCM; the landing is the dry run's.
       destinationBefore: DESTINATION_PAS,
       expectedLanding: world.state.lastDryRunLanded,
+      // What the destination gained, here all the dry run said.
+      received: world.state.lastDryRunLanded,
     });
     expect(run.state.fundsSeenAt).toBe(2_000);
     expect(run.transients).toEqual([]);
@@ -830,6 +833,7 @@ describe("withdrawTickOnce", () => {
       psmRefusals: 0,
       destinationBefore: DESTINATION_PAS,
       expectedLanding: net,
+      received: net,
     });
     // The destination gained the net exactly; the key keeps its CASH account alive with the
     // minimum and the fee margin's unspent part.
@@ -959,10 +963,64 @@ describe("withdrawTickOnce", () => {
       keep_alive: false,
     });
     expect(swap.options).toEqual(exitOptions(AH_ANCHOR, 0));
-    // Held to the quote less the headroom; the destination gained the quote itself.
-    expect(state).toMatchObject({ expectedLanding: minOut, redeemSubmitted: true });
+    // Held to the quote less the headroom; the destination gained the quote itself, and that is
+    // what it received, not the floor.
+    expect(state).toMatchObject({
+      expectedLanding: minOut,
+      received: quote,
+      redeemSubmitted: true,
+    });
     expect(world.state.destinationPas).toBe(DESTINATION_PAS + quote);
     expect(world.state.psmDebt).toBe(0n);
+  });
+
+  it("takes the pool exit's floor as what it delivered when the destination moved the stable on before it was read", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const { cashIn } = sizedExit(world);
+    const minOut = (((cashIn * AH_RATE) / STABLE_PLANCK) * 95n) / 100n;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    world.state.destinationPas = 0n;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    // The exit cannot have paid less than its floor, so the floor stands in for the lost reading.
+    expect(state).toMatchObject({ arrived: true, expectedLanding: minOut, received: minOut });
+  });
+
+  it("takes the pool exit's floor as what it delivered when someone else paid the destination in with it", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const quote = (sizedExit(world).cashIn * AH_RATE) / STABLE_PLANCK;
+    const minOut = (quote * 95n) / 100n;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // The exit paid the quote, and a payment from elsewhere took the gain past it plus 5%.
+    world.state.destinationPas += landingCeiling(quote, 5) - quote + 2n;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, received: minOut });
+  });
+
+  it("settles the exit again when the read of what it delivered fails, so the done always carries the figure", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const quote = (sizedExit(world).cashIn * AH_RATE) / STABLE_PLANCK;
+    expect((await drive(world, 1, state, PSM_SALE)).steps).toEqual(["redeem"]);
+    const failing = drive(world, 1, state, PSM_SALE, DESTINATION_HEX, {
+      readDestinationOnAssetHub: async () => {
+        throw new Error("destination balance read timed out");
+      },
+    });
+    await expect(failing).rejects.toThrow(/timed out/);
+    expect(state).toMatchObject({ arrived: false, received: null });
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, received: quote });
   });
 
   it("finishes a pool exit whose answer was lost by the key's CASH, and watches it until it is final", async () => {
@@ -1138,7 +1196,7 @@ describe("withdrawTickOnce", () => {
       internal_amount: cashIn,
       max_fee: PSM_FEE_RATE,
     });
-    expect(state).toMatchObject({ destinationBefore: 0n, expectedLanding: net });
+    expect(state).toMatchObject({ destinationBefore: 0n, expectedLanding: net, received: net });
     expect(world.state.keyUsdtAh).toBe(net);
     expect(world.state.destinationPas).toBe(DESTINATION_PAS);
   });
@@ -1181,6 +1239,26 @@ describe("withdrawTickOnce", () => {
     expect(world.state.submits).toEqual([]);
   });
 
+  it("shows what arrived when the sale beat its dry run within the slippage, and the dry run's figure when someone else paid the destination in too", async () => {
+    const beat = scriptedWorld();
+    const beatState = freshWithdrawTickState();
+    await drive(beat, 2, beatState);
+    const landed = beat.state.lastDryRunLanded;
+    const ceiling = landingCeiling(landed, 5);
+    // The market moved for the user, within the slippage: what arrived stands.
+    beat.state.destinationPas += ceiling - landed;
+    expect((await drive(beat, 1, beatState)).steps).toEqual(["done"]);
+    expect(beatState).toMatchObject({ expectedLanding: landed, received: ceiling });
+
+    const paidIn = scriptedWorld();
+    const paidInState = freshWithdrawTickState();
+    await drive(paidIn, 2, paidInState);
+    // A payment from elsewhere lands with the sale.
+    paidIn.state.destinationPas += ceiling - landed + 1n;
+    expect((await drive(paidIn, 1, paidInState)).steps).toEqual(["done"]);
+    expect(paidInState.received).toBe(landed);
+  });
+
   it("keeps waiting while the destination gained less than the landing floor", async () => {
     const world = scriptedWorld({ landShort: 20_000_000_000n });
     const run = await drive(world, 4);
@@ -1204,6 +1282,8 @@ describe("withdrawTickOnce", () => {
     const run = await drive(atFloor, 3, freshWithdrawTickState(), route);
     expect(run.steps).toEqual(["swap", "convert", "done"]);
     expect(run.state.arrivalFloor).toBe(minOut);
+    // What arrived, not what the dry run said would.
+    expect(run.state).toMatchObject({ expectedLanding: landed, received: minOut });
 
     const underFloor = scriptedWorld({ landShort: landed - minOut + 1n });
     const waiting = await drive(underFloor, 3, freshWithdrawTickState(), route);
@@ -1343,8 +1423,13 @@ describe("withdrawTickOnce", () => {
     });
     world.state.replacedPeople.add(XCM_BLOCK);
     world.state.finalizedPeople = XCM_BLOCK + 1;
-    const again = await drive(world, 3, state);
-    expect(again.steps).toEqual(["convert", "done"]);
+    const resent = await drive(world, 1, state);
+    expect(resent.steps).toEqual(["convert"]);
+    // What the replaced block delivered is gone with it.
+    expect(state).toMatchObject({ arrived: false, received: null });
+    const again = await drive(world, 2, state);
+    expect(again.steps).toEqual(["done"]);
+    expect(state.received).toBe(world.state.lastDryRunLanded);
     expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "execute"]);
     expect(state).toMatchObject({ arrived: true, xcmBlock: xcmBlockOf(1) });
   });

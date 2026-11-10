@@ -127,7 +127,7 @@ const saveJobs = () => store.save();
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, xcmSigned?, xcmBlock?, xcmHash?, arrived?,
- *            destinationBefore, expectedLanding, arrivalFloor, fundsSeenAt, psmRefusals,
+ *            received?, destinationBefore, expectedLanding, arrivalFloor, fundsSeenAt, psmRefusals,
  *            waitingSince, exit?, redeemSubmitted?, redeemNonce?, redeemAnchor?, redeemCashIn?,
  *            redeemBlock?, redeemHash?, workedMs },
  *                                            // the three amounts as decimal strings or null;
@@ -143,7 +143,8 @@ const saveJobs = () => store.save();
  *                                            // best block the XCM and the exit were seen in,
  *                                            // null once the finalized chain settled it;
  *                                            // arrived: the landing was seen and those blocks
- *                                            // stand
+ *                                            // stand; received: what the destination got then,
+ *                                            // as a decimal string
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at;
@@ -565,6 +566,10 @@ function describeWithdraw(record) {
     psmRefusals: record.state?.psmRefusals ?? 0,
     tier: record.tier,
     exit: exitOf(record.state),
+    // What the destination received, base units of the landing asset, read when the arrival was
+    // seen. On a direct withdrawal that is the user's; a provider's lands on the key, and the
+    // provider pays out its own figure.
+    received: record.state?.received ?? null,
     redeemSubmitted: record.state?.redeemSubmitted === true,
     residue: record.residue ?? null,
   };
@@ -1219,6 +1224,7 @@ async function tickRecord(record, nowMs) {
     state.xcmBlock = record.state.xcmBlock ?? null;
     state.xcmHash = record.state.xcmHash ?? null;
     state.arrived = record.state.arrived === true;
+    state.received = asBig(record.state.received, null);
     state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
     state.arrivalFloor = asBig(record.state.arrivalFloor, null);
@@ -1244,6 +1250,7 @@ async function tickRecord(record, nowMs) {
         xcmBlock: state.xcmBlock,
         xcmHash: state.xcmHash,
         arrived: state.arrived,
+        received: state.received === null ? null : String(state.received),
         destinationBefore:
           state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),

@@ -300,12 +300,13 @@ describe("the worker's redeem step", () => {
     hold(USDT_ID, LANDING_SS58, 9_946_439n);
     await engine.tickAllWithdraw();
     expect(mocks.submits).toHaveLength(1);
-    // Done at the best block, and watched on until the exit's block is final.
+    // Done at the best block, and watched on until the exit's block is final. What arrived is
+    // kept on the job, where the page reads it for the success screen.
     expect(storedJob()).toMatchObject({
       phase: "done",
       landed: true,
       done: true,
-      state: { arrived: true, redeemBlock: 7 },
+      state: { arrived: true, redeemBlock: 7, received: "9946439" },
     });
     expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 1 });
     expect(storedJob().state.redeemBlock).toBe(7);
@@ -315,6 +316,10 @@ describe("the worker's redeem step", () => {
     expect(storedJob()).toMatchObject({ done: true, state: { arrived: true, redeemBlock: null } });
     expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 0 });
     expect(mocks.submits).toHaveLength(1);
+    // The page is told what the destination received: the redeem's net.
+    expect(await engine.withdrawStatus({ sessionId: "s-1" })).toMatchObject({
+      received: "9946439",
+    });
   });
 
   it("takes the done back when the exit's block was replaced and nothing holds the exit, and redeems again at the same nonce once its mortality is out", async () => {
