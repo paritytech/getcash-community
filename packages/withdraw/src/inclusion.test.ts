@@ -39,11 +39,11 @@ describe("a block a transaction was seen in", () => {
     expect(await settleBlock(chain(501, "0xother").reads, SEEN, 1_000)).toBe("dropped");
   });
 
-  it("is taken as final when the chain no longer names a block that old", async () => {
+  it("is unknown when the chain no longer names a block that old", async () => {
     // The chain keeps only its latest hashes; one it has let go reads as zeroes, or not at all.
     const zeroes = `0x${"00".repeat(32)}`;
-    expect(await settleBlock(chain(9_000, zeroes).reads, SEEN, 1_000)).toBe("final");
-    expect(await settleBlock(chain(9_000, undefined).reads, SEEN, 1_000)).toBe("final");
+    expect(await settleBlock(chain(9_000, zeroes).reads, SEEN, 1_000)).toBe("unknown");
+    expect(await settleBlock(chain(9_000, undefined).reads, SEEN, 1_000)).toBe("unknown");
   });
 
   it("reads both at the chain's finalized head", async () => {

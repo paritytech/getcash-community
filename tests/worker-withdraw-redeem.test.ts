@@ -121,6 +121,7 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
       getBestBlocks: async () => [
         { hash: what === "asset hub" ? "0xah-best" : "0xpeople-best", number: 1 },
       ],
+      getFinalizedBlock: async () => ({ number: mocks.finalizedAh }),
       getTypedApi: () => (what === "asset hub" ? assetHubApi : peopleApi),
       destroy: () => {},
     }),
@@ -316,9 +317,10 @@ describe("the worker's redeem step", () => {
     expect(mocks.submits).toHaveLength(1);
   });
 
-  it("takes the done back when the exit's block was replaced, and redeems again at the same nonce", async () => {
+  it("takes the done back when the exit's block was replaced and nothing holds the exit, and redeems again at the same nonce once its mortality is out", async () => {
     const engine = await engineWith(convertingJob());
     await engine.tickAllWithdraw();
+    expect(storedJob().state.redeemCashIn).toBe(String(CASH_IN));
     mocks.keyNonce = 1;
     hold(CASH_ID, KEY_SS58, 327n);
     hold(USDT_ID, LANDING_SS58, 9_946_439n);
@@ -331,12 +333,21 @@ describe("the worker's redeem step", () => {
     mocks.finalizedAh = 8;
     mocks.exitBlockHash = "0xfork-7";
     await engine.tickAllWithdraw();
-    expect(mocks.submits).toHaveLength(2);
-    expect(mocks.submits[1]!.options).toEqual(EXIT_OPTIONS);
+    // The copy that went out may still land: nothing is signed while its mortality runs.
+    expect(mocks.submits).toHaveLength(1);
     expect(storedJob()).toMatchObject({
       phase: "redeem",
       done: false,
       landed: false,
+      state: { arrived: false, redeemSubmitted: true, redeemNonce: 0, redeemBlock: null },
+    });
+    // Past it: signed afresh at the same nonce.
+    mocks.finalizedAh = 1 + PAY_MORTAL_PERIOD + 1;
+    await engine.tickAllWithdraw();
+    expect(mocks.submits).toHaveLength(2);
+    expect(mocks.submits[1]!.options).toEqual(EXIT_OPTIONS);
+    expect(storedJob()).toMatchObject({
+      phase: "redeem",
       state: { arrived: false, redeemSubmitted: true, redeemNonce: 0 },
     });
   });

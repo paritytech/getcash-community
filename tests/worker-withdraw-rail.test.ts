@@ -10,8 +10,8 @@ const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
   railFor: vi.fn(),
   payRail: vi.fn(),
-  /** The finalized chain's word on the block a sweep was seen in. */
-  paymentVerdict: vi.fn(),
+  /** What became of a sweep seen in a best block. */
+  paymentOutcome: vi.fn(),
   status: vi.fn(),
   channel: vi.fn(),
   /** What the key holds on Asset Hub, in whichever token the hand that pays reads. */
@@ -37,7 +37,7 @@ vi.mock("../worker/src/providers.js", () => ({
   PAY_TIMEOUT_MS: 300_000,
   railFor: mocks.railFor,
   payRail: mocks.payRail,
-  paymentVerdict: mocks.paymentVerdict,
+  paymentOutcome: mocks.paymentOutcome,
 }));
 
 // Where a test lets the real hand pay, the chain it pays on is scripted: the key's holding and
@@ -167,8 +167,8 @@ describe("the worker's rail leg", () => {
     });
     mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
     mocks.payRail.mockResolvedValue(undefined);
-    mocks.paymentVerdict.mockReset();
-    mocks.paymentVerdict.mockResolvedValue("pending");
+    mocks.paymentOutcome.mockReset();
+    mocks.paymentOutcome.mockResolvedValue("pending");
     mocks.status.mockResolvedValue({ status: "swapping" });
     mocks.keyHolds = 0n;
     mocks.submits.length = 0;
@@ -217,26 +217,31 @@ describe("the worker's rail leg", () => {
 
     // Not past it yet: the swap is followed, and nothing more is swept.
     await engine.tickAllWithdraw();
-    expect(mocks.paymentVerdict).toHaveBeenLastCalledWith(
+    expect(mocks.paymentOutcome).toHaveBeenLastCalledWith(
       expect.objectContaining({ sessionId: "s-1" }),
       seen,
+      expect.any(Function),
     );
+    // The sweep's effect: one was sent, and the key holds none of the token.
+    const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (key: object) => boolean;
+    expect(shows({ nonce: 0, free: 0n })).toBe(true);
+    expect(shows({ nonce: 0, free: 1n })).toBe(false);
     expect(mocks.submits).toHaveLength(1);
     expect(storedJob()).toMatchObject({ phase: "follow", leg: { paid: true, sweep: { seen } } });
 
-    // A fork replaced the block: the token is still on the key, and it is swept again.
-    mocks.paymentVerdict.mockResolvedValue("dropped");
+    // It shows nowhere: the token is still on the key, and it is swept again.
+    mocks.paymentOutcome.mockResolvedValue("gone");
     await engine.tickAllWithdraw();
     expect(mocks.submits).toHaveLength(2);
     expect(storedJob().leg).toMatchObject({ paid: true, sweep: { attempts: 2, seen } });
 
-    // That block stands: let go, and never asked about again.
-    mocks.paymentVerdict.mockResolvedValue("final");
+    // It stands: let go, and never asked about again.
+    mocks.paymentOutcome.mockResolvedValue("final");
     await engine.tickAllWithdraw();
     expect(storedJob().leg).toMatchObject({ paid: true, sweep: { seen: null } });
-    const asked = mocks.paymentVerdict.mock.calls.length;
+    const asked = mocks.paymentOutcome.mock.calls.length;
     await engine.tickAllWithdraw();
-    expect(mocks.paymentVerdict).toHaveBeenCalledTimes(asked);
+    expect(mocks.paymentOutcome).toHaveBeenCalledTimes(asked);
     expect(mocks.submits).toHaveLength(2);
   });
 

@@ -175,6 +175,8 @@ function scriptedWorld(
     dropExit?: boolean;
     /** The exit is included and refused, and the submit's answer never comes back. */
     refuseExitLost?: boolean;
+    /** The exit is charged this much CASH over its fee: its estimate fell short. */
+    overchargeExit?: bigint;
     /** The exit lands but the submit's answer never comes back. */
     loseExitAnswer?: boolean;
   } = {},
@@ -199,6 +201,7 @@ function scriptedWorld(
     keyNonceAh: 0,
     anchorAh: AH_ANCHOR,
     finalizedAh: AH_FINALIZED,
+    bestAh: AH_ANCHOR + 1,
     /** People's best and finalized heads, and the key there at the finalized one when it lags. */
     bestPeople: XCM_BLOCK,
     finalizedPeople: PEOPLE_FINALIZED,
@@ -206,6 +209,8 @@ function scriptedWorld(
     /** Blocks the finalized chain holds another hash for: a fork replaced them. */
     replacedPeople: new Set<number>(),
     replacedAh: new Set<number>(),
+    /** Blocks too old for People to name any more: their hash reads as zeroes. */
+    forgottenPeople: new Set<number>(),
     destinationPas: DESTINATION_PAS,
     /** What the last Asset Hub dry run credited to the program's beneficiary. */
     lastDryRunLanded: 0n,
@@ -356,7 +361,11 @@ function scriptedWorld(
         // What the finalized chain holds for a block: its own hash, or a fork's that replaced it.
         BlockHash: {
           getValue: async (number: number) =>
-            state.replacedPeople.has(number) ? forkHash(number) : peopleHash(number),
+            state.forgottenPeople.has(number)
+              ? `0x${"00".repeat(32)}`
+              : state.replacedPeople.has(number)
+                ? forkHash(number)
+                : peopleHash(number),
         },
       },
       Assets: {
@@ -481,7 +490,7 @@ function scriptedWorld(
           const lostAnswer = () => new Error("redeem submit timed out after 1s");
           if (opts.dropExit) throw lostAnswer();
           state.keyNonceAh += 1;
-          state.keyCashAh -= AH_TX_FEE_CASH;
+          state.keyCashAh -= AH_TX_FEE_CASH + (opts.overchargeExit ?? 0n);
           if (opts.refuseExitLost) throw lostAnswer();
           const dispatchError = apply(decodedCall);
           if (opts.loseExitAnswer) throw lostAnswer();
@@ -510,7 +519,10 @@ function scriptedWorld(
     },
     query: {
       System: {
-        Number: { getValue: async () => state.finalizedAh },
+        Number: {
+          getValue: async ({ at }: { at: string }) =>
+            at === "finalized" ? state.finalizedAh : state.bestAh,
+        },
         BlockHash: {
           getValue: async (number: number) =>
             state.replacedAh.has(number) ? forkHash(number) : anchorHash(number),
@@ -953,6 +965,28 @@ describe("withdrawTickOnce", () => {
     expect(world.state.psmDebt).toBe(0n);
   });
 
+  it("finishes a pool exit whose answer was lost by the key's CASH, and watches it until it is final", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const { cashIn } = sizedExit(world);
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    expect(state).toMatchObject({ redeemCashIn: cashIn, redeemBlock: null });
+    world.state.bestAh = AH_ANCHOR + 2;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: AH_ANCHOR + 2, redeemHash: null });
+    world.state.finalizedAh = AH_ANCHOR + 2;
+    await drive(world, 1, state, PSM_SALE);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual([
+      "swap",
+      "execute",
+      "swap_exact_tokens_for_tokens",
+    ]);
+  });
+
   it("sends nothing while an exit whose answer was lost may still land: the key at its nonce, finality within its mortality", async () => {
     const world = scriptedWorld({ dropExit: true });
     const state = freshWithdrawTickState();
@@ -1024,6 +1058,29 @@ describe("withdrawTickOnce", () => {
     expect(run.outcomes[0]).toMatchObject({ step: "redeem", submitted: false });
     expect(state).toMatchObject({ redeemSubmitted: true, redeemNonce: 0, redeemAnchor: AH_ANCHOR });
     expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
+  it("still reads a refused exit as refused when its fee came in over the estimate's margin", async () => {
+    const over = 2n * withFeeMargin(AH_TX_FEE_CASH);
+    const world = scriptedWorld({ refuseExitLost: true, overchargeExit: over });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const first = sizedExit(world);
+    world.state.psmDebt = first.net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // Past the exit's nonce, and under what the exit takes, yet most of it still there.
+    expect(world.state.keyNonceAh).toBe(1);
+    expect(world.state.keyCashAh).toBeLessThan(first.cashIn);
+    world.state.anchorAh = AH_ANCHOR + 2;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // Not taken as a run: sized and signed again from what is left, at the next nonce.
+    expect(state).toMatchObject({ arrived: false, redeemSubmitted: true, redeemNonce: 1 });
+    expect(world.state.submits.map((s) => s.call)).toEqual([
+      "swap",
+      "execute",
+      "batch_all",
+      "batch_all",
+    ]);
   });
 
   it("sizes and submits again when the exit was included and refused with its answer lost: the key past the exit's nonce, the landing not grown", async () => {
@@ -1292,6 +1349,64 @@ describe("withdrawTickOnce", () => {
     expect(state).toMatchObject({ arrived: true, xcmBlock: xcmBlockOf(1) });
   });
 
+  it("keeps the done when the XCM's block was replaced but the XCM stands in the finalized chain, though the destination already moved what landed", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: XCM_BLOCK });
+    // Another block at that height holds the XCM: the key is empty at the finalized head too.
+    world.state.replacedPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    world.state.destinationPas = 0n;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ submitted: true, arrived: true, xcmBlock: null, xcmHash: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("watches the XCM again from the best block when its block was replaced and it landed after the finalized head", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    const keyCash = KEY_CASH - SWAP_FEE_CASH - cashInFor(ED + RESERVE, RESERVES);
+    world.state.replacedPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    // The finalized head is past the replaced block and still has the CASH on the key; the best
+    // head holds the XCM in a later block.
+    world.state.keyCashFinalized = keyCash;
+    world.state.bestPeople = XCM_BLOCK + 4;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: XCM_BLOCK + 4, xcmHash: null });
+    // Final there too: let go.
+    world.state.keyCashFinalized = null;
+    world.state.finalizedPeople = XCM_BLOCK + 4;
+    await drive(world, 1, state);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("reads the key, not a guess, when the chain no longer names the XCM's block", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    world.state.forgottenPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 5_000;
+    // The XCM stands: the key is empty at the finalized head, and the done is kept.
+    const stands = await drive(world, 1, state);
+    expect(stands.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: null });
+    // Had it not, the CASH on the key at both heads sends it again.
+    const world2 = scriptedWorld({ dropXcm: true });
+    const state2 = freshWithdrawTickState();
+    await drive(world2, 2, state2);
+    world2.state.forgottenPeople.add(XCM_BLOCK);
+    world2.state.finalizedPeople = XCM_BLOCK + 5_000;
+    const resent = await drive(world2, 2, state2);
+    expect(resent.steps).toEqual(["convert", "done"]);
+    expect(world2.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "execute"]);
+  });
+
   it("settles an XCM whose answer was lost by the key at the finalized head: final once it is empty there, sent again when it is not", async () => {
     const world = scriptedWorld({ loseXcmAnswer: true });
     const state = freshWithdrawTickState();
@@ -1314,11 +1429,12 @@ describe("withdrawTickOnce", () => {
     expect(state).toMatchObject({ submitted: true, xcmBlock: null, xcmHash: null });
   });
 
-  it("keeps the block the exit was seen in, and signs the exit afresh at the same nonce when that block was replaced", async () => {
+  it("keeps the block the exit was seen in, and when that block was replaced with the key still at its nonce, waits out the exit's mortality before it signs it afresh there", async () => {
     const world = scriptedWorld();
     const state = freshWithdrawTickState();
     await drive(world, 2, state, PSM_SALE);
     world.state.psmDebt = 2n * sizedExit(world).net;
+    const { cashIn } = sizedExit(world);
     const beforeExit = {
       keyCashAh: world.state.keyCashAh,
       keyNonceAh: world.state.keyNonceAh,
@@ -1331,23 +1447,68 @@ describe("withdrawTickOnce", () => {
       arrived: true,
       redeemBlock: exitBlock,
       redeemHash: anchorHash(exitBlock),
+      redeemCashIn: cashIn,
     });
-    // A fork replaced the exit's block: the CASH is back on the key, which never signed there.
+    // A fork replaced the exit's block and nothing holds the exit: the CASH is back on the key,
+    // which never signed it on the chain that stands.
     Object.assign(world.state, beforeExit, { destinationPas: DESTINATION_PAS });
     world.state.replacedAh.add(exitBlock);
     world.state.finalizedAh = exitBlock + 1;
-    world.state.anchorAh = exitBlock + 5;
+    // The copy that went out may still land within its mortality: nothing is signed meanwhile.
+    const held = await drive(world, 1, state, PSM_SALE);
+    expect(held.steps).toEqual(["redeem"]);
+    expect(state).toMatchObject({ arrived: false, redeemSubmitted: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+    // Past it, it never will: signed afresh at the same nonce, and it lands.
+    world.state.finalizedAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 1;
+    world.state.anchorAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 5;
     const again = await drive(world, 2, state, PSM_SALE);
     expect(again.steps).toEqual(["redeem", "done"]);
     const calls = world.state.submits.map((s) => s.call);
     expect(calls).toEqual(["swap", "execute", "batch_all", "batch_all"]);
-    expect(world.state.submits[3]!.options).toEqual(exitOptions(exitBlock + 5, 0));
-    expect(state).toMatchObject({ arrived: true, redeemBlock: exitBlock + 6 });
+    expect(world.state.submits[3]!.options).toEqual(exitOptions(world.state.anchorAh, 0));
+    expect(state).toMatchObject({ arrived: true, redeemBlock: world.state.anchorAh + 1 });
     // That block stands: let go, and the done with it.
-    world.state.finalizedAh = exitBlock + 7;
+    world.state.finalizedAh = world.state.anchorAh + 2;
     const settled = await drive(world, 1, state, PSM_SALE);
     expect(settled.steps).toEqual(["done"]);
     expect(state).toMatchObject({ arrived: true, redeemBlock: null, redeemHash: null });
+  });
+
+  it("keeps the done when the exit's block was replaced but the exit stands in the finalized chain, though the destination already moved what landed", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    await drive(world, 2, state, PSM_SALE);
+    const exitBlock = AH_ANCHOR + 1;
+    // Another block at that height holds the exit; the destination spent what it got.
+    world.state.replacedAh.add(exitBlock);
+    world.state.finalizedAh = exitBlock + 1;
+    world.state.destinationPas = 0n;
+    const run = await drive(world, 1, state, PSM_SALE);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemSubmitted: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
+  it("finishes an exit whose answer was lost by the key's CASH, not the destination's balance, and watches it from the best block", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // The exit ran and the destination has already moved the stable on.
+    world.state.destinationPas = 0n;
+    world.state.bestAh = AH_ANCHOR + 3;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: AH_ANCHOR + 3, redeemHash: null });
+    // The finalized head reaches it and the key there shows the exit ran: let go.
+    world.state.finalizedAh = AH_ANCHOR + 3;
+    await drive(world, 1, state, PSM_SALE);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
   });
 
   it("keeps the exit's latch when its block was replaced but the key signed it in another one", async () => {

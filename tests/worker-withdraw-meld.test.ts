@@ -14,8 +14,8 @@ const mocks = vi.hoisted(() => ({
   payRail: vi.fn(),
   payRailExact: vi.fn(),
   exactPaymentOut: vi.fn(),
-  /** The finalized chain's word on the block a payment was seen in. */
-  paymentVerdict: vi.fn(),
+  /** What became of a payment seen in a best block. */
+  paymentOutcome: vi.fn(),
   /** The head each read of the key on People was made at. */
   peopleReads: [] as unknown[],
   status: vi.fn(),
@@ -58,7 +58,7 @@ vi.mock("../worker/src/providers.js", () => ({
   payRail: mocks.payRail,
   payRailExact: mocks.payRailExact,
   exactPaymentOut: mocks.exactPaymentOut,
-  paymentVerdict: mocks.paymentVerdict,
+  paymentOutcome: mocks.paymentOutcome,
 }));
 
 vi.mock("../worker/src/engine.js", () => ({
@@ -228,7 +228,7 @@ beforeEach(() => {
   mocks.fundingStatus.mockReset();
   mocks.fundingStatus.mockResolvedValue({ phase: "convert", claim: null });
   mocks.keyFreeFinalized = null;
-  mocks.paymentVerdict.mockReset();
+  mocks.paymentOutcome.mockReset();
   mocks.peopleReads.length = 0;
 });
 
@@ -379,13 +379,19 @@ describe("the worker's side of a fiat sale", () => {
   };
 
   it("keeps what is left on the key while the payment's block is still to be settled", async () => {
-    mocks.paymentVerdict.mockResolvedValue("pending");
+    mocks.paymentOutcome.mockResolvedValue("pending");
     const engine = await engineWith({ "s-1": paidAtBest() });
     await engine.tickAllWithdraw();
-    expect(mocks.paymentVerdict).toHaveBeenCalledWith(
+    expect(mocks.paymentOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "s-1" }),
       { number: 7, hash: "0xpaid" },
+      expect.any(Function),
     );
+    // The payment's effect: past its nonce, the balance down by the figure.
+    const shows = mocks.paymentOutcome.mock.calls[0]![2] as (key: object) => boolean;
+    expect(shows({ nonce: 1, free: 27_000_000_000n - BigInt(AMOUNT) })).toBe(true);
+    expect(shows({ nonce: 1, free: 27_000_000_000n - BigInt(AMOUNT) + 1n })).toBe(false);
+    expect(shows({ nonce: 0, free: 0n })).toBe(false);
     // The provider is followed meanwhile; nothing is paid again and nothing goes home.
     expect(mocks.status).toHaveBeenCalledTimes(1);
     expect(mocks.payRailExact).not.toHaveBeenCalled();
@@ -397,7 +403,7 @@ describe("the worker's side of a fiat sale", () => {
   });
 
   it("lets the payment's block go once it is final, and sends the residue home", async () => {
-    mocks.paymentVerdict.mockResolvedValue("final");
+    mocks.paymentOutcome.mockResolvedValue("final");
     const engine = await engineWith({ "s-1": paidAtBest() });
     await engine.tickAllWithdraw();
     expect(storedJob().leg).toMatchObject({ paid: true, exact: { seen: null } });
@@ -405,11 +411,11 @@ describe("the worker's side of a fiat sale", () => {
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     // Settled once: the chain is not asked about that block again.
     await engine.tickAllWithdraw();
-    expect(mocks.paymentVerdict).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentOutcome).toHaveBeenCalledTimes(1);
   });
 
-  it("pays again when the payment's block was replaced, the attempt still in flight at its nonce", async () => {
-    mocks.paymentVerdict.mockResolvedValue("dropped");
+  it("pays again when the payment shows nowhere, the attempt still in flight at its nonce", async () => {
+    mocks.paymentOutcome.mockResolvedValue("gone");
     const engine = await engineWith({ "s-1": paidAtBest() });
     await engine.tickAllWithdraw();
     // The chain is asked first whether the attempt landed in another block after all.
@@ -424,8 +430,8 @@ describe("the worker's side of a fiat sale", () => {
     });
   });
 
-  it("leaves a failed sale's replaced payment to the settling of an attempt that may still land", async () => {
-    mocks.paymentVerdict.mockResolvedValue("dropped");
+  it("leaves a failed sale's lost payment to the settling of an attempt that may still land", async () => {
+    mocks.paymentOutcome.mockResolvedValue("gone");
     const job = paidAtBest();
     Object.assign(job, { phase: "failed", failure: "rail-failed", failedAt: NOW });
     const engine = await engineWith({ "s-1": job });

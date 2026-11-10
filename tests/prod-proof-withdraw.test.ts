@@ -133,15 +133,18 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
                 cash: await readCash(ss58, at),
                 pas: await readPas(ss58, at),
               }),
-              readKeyOnAssetHub: async (hex) => {
+              readKeyOnAssetHub: async (hex, at) => {
                 const { free: cash, nonce } = await readAssetHubAccount(
                   assetHubApi,
                   hex,
                   TOKENS.CASH,
+                  { at },
                 );
                 return {
                   cash,
-                  usdt: await readDestinationBalance(assetHubApi, hex, TOKENS.USDT.assetHubId),
+                  usdt: await readDestinationBalance(assetHubApi, hex, TOKENS.USDT.assetHubId, {
+                    at,
+                  }),
                   nonce,
                 };
               },

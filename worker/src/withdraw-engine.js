@@ -38,7 +38,7 @@ import { readParams } from "./params.js";
 import {
   exactPaymentOut,
   PAY_TIMEOUT_MS,
-  paymentVerdict,
+  paymentOutcome,
   payRail,
   payRailExact,
   railFor,
@@ -128,8 +128,8 @@ const saveJobs = () => store.save();
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, xcmSigned?, xcmBlock?, xcmHash?, arrived?,
  *            destinationBefore, expectedLanding, arrivalFloor, fundsSeenAt, psmRefusals,
- *            waitingSince, exit?, redeemSubmitted?, redeemNonce?, redeemAnchor?, redeemBlock?,
- *            redeemHash?, workedMs },
+ *            waitingSince, exit?, redeemSubmitted?, redeemNonce?, redeemAnchor?, redeemCashIn?,
+ *            redeemBlock?, redeemHash?, workedMs },
  *                                            // the three amounts as decimal strings or null;
  *                                            // exit: where the PSM tier's CASH leaves the key
  *                                            // on Asset Hub, "psm" unless the user chose the
@@ -137,6 +137,8 @@ const saveJobs = () => store.save();
  *                                            // transaction went out; redeemNonce, redeemAnchor:
  *                                            // the key's Asset Hub nonce it is signed at and the
  *                                            // block it is anchored at, null while none is out;
+ *                                            // redeemCashIn: the CASH that exit takes, as a
+ *                                            // decimal string;
  *                                            // xcmBlock, xcmHash, redeemBlock, redeemHash: the
  *                                            // best block the XCM and the exit were seen in,
  *                                            // null once the finalized chain settled it;
@@ -647,22 +649,36 @@ const paymentSeen = (record) =>
   record.leg?.paid === true ? (record.leg.exact?.seen ?? record.leg.sweep?.seen ?? null) : null;
 
 /**
- * Settles a payment seen in a best block once Asset Hub's finalized chain is past that block. The
- * block stands: the payment is final and the block is let go. Another took its place: the payment
- * went with it, so the leg is unpaid again and the key pays again, the exact figure at its same
- * nonce.
+ * The payment's effect on the key, read at one head: the exact figure is out once the key is past
+ * the payment's nonce with its balance down by at least the figure; the sweep once one was sent
+ * and the key holds none of the sale's token.
+ */
+function paymentShows(record) {
+  const { exact, sweep } = record.leg;
+  if (exact?.seen != null) {
+    const amount = asBig(record.channel?.amount, 0n);
+    return (key) => key.nonce > exact.nonce && asBig(exact.balanceBefore, 0n) - key.free >= amount;
+  }
+  return (key) => (sweep?.attempts ?? 0) > 0 && key.free === 0n;
+}
+
+/**
+ * Settles a payment seen in a best block once Asset Hub's finalized chain is past that block
+ * (`paymentOutcome`): final, and the block is let go; gone, and the leg is unpaid again, so the
+ * key pays again, the exact figure at its same nonce. A payment that landed in another block than
+ * the one it was seen in stands.
  */
 async function settlePayment(record) {
   const seen = paymentSeen(record);
   if (seen === null) return;
-  const verdict = await paymentVerdict(record, seen);
-  if (verdict === "pending") return;
+  const outcome = await paymentOutcome(record, seen, paymentShows(record));
+  if (outcome === "pending") return;
   const { exact, sweep } = record.leg;
   record.leg = {
     ...record.leg,
     ...(exact?.seen == null ? {} : { exact: { ...exact, seen: null } }),
     ...(sweep?.seen == null ? {} : { sweep: { ...sweep, seen: null } }),
-    paid: verdict === "final",
+    paid: outcome === "final",
   };
 }
 
@@ -1213,6 +1229,7 @@ async function tickRecord(record, nowMs) {
     state.redeemSubmitted = record.state.redeemSubmitted === true;
     state.redeemNonce = record.state.redeemNonce ?? null;
     state.redeemAnchor = record.state.redeemAnchor ?? null;
+    state.redeemCashIn = asBig(record.state.redeemCashIn, null);
     state.redeemBlock = record.state.redeemBlock ?? null;
     state.redeemHash = record.state.redeemHash ?? null;
 
@@ -1238,6 +1255,7 @@ async function tickRecord(record, nowMs) {
         redeemSubmitted: state.redeemSubmitted,
         redeemNonce: state.redeemNonce,
         redeemAnchor: state.redeemAnchor,
+        redeemCashIn: state.redeemCashIn === null ? null : String(state.redeemCashIn),
         redeemBlock: state.redeemBlock,
         redeemHash: state.redeemHash,
         workedMs: record.state.workedMs ?? 0,
@@ -1292,10 +1310,10 @@ async function tickRecord(record, nowMs) {
           },
           readDestinationOnAssetHub: (hex) =>
             readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
-          readKeyOnAssetHub: async (hex) => {
+          readKeyOnAssetHub: async (hex, at) => {
             const [{ free: cash, nonce }, usdt] = await Promise.all([
-              readAssetHubAccount(assetHubApi, hex, TOKENS.CASH),
-              readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
+              readAssetHubAccount(assetHubApi, hex, TOKENS.CASH, { at }),
+              readDestinationBalance(assetHubApi, hex, landingToken.assetHubId, { at }),
             ]);
             return { cash, usdt, nonce };
           },

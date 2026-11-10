@@ -250,18 +250,33 @@ export async function exactPaymentOut(record, amount, exact) {
 }
 
 /**
- * What Asset Hub's finalized chain says of the block a payment to the channel was seen in:
- * "pending" until it is past that block, then "final" when the block stands or "dropped" when
- * another took its place and the payment with it.
+ * What became of the key's payment to the channel, seen in a best block: "final" once Asset Hub's
+ * finalized chain holds that block, or shows the payment's effect in another; "pending" while it
+ * is not past that block, or while the payment shows only at the best head; "gone" when it shows
+ * nowhere, and the key pays again. A block that was replaced, or one too old for the chain to
+ * name, says nothing of the payment itself, which usually landed in the block that took its
+ * place: `shows(key)` reads its effect on the key, its balance in the sale's token and its nonce.
  */
-export async function paymentVerdict(record, seen) {
+export async function paymentOutcome(record, seen, shows) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
-    return await settleBlock(
-      finalizedChainOf(client.getTypedApi(paseo_next_v2)),
+    const assetHubApi = client.getTypedApi(paseo_next_v2);
+    const verdict = await settleBlock(
+      finalizedChainOf(assetHubApi),
       seen,
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
     );
+    if (verdict === "pending" || verdict === "final") return verdict;
+    const token = depositTokenOf(recordedRoute(record));
+    const read = (at) =>
+      bounded(
+        readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token, { at }),
+        DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        `key read on asset hub (${at})`,
+      );
+    if (shows(await read("finalized"))) return "final";
+    if (shows(await read("best"))) return "pending";
+    return "gone";
   } finally {
     client.destroy();
   }
