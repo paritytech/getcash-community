@@ -1,6 +1,6 @@
 // The top-up bounds a build names, VITE_TOP_UP_MINIMUM and VITE_TOP_UP_MAXIMUM, read the one way
 // at build time, where a problem is reported in the build log, and at page load, where they are
-// applied.
+// applied. A withdrawal is held to the same pair.
 
 import { formatFundingAmount, parseFundingAmount } from "./selection";
 
