@@ -1307,7 +1307,9 @@ describe("tickOnce", () => {
     const exchange = exchangeOf(args);
     expect(exchange.give.value[0]!.fun.value).toBe(FUND - OVERHEAD);
     expect(exchange.give.value[0]!.fun.value).toBeGreaterThan(MAX_IN);
-    expect(exchange.want[0]!.fun.value).toBe(BUY);
+    // The surplus puts the slippage share of the quote above the target.
+    const quoted = ((FUND - OVERHEAD) * BUY) / QUOTED;
+    expect(exchange.want[0]!.fun.value).toBe((quoted * 9_800n) / 10_000n);
     expect(exchange.maximal).toBe(true);
     const transfer = instruction(args, "InitiateTransfer") as {
       destination: { interior: { value: { value: number } } };
@@ -3307,7 +3309,6 @@ describe("a burner held to the pool's quote", () => {
     ({ settleAmount: TOKEN_TARGET, quoteFloorPct }) satisfies Partial<TickOnceInput>;
 
   it("is the target, or the share of the quote when that is more", () => {
-    expect(exchangeFloor(BUY, 10_000_000n, undefined)).toBe(BUY);
     expect(exchangeFloor(BUY, 10_000_000n, 2)).toBe(9_800_000n);
     expect(exchangeFloor(BUY, 5_000_000n, 2)).toBe(BUY);
     // Nothing that is not a share below the whole: the target alone.
@@ -3326,21 +3327,31 @@ describe("a burner held to the pool's quote", () => {
     expect(exchange.want[0]!.fun.value).toBe((quoted * 9_800n) / 10_000n);
   });
 
-  it("lets a move past that share fail at inclusion, where the token target alone would fill", async () => {
+  it("lets a move past that share fail at inclusion, and counts it toward the hold", async () => {
     const held = scriptedWorld({ priceAtSubmitBps: 10_300n });
     held.state.nativeAh = FUND;
-    await expect(drive(held, 1, freshTickState(), POOL, undefined, heldTo(2))).rejects.toThrow(
-      /NoDeal/,
-    );
+    const state = freshTickState();
+    await expect(drive(held, 1, state, POOL, undefined, heldTo(2))).rejects.toThrow(/NoDeal/);
     // Rolled back whole: only the dispatch fee left the burner.
     expect(held.state.nativeAh).toBe(FUND - DISPATCH);
+    expect(state.rejections).toBe(1);
+  });
 
-    const unheld = scriptedWorld({ priceAtSubmitBps: 10_300n });
-    unheld.state.nativeAh = FUND;
-    const run = await drive(unheld, 1, freshTickState(), POOL, undefined, {
-      settleAmount: TOKEN_TARGET,
-    });
-    expect(run.steps).toEqual(["swap"]);
+  it("never holds a surplus whose floor the slippage share alone raised", async () => {
+    const world = scriptedWorld({ priceAtSubmitBps: 10_300n });
+    world.state.nativeAh = FUND;
+    const state = freshTickState();
+    for (let n = 0; n < MAX_PROGRAM_REJECTIONS + 1; n += 1) {
+      const tick = drive(world, 1, state);
+      await expect(tick).rejects.toThrow(/ExchangeAsset failed with NoDeal/);
+      await expect(tick).rejects.not.toBeInstanceOf(FundingHeldError);
+      world.state.priceBps = 10_000n;
+    }
+    expect(state.rejections).toBe(0);
+
+    // The pool holds still: the next tick converts everything.
+    world.state.priceAtSubmitBps = undefined;
+    expect((await drive(world, 1, state)).steps).toEqual(["swap"]);
   });
 });
 
