@@ -47,7 +47,7 @@ const LATE = {
   unfinalizedBlocks: 20,
   /** Phase 3: fresh reads this long in total after Sent without seeing the funds. */
   unseenMs: 5 * MINUTE,
-  /** Phases 4 to 6: the worker's working time since the deposit was final, since the conversion,
+  /** Phases 4 to 6: the worker's working time since it took the deposit, since the conversion,
    *  and since it registered the claim. */
   convertWorkedMs: 2 * MINUTE,
   moveWorkedMs: 5 * MINUTE,
@@ -161,7 +161,8 @@ export function polkadotPhase(
           { ...PARTS.prepare, completed: factAt(record.conversionPreparedAt) },
           PARTS.include,
         ],
-        // The worker's working time starts when the deposit is final.
+        // The worker's working time starts when it takes the deposit: final for a payout, in a
+        // best block for a direct deposit.
         delayed: psmRefused(record) || workedPast(record, 0, LATE.convertWorkedMs),
       };
     case 4:

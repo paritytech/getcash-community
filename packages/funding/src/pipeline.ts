@@ -497,7 +497,8 @@ export interface TickState {
    *  finalized chain holding that hash at that height makes the conversion final, another hash
    *  means the block was replaced. A lost answer settled as landed names the latest block with
    *  no hash; once the chain is final past it, the burner's finalized nonce and deposit say
-   *  whether the program ran. Null once settled. */
+   *  whether the program ran, and for a direct deposit People's finalized block does too. Null
+   *  once settled. */
   inclusionBlock: number | null;
   inclusionHash: string | null;
   /** The target was seen on People in a best block. The run stays done on it while the
@@ -947,22 +948,30 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     "tick balance reads",
   );
 
-  // The program ran on People: the CASH it sent arrived there, or a trap holds it. Asked only of
-  // a direct deposit whose burner is empty, since a fork can take the deposit with the program.
-  const ranOnPeople = async (): Promise<boolean> =>
-    state.arrived ||
-    peopleHeld > state.peopleAtXcm ||
-    (state.sentToPeople !== null &&
-      (await bounded(
-        findTrap(
-          input.peopleApi,
-          input.beneficiaryHex,
-          state.sentToPeople,
-          trapScanSpan(state.peopleFeeCash),
-        ),
-        input.tickTimeoutMs,
-        "trap read",
-      )) !== null);
+  // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
+  // it there. Asked only of a direct deposit whose burner is empty, since a fork can take the
+  // deposit, the program and the arrival People saw at its best block all together. A claim the
+  // host made final since leaves nothing there, and ends the run on its own.
+  const ranOnPeople = async (): Promise<boolean> => {
+    const held = await bounded(
+      input.readUnderlyingOnPeople(address, "finalized"),
+      input.tickTimeoutMs,
+      "People read (finalized)",
+    );
+    if (held > state.peopleAtXcm) return true;
+    if (state.sentToPeople === null) return false;
+    const trap = await bounded(
+      findTrap(
+        input.peopleApi,
+        input.beneficiaryHex,
+        state.sentToPeople,
+        trapScanSpan(state.peopleFeeCash),
+      ),
+      input.tickTimeoutMs,
+      "trap read",
+    );
+    return trap !== null;
+  };
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(
       input,

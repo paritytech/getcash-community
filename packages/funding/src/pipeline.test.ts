@@ -2388,6 +2388,41 @@ describe("the submit, and the arrival on People", () => {
     expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
   });
 
+  it("does not take a direct conversion as run on an arrival a fork took with it, and converts the deposit once it is back", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 1 });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const deposit = world.state.nativeAh;
+    world.state.unfinalCredit = deposit;
+    const state = freshTickState();
+    const direct = { depositAt: "best" as const };
+    await expect(
+      drive(world, 1, state, POOL, undefined, { ...direct, inclusionTimeoutMs: 20 }),
+    ).rejects.toThrow(/not in a block/);
+    // The conversion reaped the burner, and its CASH shows at People's best block.
+    world.nonce.latest = 0;
+    world.nonce.finalized = 0;
+    world.state.loseAnswer = null;
+    const seen = await drive(world, 1, state, POOL, undefined, direct);
+    expect(seen.steps).toEqual(["done"]);
+    expect(state.arrived).toBe(true);
+
+    // A fork takes the deposit, the conversion and the arrival, and finality passes the block the
+    // run watched: the arrival seen at the best block is no proof, so nothing stands as done.
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const gone = await drive(world, 1, state, POOL, undefined, direct);
+    expect(gone.steps).toEqual(["await-arrival"]);
+
+    // The buyer's transfer is back, not yet final, and goes out again.
+    world.state.nativeAh = deposit;
+    world.state.unfinalCredit = deposit;
+    const again = await drive(world, 3, state, POOL, undefined, direct);
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+  });
+
   it("ends the run on a short arrival only once People's finalized block shows it", async () => {
     const world = funded({
       remoteFee: BUFFER * 3n,
