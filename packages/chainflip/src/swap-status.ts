@@ -51,6 +51,10 @@ export interface ChainflipChannelRecord {
   depositAddress: string;
   /** Where the swap pays out: the address the user gave. */
   destinationAddress: string;
+  /** The egress chain Chainflip delivers on, as the SDK names it, empty when unread. */
+  destChain: string;
+  /** The egress asset Chainflip delivers, as the SDK names it, empty when unread. */
+  destAsset: string;
   /** Chainflip's own word on the channel being closed, rather than our stored clock. */
   expired: boolean;
   /** The CCM message the egress calls the destination with, lowercase 0x-hex, empty when none. */
@@ -80,6 +84,8 @@ export async function readChannelRecord(
   if (!response.ok) throw new Error(`Chainflip channel read failed: HTTP ${response.status}`);
   const body = (await response.json()) as {
     destAddress?: unknown;
+    destChain?: unknown;
+    destAsset?: unknown;
     ccmParams?: { message?: unknown; gasBudget?: unknown };
     depositChannel?: { depositAddress?: unknown; isExpired?: unknown };
   };
@@ -90,6 +96,8 @@ export async function readChannelRecord(
   return {
     depositAddress,
     destinationAddress: str(body.destAddress),
+    destChain: str(body.destChain),
+    destAsset: str(body.destAsset),
     expired: channel.isExpired === true,
     ccmMessage: str(body.ccmParams?.message).toLowerCase(),
     ccmGasBudget: str(body.ccmParams?.gasBudget),

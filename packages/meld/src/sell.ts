@@ -119,6 +119,8 @@ export interface SaleChannelRecord {
   expired: boolean;
   /** What the provider expects, in the token's base units. */
   expectedAmount: bigint;
+  /** The adapter's code for the asset the order sells, the lane a lane sale's egress must match. */
+  soldCurrency: string;
   /** The sending address the adapter pinned on the sale. */
   walletAddress?: string | undefined;
 }
@@ -145,6 +147,7 @@ export function saleChannelOf(
     payout: "off-chain",
     expired: !saleLive(result.status),
     expectedAmount,
+    soldCurrency: token.meldCurrencyCode,
     walletAddress: result.walletAddress,
   };
 }

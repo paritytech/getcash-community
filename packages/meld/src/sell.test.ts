@@ -473,6 +473,7 @@ describe("the sale as the rail leg reads it", () => {
       payout: "off-chain",
       expired: false,
       expectedAmount: 234_521_000_000n,
+      soldCurrency: "DOT",
     });
   });
 
