@@ -7,10 +7,11 @@
 
 import { bounded } from "./bounded";
 
-/** The best block a transaction was seen in. */
+/** The best block a transaction was seen in. No hash for one whose answer was lost: its effect
+ *  showed at the best head, and it is watched from that head's number (`seenAtBest`). */
 export interface SeenBlock {
   number: number;
-  hash: string;
+  hash: string | null;
 }
 
 /** What the finalized chain says of a seen block: nothing while it is not past it, then that the
@@ -31,7 +32,8 @@ const forgotten = (hash: string | undefined): boolean => hash === undefined || /
 /**
  * The finalized chain's word on `seen`. Pending until its head is strictly past the block, since
  * a block's hash is recorded by the block after it. A block too old for the chain to name is
- * unknown, and the caller reads the transaction's effect instead.
+ * unknown, and the caller reads the transaction's effect instead. So is one seen with no hash, as
+ * soon as the finalized head reaches it: the effect read there covers every block it could be in.
  */
 export async function settleBlock(
   chain: FinalizedChain,
@@ -39,10 +41,27 @@ export async function settleBlock(
   timeoutMs: number,
 ): Promise<BlockVerdict> {
   const finalized = await bounded(chain.number(), timeoutMs, "finalized head read");
+  if (seen.hash === null) return finalized < seen.number ? "pending" : "unknown";
   if (finalized <= seen.number) return "pending";
   const hash = await bounded(chain.hashAt(seen.number), timeoutMs, "block hash read (finalized)");
   if (forgotten(hash)) return "unknown";
   return hash === seen.hash ? "final" : "dropped";
+}
+
+/** Where a transaction whose answer was lost is watched from once its effect shows at the best
+ *  head: that head's number, read after the effect, with no hash. */
+export async function seenAtBest(
+  api: {
+    query: { System: { Number: { getValue: (options: { at: "best" }) => Promise<number> } } };
+  },
+  timeoutMs: number,
+): Promise<SeenBlock> {
+  const number = await bounded(
+    api.query.System.Number.getValue({ at: "best" }),
+    timeoutMs,
+    "block number read",
+  );
+  return { number, hash: null };
 }
 
 /** The finalized reads of a chain, from its typed api. */

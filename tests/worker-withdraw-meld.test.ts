@@ -382,10 +382,13 @@ describe("the worker's side of a fiat sale", () => {
     mocks.paymentOutcome.mockResolvedValue("pending");
     const engine = await engineWith({ "s-1": paidAtBest() });
     await engine.tickAllWithdraw();
+    // The exact payment is judged by the key even in a block too old to name: its nonce keeps a
+    // refund from passing for it.
     expect(mocks.paymentOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "s-1" }),
       { number: 7, hash: "0xpaid" },
       expect.any(Function),
+      { unknownStands: false },
     );
     // The payment's effect: past its nonce, the balance down by the figure.
     const shows = mocks.paymentOutcome.mock.calls[0]![2] as (key: object) => boolean;

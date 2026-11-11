@@ -12,6 +12,7 @@ import {
   payExactOnce,
   PaymentUnresolvedError,
   type ExactPayInput,
+  type ExactPayState,
 } from "./pay-exact";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
@@ -19,6 +20,8 @@ const DEPOSIT = "5Deposit";
 const KEY = "5Key";
 const AMOUNT = 20_000_000_000n;
 const SIGNER = {} as never;
+/** Asset Hub's best block number. */
+const BEST = 250;
 
 type Outcome = { ok: true } | { ok: false; error: string };
 type Reading = { free: bigint; nonce: number };
@@ -63,7 +66,10 @@ function world(
       Balances: { transfer_keep_alive: transferKeepAlive("Balances") },
       Assets: { transfer_keep_alive: transferKeepAlive("Assets") },
     },
-    query: { Assets: { Asset: { getValue: async () => ({ min_balance: 70_000n }) } } },
+    query: {
+      Assets: { Asset: { getValue: async () => ({ min_balance: 70_000n }) } },
+      System: { Number: { getValue: async () => BEST } },
+    },
     apis: {
       // The native fee at a thousandth in the stable.
       AssetConversionApi: {
@@ -182,6 +188,8 @@ describe("the exact payment", () => {
     const { input, submits } = world([{ free: 999_000_000n, nonce: 1 }]);
     await payExactOnce(input, state);
     expect(submits).toEqual([]);
+    // No block is known for it, so the driver watches it from the best head.
+    expect(state.seen).toEqual({ number: BEST, hash: null });
   });
 
   it("sends again at the same nonce when the lost attempt never landed", async () => {
@@ -306,10 +314,12 @@ describe("an earlier attempt, read from the chain alone", () => {
     expect(reads).toBe(0);
   });
 
-  it("says it landed once the key signed past its nonce and fell by the amount", async () => {
+  it("says it landed once the key signed past its nonce and fell by the amount, and watches it from the best block", async () => {
     const { input, submits } = world([{ free: 999_000_000n, nonce: 1 }]);
-    expect(await exactPaymentLanded(input, inFlight())).toBe(true);
+    const state: ExactPayState = inFlight();
+    expect(await exactPaymentLanded(input, state)).toBe(true);
     expect(submits).toEqual([]);
+    expect(state.seen).toEqual({ number: BEST, hash: null });
   });
 
   it("says nothing landed while the key still stands at the payment's nonce", async () => {

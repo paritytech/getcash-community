@@ -1514,6 +1514,20 @@ describe("withdrawTickOnce", () => {
     expect(state).toMatchObject({ submitted: true, xcmBlock: null, xcmHash: null });
   });
 
+  it("lets the exit's block go when the finalized chain already holds it on the tick that sees the exit ran, with no second watch", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    expect((await drive(world, 1, state, PSM_SALE)).steps).toEqual(["redeem"]);
+    expect(state.redeemBlock).toBe(AH_ANCHOR + 1);
+    // The next tick comes only once Asset Hub finalized past the exit's block.
+    world.state.finalizedAh = AH_ANCHOR + 2;
+    world.state.bestAh = AH_ANCHOR + 5;
+    expect((await drive(world, 1, state, PSM_SALE)).steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null, redeemHash: null });
+  });
+
   it("keeps the block the exit was seen in, and when that block was replaced with the key still at its nonce, waits out the exit's mortality before it signs it afresh there", async () => {
     const world = scriptedWorld();
     const state = freshWithdrawTickState();

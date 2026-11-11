@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
 import { bestBlockWatch } from "@getsome/testing";
-import { freshSweepState, sweepOnce, type SweepInput } from "./sweep";
+import { freshSweepState, sweepOnce, type SweepInput, type SweepState } from "./sweep";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 const CHANNEL = "5Channel";
@@ -119,10 +119,13 @@ describe("the sweep", () => {
     expect(seen).toEqual([1]);
   });
 
-  it("takes an empty key after a submit as done, without submitting again", async () => {
+  it("takes an empty key after a submit as done, without submitting again or watching a block", async () => {
     const { input, submits } = world([0n], []);
-    await sweepOnce(input, { attempts: 1, rejections: 0 });
+    const state: SweepState = { attempts: 1, rejections: 0 };
+    await sweepOnce(input, state);
     expect(submits).toEqual([]);
+    // A swap's refund can fill the key again, so the key could not settle it later.
+    expect(state.seen).toBeUndefined();
   });
 
   it("refuses an empty key before any submit: there is nothing to move", async () => {

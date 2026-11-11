@@ -32,7 +32,7 @@ import {
 } from "@getsome/funding";
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
-import type { SeenBlock } from "./inclusion";
+import { seenAtBest, type SeenBlock } from "./inclusion";
 import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
 import { AT_BEST } from "./paseo";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
@@ -71,8 +71,8 @@ export interface ExactPayState {
   anchor?: number | null;
   /** Refusals at dispatch so far. */
   rejections: number;
-  /** The best block the payment was seen in, kept until the finalized chain settles it. Absent
-   *  before any, once it is final, and for one whose answer was lost. */
+  /** The best block the payment was seen in, kept until the finalized chain settles it, with no
+   *  hash for one whose answer was lost. Absent before any, and once it is final. */
   seen?: SeenBlock | null;
 }
 
@@ -207,6 +207,19 @@ function judge(
 }
 
 /**
+ * A payment whose answer was lost and which the key shows paid at the best head: no block is
+ * known, so the driver watches it from that head until the finalized chain shows it too. True,
+ * for the caller to answer with.
+ */
+async function watchedFromBest(
+  input: Pick<ExactPayInput, "assetHubApi" | "tickTimeoutMs">,
+  state: ExactPayState,
+): Promise<true> {
+  state.seen ??= await seenAtBest(input.assetHubApi, input.tickTimeoutMs);
+  return true;
+}
+
+/**
  * Whether an attempt that may already have left did land, from the chain alone. The rail leg asks
  * this before the provider: a provider that already saw the funds may have closed the order, and
  * its record would then read as a sale that was never paid. False with nothing in flight, and
@@ -215,12 +228,15 @@ function judge(
  * land: it is no longer in flight, and the payment is free to go again or to stand down.
  */
 export async function exactPaymentLanded(
-  input: Pick<ExactPayInput, "readKey" | "readFinalizedNumber" | "amount" | "tickTimeoutMs">,
+  input: Pick<
+    ExactPayInput,
+    "assetHubApi" | "readKey" | "readFinalizedNumber" | "amount" | "tickTimeoutMs"
+  >,
   state: ExactPayState,
 ): Promise<boolean> {
   if (!state.inFlight) return false;
   const key = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
-  if (judge(key, state, input.amount) === "paid") return true;
+  if (judge(key, state, input.amount) === "paid") return watchedFromBest(input, state);
   const anchor = state.anchor ?? null;
   if (anchor !== null && input.readFinalizedNumber !== undefined) {
     const finalized = await bounded(
@@ -232,7 +248,7 @@ export async function exactPaymentLanded(
       // Read again after the finalized head, so the best head holds every block the attempt
       // could have landed in.
       const again = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
-      if (judge(again, state, input.amount) === "paid") return true;
+      if (judge(again, state, input.amount) === "paid") return watchedFromBest(input, state);
       state.inFlight = false;
       state.balanceBefore = null;
       state.anchor = null;
@@ -248,7 +264,10 @@ export async function exactPaymentLanded(
  */
 export async function payExactOnce(input: ExactPayInput, state: ExactPayState): Promise<void> {
   const key = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
-  if (judge(key, state, input.amount) === "paid") return;
+  if (judge(key, state, input.amount) === "paid") {
+    await watchedFromBest(input, state);
+    return;
+  }
 
   const tx = buildExactPay(input.assetHubApi, input.to, input.amount, input.token);
   const dr = await bounded(

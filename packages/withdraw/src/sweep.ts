@@ -70,6 +70,8 @@ export function buildSweep(api: AssetHubApi, to: string, token: TokenSpec) {
 export async function sweepOnce(input: SweepInput, state: SweepState): Promise<void> {
   const held = await bounded(input.readKeyOnAssetHub(), input.tickTimeoutMs, "key balance read");
   if (held === 0n) {
+    // Its answer was lost. Not watched to finality: a swap's refund can fill the key the sweep
+    // emptied, so a later read of the key could not tell the sweep never left.
     if (state.attempts > 0) return;
     throw new Error("nothing on the key to sweep");
   }

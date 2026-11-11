@@ -217,10 +217,12 @@ describe("the worker's rail leg", () => {
 
     // Not past it yet: the swap is followed, and nothing more is swept.
     await engine.tickAllWithdraw();
+    // A sweep in a block too old to name stands: a refund could fill the key it emptied.
     expect(mocks.paymentOutcome).toHaveBeenLastCalledWith(
       expect.objectContaining({ sessionId: "s-1" }),
       seen,
       expect.any(Function),
+      { unknownStands: true },
     );
     // The sweep's effect: one was sent, and the key holds none of the token.
     const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (key: object) => boolean;

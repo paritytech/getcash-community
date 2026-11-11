@@ -2,7 +2,7 @@
 // block, then whether the block stands or another took its place.
 
 import { describe, expect, it } from "vitest";
-import { finalizedChainOf, settleBlock, type FinalizedChain } from "./inclusion";
+import { finalizedChainOf, seenAtBest, settleBlock, type FinalizedChain } from "./inclusion";
 
 const SEEN = { number: 500, hash: "0xseen" };
 
@@ -44,6 +44,39 @@ describe("a block a transaction was seen in", () => {
     const zeroes = `0x${"00".repeat(32)}`;
     expect(await settleBlock(chain(9_000, zeroes).reads, SEEN, 1_000)).toBe("unknown");
     expect(await settleBlock(chain(9_000, undefined).reads, SEEN, 1_000)).toBe("unknown");
+  });
+
+  it("has no hash for a transaction whose answer was lost: pending until the finalized head reaches its number, then unknown, with no hash read", async () => {
+    const lost = { number: 500, hash: null };
+    const asked: number[] = [];
+    for (const [number, verdict] of [
+      [499, "pending"],
+      [500, "unknown"],
+      [501, "unknown"],
+    ] as const) {
+      const { reads, asked: read } = chain(number, "0xseen");
+      expect(await settleBlock(reads, lost, 1_000)).toBe(verdict);
+      asked.push(...read);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it("watches a lost answer from the best head's number, read at the best head", async () => {
+    const asked: unknown[] = [];
+    const api = {
+      query: {
+        System: {
+          Number: {
+            getValue: async (options: { at: "best" }) => {
+              asked.push(options);
+              return 777;
+            },
+          },
+        },
+      },
+    };
+    expect(await seenAtBest(api, 1_000)).toEqual({ number: 777, hash: null });
+    expect(asked).toEqual([{ at: "best" }]);
   });
 
   it("reads both at the chain's finalized head", async () => {

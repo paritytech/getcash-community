@@ -149,7 +149,8 @@ const saveJobs = () => store.save();
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at;
  *                                            // sweep.seen, exact.seen: the best block the
- *                                            // payment was seen in, until it is final
+ *                                            // payment was seen in, until it is final; no
+ *                                            // hash for an exact payment's lost answer
  *   saleNotFound?, saleNotFoundSince?,       // Meld only: the adapter's 404s in a row, and since
  *   residue?: { amount?, returning, whole?, sessionId?, route?, rearms?, stuck? },
  *                                            // Meld only: what the sale left on the key once
@@ -648,8 +649,9 @@ function judgeBounds(record, nowMs, read) {
   }
 }
 
-/** The best block the key's payment to the provider was seen in, while the finalized chain has
- *  not settled it; null once it has, and for a payment whose answer was lost. */
+/** The best block the key's payment to the provider was seen in, or for an exact payment whose
+ *  answer was lost the best head it was read paid at, while the finalized chain has not settled
+ *  it; null once it has, and for a sweep whose answer was lost. */
 const paymentSeen = (record) =>
   record.leg?.paid === true ? (record.leg.exact?.seen ?? record.leg.sweep?.seen ?? null) : null;
 
@@ -671,14 +673,17 @@ function paymentShows(record) {
  * Settles a payment seen in a best block once Asset Hub's finalized chain is past that block
  * (`paymentOutcome`): final, and the block is let go; gone, and the leg is unpaid again, so the
  * key pays again, the exact figure at its same nonce. A payment that landed in another block than
- * the one it was seen in stands.
+ * the one it was seen in stands, and so does a sweep in a block too old for the chain to name,
+ * which a swap's refund to the key could otherwise pass off as never sent.
  */
 async function settlePayment(record) {
   const seen = paymentSeen(record);
   if (seen === null) return;
-  const outcome = await paymentOutcome(record, seen, paymentShows(record));
-  if (outcome === "pending") return;
   const { exact, sweep } = record.leg;
+  const outcome = await paymentOutcome(record, seen, paymentShows(record), {
+    unknownStands: exact?.seen == null,
+  });
+  if (outcome === "pending") return;
   record.leg = {
     ...record.leg,
     ...(exact?.seen == null ? {} : { exact: { ...exact, seen: null } }),

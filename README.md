@@ -104,8 +104,13 @@ pallet will not take, holds the withdrawal with the CASH safe on the key. The jo
 "Try again", which starts the count over, and "Sell on the pool", one swap from CASH through PAS
 to USDT paid to the same destination; the worker never takes the pool by itself.
 Arrival is a balance read at the head, like every other read in the engine: the destination's
-balance in the landing token is read just before the XCM, or on the PSM tier the redeem, leaves,
-and the run is done once it has grown by what the Asset Hub dry run said would land. Every read is
+balance in the landing token is read just before the XCM leaves, and the run is done once it has
+grown by what the Asset Hub dry run said would land. On the PSM tier the exit, the redeem or the
+pool sale, is the key's own transaction on Asset Hub, so the key says it ran: past the exit's
+nonce with its CASH gone. The success screen shows what the destination received, net of the
+fees: the PSM's net, which is exact, or else the gain measured on the destination, falling back to
+the dry run's figure or the exit's floor when that gain also holds someone else's deposit. Every
+read is
 at the best block, as on the top-up, and each transaction counts as sent once a best block holds
 it. A best block can still be replaced, so the block each transaction was seen in is kept, number
 and hash, and the worker ticks the job on after it is done until the finalized chain is past that
@@ -141,8 +146,10 @@ user was quoted a figure for it: USDT goes back through the PSM when it can serv
 stable pool otherwise, PAS through the pool. A sale that ends before the provider is paid, because
 the price moved past the figure, the provider closed or changed the order, or the hour ran out,
 sends everything on the key home the same way, wherever it is. A payment whose answer was lost
-holds the job until the chain shows it landed or outlived its mortality; only a key whose chain
-state contradicts the payment stops the job for a person.
+holds the job until the chain shows it landed or outlived its mortality, and an exact payment that
+shows landed at the best head is watched from there until the finalized chain shows it too. A sweep
+is not: a swap's refund can fill the key it emptied, so the key cannot settle it later. Only a key
+whose chain state contradicts the payment stops the job for a person.
 
 ### Rails as packages
 

@@ -237,6 +237,7 @@ export async function exactPaymentOut(record, amount, exact) {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     return await exactPaymentLanded(
       {
+        assetHubApi,
         amount,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token),
@@ -256,8 +257,10 @@ export async function exactPaymentOut(record, amount, exact) {
  * nowhere, and the key pays again. A block that was replaced, or one too old for the chain to
  * name, says nothing of the payment itself, which usually landed in the block that took its
  * place: `shows(key)` reads its effect on the key, its balance in the sale's token and its nonce.
+ * With `unknownStands`, a block too old to name stands without that read: a sweep empties the key
+ * and a swap's refund can fill it again, so the key could not tell a sweep never left.
  */
-export async function paymentOutcome(record, seen, shows) {
+export async function paymentOutcome(record, seen, shows, { unknownStands = false } = {}) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -267,6 +270,7 @@ export async function paymentOutcome(record, seen, shows) {
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
     );
     if (verdict === "pending" || verdict === "final") return verdict;
+    if (verdict === "unknown" && unknownStands) return "final";
     const token = depositTokenOf(recordedRoute(record));
     const read = (at) =>
       bounded(

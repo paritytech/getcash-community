@@ -24,11 +24,14 @@
 // slippage the program itself allows, or the program's own floor when that is lower: a sale that
 // slips further fails the program, so nothing less can be a landing. The key must hold no CASH
 // too, which says the XCM executed on People; a deposit from elsewhere alone does not count. The
-// redeem's landing is read the same way, exact, since the PSM's rate is fixed. Nothing is followed
-// through block history: hosts serve the current head and nothing older, and a run that resumes
-// after a reload has no memory but the persisted state. A program that fails on Asset Hub traps
-// its assets there and never shows on the destination; the run holds until the driver's bound,
-// and the claimer named in the program can recover the assets.
+// exit on the PSM tier, the redeem or the pool sale, is the key's own transaction on Asset Hub, so
+// the key says it ran: past the exit's nonce with its CASH gone. The success screen shows what the
+// destination received: the PSM's exact net, or else the gain measured on the destination
+// (`received`). Nothing is followed through block history: hosts serve the current head and
+// nothing older, and a run that resumes after a reload has no memory but the persisted state. A
+// program that fails on Asset Hub traps its assets there and never shows on the destination; the
+// run holds until the driver's bound, and the claimer named in the program can recover the
+// assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next; CASH on the key's Asset Hub account
@@ -319,12 +322,8 @@ async function vouch(
   hash: string | null,
   timeoutMs: number,
 ): Promise<"final" | "pending" | "unsettled"> {
-  if (hash !== null) {
-    const verdict = await settleBlock(chain, { number: block, hash }, timeoutMs);
-    return verdict === "final" || verdict === "pending" ? verdict : "unsettled";
-  }
-  const finalized = await bounded(chain.number(), timeoutMs, "finalized head read");
-  return finalized < block ? "pending" : "unsettled";
+  const verdict = await settleBlock(chain, { number: block, hash }, timeoutMs);
+  return verdict === "final" || verdict === "pending" ? verdict : "unsettled";
 }
 
 /**
@@ -587,21 +586,25 @@ const exitRan = (state: WithdrawTickState, key: { nonce: number; cash: bigint })
  * Otherwise the key says it, as for the XCM: the exit ran at the finalized head, and it is final;
  * only at the best head, and it is watched again from there; at neither, and the arrival goes
  * with it, while the exit's own settling decides from the nonce what is sent, waiting out its
- * mortality while the key is still at it.
+ * mortality while the key is still at it. True when the finalized chain settled the exit as run.
  */
-async function settleExitBlock(input: WithdrawTickInput, state: WithdrawTickState): Promise<void> {
+async function settleExitBlock(
+  input: WithdrawTickInput,
+  state: WithdrawTickState,
+): Promise<boolean> {
   const block = state.redeemBlock;
-  if (block === null) return;
+  if (block === null) return false;
   const said = await vouch(
     finalizedChainOf(input.assetHubApi),
     block,
     state.redeemHash,
     input.tickTimeoutMs,
   );
-  if (said === "pending") return;
+  if (said === "pending") return false;
   const letGo = () => {
     state.redeemBlock = null;
     state.redeemHash = null;
+    return true;
   };
   if (said === "final") return letGo();
   const read = (at: "best" | "finalized") =>
@@ -613,11 +616,12 @@ async function settleExitBlock(input: WithdrawTickInput, state: WithdrawTickStat
   if (exitRan(state, await read("finalized"))) return letGo();
   if (exitRan(state, await read("best"))) {
     await watchExitFromBest(input, state);
-    return;
+    return false;
   }
   letGo();
   state.arrived = false;
   state.received = null;
+  return false;
 }
 
 /**
@@ -715,7 +719,7 @@ async function exitFromAssetHub(
     input.tickTimeoutMs,
     "key read on Asset Hub",
   );
-  await settleExitBlock(input, state);
+  const exitFinal = await settleExitBlock(input, state);
   // The stable was seen landed and the blocks stand: done, whatever became of it since.
   if (state.arrived) return { step: "done", balances, submitted: false };
   if (!state.redeemSubmitted && onKey.cash === 0n) {
@@ -737,8 +741,8 @@ async function exitFromAssetHub(
     if (settled === "done") {
       state.received = await deliveredByExit(state, readLanding, input.slippagePct);
       // Its answer lost, or its block given up on: no block is known, so it is watched from the
-      // best block, as a lost XCM is.
-      if (state.redeemBlock === null) await watchExitFromBest(input, state);
+      // best block, as a lost XCM is. One the finalized chain settled on this tick needs no watch.
+      if (state.redeemBlock === null && !exitFinal) await watchExitFromBest(input, state);
       // Last, so a read that fails above leaves the exit to be settled again on the next tick.
       state.arrived = true;
     }
