@@ -1,21 +1,21 @@
 <script setup lang="ts">
-// The destination address: the network and token already chosen as pills, the address typed or
-// pasted, checked against the destination's own rule. An address another network would take gets
-// the wrong-network error; anything else invalid is just incorrect. Valid turns the disabled Next
-// into Continue with the design's wrong-network warning. The design's Scan button is left out:
-// the host grants a Camera permission but has no scanner API, so scanning needs an in-page
-// getUserMedia capture and QR decoder that are not built yet.
+// The destination address: the network and token already chosen as pills, the address typed,
+// pasted or scanned from a QR code, checked against the destination's own rule. An address another
+// network would take gets the wrong-network error; anything else invalid is just incorrect. Valid
+// turns the disabled Next into Continue with the design's wrong-network warning.
 import { computed, ref } from "vue";
-import { CircleAlert, ClipboardPaste } from "lucide-vue-next";
+import { CircleAlert, Clipboard, Scan } from "lucide-vue-next";
 import {
   destinationTokenIcon,
   matchesOtherNetwork,
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../withdraw/destinations";
+import { addressFromScan } from "../../withdraw/scan";
 import PillButton from "../ui/PillButton.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
 import SourcePill from "../ui/SourcePill.vue";
+import QrScanner from "./QrScanner.vue";
 import { devLog } from "~~/lib/log";
 
 const props = defineProps<{
@@ -62,6 +62,16 @@ async function paste() {
   }
   field.value?.focus();
 }
+
+const scanning = ref(false);
+
+/** A code read by the camera fills the field as a paste does, the address taken out of a
+ *  payment URI when the code is one. */
+function scanned(text: string) {
+  scanning.value = false;
+  address.value = addressFromScan(text);
+  touched.value = true;
+}
 </script>
 
 <template>
@@ -100,16 +110,25 @@ async function paste() {
       {{ error }}
     </p>
 
-    <div class="mt-4 flex justify-center">
+    <div class="mt-4 flex justify-center gap-2">
       <button
         type="button"
-        class="flex h-8 items-center gap-2 rounded-full bg-action-tertiary px-4 text-label-l text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        class="flex h-8 w-[105px] items-center justify-center gap-2 rounded-full bg-action-tertiary px-4 text-label-l text-fg-primary transition-colors hover:bg-action-tertiary-hover"
         @click="paste"
       >
-        <ClipboardPaste class="size-4" aria-hidden="true" />
+        <Clipboard class="size-4" aria-hidden="true" />
         Paste
       </button>
+      <button
+        type="button"
+        class="flex h-8 w-[105px] items-center justify-center gap-2 rounded-full bg-action-tertiary px-4 text-label-l text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="scanning = true"
+      >
+        <Scan class="size-4" aria-hidden="true" />
+        Scan
+      </button>
     </div>
+    <QrScanner v-if="scanning" @scanned="scanned" @close="scanning = false" />
 
     <template #actions>
       <div class="flex flex-col gap-4">
