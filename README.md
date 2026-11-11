@@ -21,7 +21,9 @@ app plus a background worker, both published to bulletin/DotNS.
 The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
 opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
-worker, which converts it to CASH and sends it to the People chain in one transaction on Asset
+worker. The worker takes the deposit at Asset Hub's best block, whoever sent it: a fork that
+drops the deposit drops the conversion built on it too, and a dropped transfer lands again. It
+converts the deposit to CASH and sends it to the People chain in one transaction on Asset
 Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, as
 soon as that CASH shows at People's best block, claims it through the host's top-up call, while it
 keeps watching the conversion's block until Asset Hub finalizes it. The top-up is registered

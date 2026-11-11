@@ -41,9 +41,12 @@
 //
 // THE SUBMIT WAITS FOR INCLUSION; THE ARRIVAL IS READ AT PEOPLE'S BEST BLOCK. The submit
 // resolves once the program is in a best block with its outcome, so a conversion holds the tick
-// for one inclusion at most. The deposit is read at Asset Hub's finalized block. The run is done,
-// and the claim registered, as soon as People's best block holds the target. A shortfall ends
-// the run, so it is confirmed at People's finalized block. A submit whose answer was lost is
+// for one inclusion at most. The deposit is read at Asset Hub's best block, whoever sent it. A
+// conversion built on it sits in a later block of the same chain, so a fork that takes the
+// deposit takes the conversion too, and the deposit is read again before anything goes out; a
+// transfer a fork drops lands again, from the transaction pool or the sender's own retry. The run
+// is done, and the claim registered, as soon as People's best block holds the target. A shortfall
+// ends the run, so it is confirmed at People's finalized block. A submit whose answer was lost is
 // settled from the chain: the nonce unmoved means nothing landed and the same nonce may go out
 // again. A best block can be replaced, so the block the program landed in is kept, with its
 // hash, through done, until the chain is final past it: the finalized chain holding another
@@ -493,8 +496,8 @@ export interface TickState {
   /** The block the program was seen in and its hash, kept until the chain is final past it: the
    *  finalized chain holding that hash at that height makes the conversion final, another hash
    *  means the block was replaced. A lost answer settled as landed names the latest block with
-   *  no hash; once the chain is final past it, the burner's finalized nonce and deposit say
-   *  whether the program ran. Null once settled. */
+   *  no hash; once the chain is final past it, the burner's finalized nonce, or else People's
+   *  finalized block, says whether the program ran. Null once settled. */
   inclusionBlock: number | null;
   inclusionHash: string | null;
   /** The target was seen on People in a best block. The run stays done on it while the
@@ -846,11 +849,18 @@ async function settleLostSubmit(
 }
 
 /** A lost answer settled as landed knows no block hash, only that the program is in the latest
- *  block or an earlier one. Once the finalized chain is past that block, the burner there shows
- *  whether it ran: its nonce moved, or its deposit gone with the reaped account. Neither, and the
+ *  block or an earlier one. Once the finalized chain is past that block, it shows whether the
+ *  program ran: the burner's nonce moved there. A burner the program reaped starts its nonce
+ *  over, and its empty account says nothing, since the deposit was taken at the best block and a
+ *  fork can take it with the program; so People says it, from its finalized block. Otherwise the
  *  block was replaced: the latch is released, and a later tick finds the program again in a best
- *  block or sends it again. Read after the block number, so they see at least that block. */
-async function convertedAtFinalized(input: TickOnceInput, nonceAtSubmit: number): Promise<boolean> {
+ *  block, or sends it again once the deposit is back. Read after the block number, so they see at
+ *  least that block. */
+async function convertedAtFinalized(
+  input: TickOnceInput,
+  nonceAtSubmit: number,
+  ranOnPeople: () => Promise<boolean>,
+): Promise<boolean> {
   const { api, route, address } = input;
   const [nonce, deposit] = await bounded(
     Promise.all([
@@ -860,7 +870,9 @@ async function convertedAtFinalized(input: TickOnceInput, nonceAtSubmit: number)
     input.tickTimeoutMs,
     "nonce and deposit reads (finalized)",
   );
-  return nonce > nonceAtSubmit || deposit === 0n;
+  if (nonce > nonceAtSubmit) return true;
+  if (deposit !== 0n) return false;
+  return ranOnPeople();
 }
 
 /** The program is in a best block the chain may yet replace, so the finalized chain has the last
@@ -875,6 +887,7 @@ async function settleInclusion(
   nonceAtSubmit: number,
   inclusionBlock: number,
   inclusionHash: string | null,
+  ranOnPeople: () => Promise<boolean>,
 ): Promise<void> {
   const { api } = input;
   const finalizedBlock = await bounded(
@@ -887,7 +900,7 @@ async function settleInclusion(
   if (finalizedBlock <= inclusionBlock) return;
   const final =
     inclusionHash === null
-      ? await convertedAtFinalized(input, nonceAtSubmit)
+      ? await convertedAtFinalized(input, nonceAtSubmit, ranOnPeople)
       : (await bounded(
           api.query.System.BlockHash.getValue(inclusionBlock, { at: "finalized" }),
           input.tickTimeoutMs,
@@ -915,13 +928,37 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
   const [depositAh, peopleHeld] = await bounded(
     Promise.all([
-      readDeposit(api, route, address, "finalized"),
+      readDeposit(api, route, address, "best"),
       input.readUnderlyingOnPeople(address, "best"),
     ]),
     input.tickTimeoutMs,
     "tick balance reads",
   );
 
+  // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
+  // it there. Asked only of a burner the program would have reaped, since a fork can take the
+  // deposit, the program and the arrival People saw at its best block all together. A claim the
+  // host made final since leaves nothing there, and ends the run on its own.
+  const ranOnPeople = async (): Promise<boolean> => {
+    const held = await bounded(
+      input.readUnderlyingOnPeople(address, "finalized"),
+      input.tickTimeoutMs,
+      "People read (finalized)",
+    );
+    if (held > state.peopleAtXcm) return true;
+    if (state.sentToPeople === null) return false;
+    const trap = await bounded(
+      findTrap(
+        input.peopleApi,
+        input.beneficiaryHex,
+        state.sentToPeople,
+        trapScanSpan(state.peopleFeeCash),
+      ),
+      input.tickTimeoutMs,
+      "trap read",
+    );
+    return trap !== null;
+  };
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(
       input,
@@ -929,6 +966,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       state.nonceAtSubmit,
       state.inclusionBlock,
       state.inclusionHash,
+      ranOnPeople,
     );
   }
 

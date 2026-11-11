@@ -146,8 +146,8 @@ const saveJobs = () => store.save();
  *                                            // conversion was seen in, while it is not final
  *                                            // arrived: the CASH was seen on People; done holds
  *                                            // on it while that block stands
- *                                            // workedMs: worker time since the deposit was
- *                                            // final, until the claim is registered (see
+ *                                            // workedMs: worker time since the pipeline took
+ *                                            // the deposit, until the claim is registered (see
  *                                            // accountWorkedTime)
  *                                            // rejections, lastRejection: paid rejections in
  *                                            // a row with the same answer
@@ -155,8 +155,8 @@ const saveJobs = () => store.save();
  *   txs: [{ call, txHash, block? }],
  *   depositSeen?: { block, finalizedAtSeen, finalized, best },
  *                                            // the deposit in a best block, followed until the
- *                                            // pipeline sees it final: block: the best block it
- *                                            // was first seen in; finalizedAtSeen: the finalized
+ *                                            // pipeline takes it: block: the best block it was
+ *                                            // first seen in; finalizedAtSeen: the finalized
  *                                            // block number then; finalized and best: at the
  *                                            // last tick
  *   conversion?: { preparedAt, converted?: { txHash, block, at, workedMs } },
@@ -459,7 +459,7 @@ export async function amendFunding(params) {
   return describeFunding(record);
 }
 
-/** True while the funding leg waits for a deposit the pipeline has not yet seen final. */
+/** True while the funding leg waits for a deposit the pipeline has not yet taken. */
 const waitingForDeposit = (record) => !record.done && record.state.fundsSeenAt === null;
 
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
@@ -1054,9 +1054,9 @@ async function runConversion(record, env, job) {
 }
 
 /**
- * Follows the deposit while the pipeline waits for it to be final: it reads the burner at the
- * anchor until the deposit shows there, then only moves the finalized block number on. The
- * pipeline decides on the finalized deposit alone.
+ * Follows the deposit while the pipeline waits for it: it reads the burner at the anchor until
+ * the deposit shows there, then only moves the block numbers on. The pipeline decides on its own
+ * best block read.
  */
 async function followDeposit(record, api, route, address, anchor) {
   if (record.depositSeen) {
