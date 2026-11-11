@@ -144,6 +144,23 @@ describe("createMockCoinageSession", () => {
     expect(raw).not.toContain(key?.secret);
     world.session.dispose();
   });
+
+  it("hands the worker a deposit from a Polkadot wallet as direct, and a swap's payout as not", async () => {
+    const direct = await createMockCoinageSession({
+      recipient: "r",
+      amount: 10_000_000n,
+      sourceId: "dot-assethub",
+    });
+    expect(await direct.handoffPayload()).toMatchObject({ direct: true });
+    direct.session.dispose();
+    const swap = await createMockCoinageSession({
+      recipient: "r",
+      amount: 10_000_000n,
+      sourceId: "usdt-tron",
+    });
+    expect(await swap.handoffPayload()).not.toHaveProperty("direct");
+    swap.session.dispose();
+  });
 });
 
 describe("recovering a refund key after the fact", () => {

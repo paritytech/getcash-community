@@ -210,6 +210,9 @@ export interface WorkerHandoffPayload {
    *  worker's gate checks for this rather than re-pricing the fees, which would move the bar under
    *  a deposit already sized against it. Absent on a payload from before it was recorded. */
   quotedDeposit?: string;
+  /** The buyer sends the deposit from their own Polkadot wallet, so the worker takes it at the
+   *  best block. Absent for a provider's payout, which waits for finality. */
+  direct?: true;
 }
 
 /** A fact the top-up timeline measures time from that has no time of its own on the record: a

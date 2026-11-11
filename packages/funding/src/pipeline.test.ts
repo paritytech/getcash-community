@@ -502,6 +502,10 @@ function scriptedWorld(
     debitIn: 0, // AH balance reads remaining until the funding program's debit becomes visible
     /** Debits landed while Asset Hub's finality is held: the finalized block shows them not. */
     unfinalDebit: 0n,
+    /** A deposit in a best block only: the finalized block shows it not. */
+    unfinalCredit: 0n,
+    /** The block each dry run as the burner was asked at, absent for the default. */
+    dryRunsAt: [] as Array<string | undefined>,
     xcmLanded: false, // a SUCCESSFUL send; a rejected submit leaves the run still quoting
     /** What the last landed program took from the burner and sent to People. */
     lastLanding: null as { debit: bigint; arrived: bigint } | null,
@@ -522,8 +526,9 @@ function scriptedWorld(
   const underlyingFor = (nativeIn: bigint) =>
     (((nativeIn * BUY) / QUOTED) * 10_000n) / state.priceBps;
   // The program as a dry run sees it: at the current price, without the debit, and without the
-  // scripted rejection or the price move at inclusion, which only the real submit meets.
-  const dryRunCall = (args: ExecuteArgs) => {
+  // scripted rejection or the price move at inclusion, which only the real submit meets. A dry
+  // run at a block that does not hold the deposit cannot withdraw it, as on the chain.
+  const dryRunCall = (args: ExecuteArgs, at?: string) => {
     const exchange = exchangeOf(args);
     const give = exchange.give.value[0]!.fun.value;
     const want = exchange.want[0]!.fun.value;
@@ -536,6 +541,7 @@ function scriptedWorld(
       },
     });
     if (opts.assetHubDryRunError) return rejected(3, opts.assetHubDryRunError);
+    if (at !== "best" && state.unfinalCredit > 0n) return rejected(0, "FailedToTransactAsset");
     const out = underlyingFor(give);
     if (out < want) return rejected(2, "NoDeal");
     return {
@@ -630,7 +636,9 @@ function scriptedWorld(
               state.nativeAh -= state.pendingDebit;
               state.pendingDebit = 0n;
             }
-            const free = state.nativeAh + (options?.at === "finalized" ? state.unfinalDebit : 0n);
+            const unfinal =
+              options?.at === "finalized" ? state.unfinalDebit - state.unfinalCredit : 0n;
+            const free = state.nativeAh + unfinal;
             return { data: { free }, nonce: chain.nonce.latest };
           },
         },
@@ -659,8 +667,15 @@ function scriptedWorld(
             : underlyingFor(nativeIn),
       },
       DryRunApi: {
-        dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
-          dryRunCall(call.value.value),
+        dry_run_call: async (
+          _origin: unknown,
+          call: { value: { value: ExecuteArgs } },
+          _version: number,
+          options?: { at?: string },
+        ) => {
+          state.dryRunsAt.push(options?.at);
+          return dryRunCall(call.value.value, options?.at);
+        },
       },
       // The landing shortfall is driven by `remoteFee`, not by these.
       XcmPaymentApi: xcmPaymentApi,
@@ -675,6 +690,7 @@ function scriptedWorld(
   chain.finalize = () => {
     finalizeChain();
     state.unfinalDebit = 0n;
+    state.unfinalCredit = 0n;
   };
   return {
     state,
@@ -2305,6 +2321,71 @@ describe("the submit, and the arrival on People", () => {
     expect(sentAt).toEqual([0, 0]);
     expect(world.nonce.latest).toBe(1);
     expect(state).toMatchObject({ attempts: 2, nonceAtSubmit: null, inclusionBlock: null });
+  });
+
+  it("takes a deposit from the buyer's own wallet at the best block, where a payout waits for finality", async () => {
+    // The deposit is in a best block Asset Hub has not finalized.
+    const inBest = () => {
+      const world = funded();
+      world.chain.finalityHeld = true;
+      world.state.unfinalCredit = world.state.nativeAh;
+      return world;
+    };
+    const payout = inBest();
+    expect((await drive(payout, 2)).steps).toEqual(["await-native", "await-native"]);
+    expect(payout.state.txs).toEqual([]);
+
+    const direct = inBest();
+    const run = await drive(direct, 2, freshTickState(), POOL, undefined, { depositAt: "best" });
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(run.state.fundsSeenAt).toBe(2_000);
+    // The fee estimate's dry run and the one before the submit both read the deposit's block.
+    expect(direct.state.dryRunsAt).toEqual(["best", "best"]);
+  });
+
+  it("sends nothing while a fork took a direct deposit's block with the conversion, and converts it again once the transfer is back", async () => {
+    const world = funded({ quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const deposit = world.state.nativeAh;
+    world.state.unfinalCredit = deposit;
+    const state = freshTickState();
+    const first = await drive(world, 2, state, POOL, undefined, { depositAt: "best" });
+    expect(first.steps).toEqual(["swap", "done"]);
+
+    // The fork that took the conversion's block took the deposit's too. The empty burner reads
+    // as the program having run, so the run holds and sends nothing, through finality rounds
+    // that pass the block it watched while nothing arrives on People.
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const gone = await drive(world, 3, state, POOL, undefined, { depositAt: "best" });
+    expect(gone.steps).toEqual(["await-arrival", "await-arrival", "await-arrival"]);
+    expect(gone.txs).toEqual(["swap"]);
+
+    // The buyer's transfer is back in a best block, not yet final: the program never took it, and
+    // it goes out again.
+    world.state.nativeAh = deposit;
+    world.state.unfinalCredit = deposit;
+    const again = await drive(world, 3, state, POOL, undefined, { depositAt: "best" });
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+  });
+
+  it("finds the trap a direct conversion left on People after its answer was lost, though the empty burner proves nothing", async () => {
+    const world = funded({ loseAnswer: "included", trapOnLanding: true, quoteAfterXcm: true });
+    const state = freshTickState();
+    const direct = { depositAt: "best" as const };
+    await expect(
+      drive(world, 1, state, POOL, undefined, { ...direct, inclusionTimeoutMs: 20 }),
+    ).rejects.toThrow(/not in a block/);
+    // The conversion reaped the burner, so its nonce starts over and Asset Hub shows nothing of it.
+    world.nonce.latest = 0;
+    world.nonce.finalized = 0;
+    world.state.loseAnswer = null;
+    const error = await drive(world, 3, state, POOL, undefined, direct).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(FundingTrappedError);
+    expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
   });
 
   it("ends the run on a short arrival only once People's finalized block shows it", async () => {

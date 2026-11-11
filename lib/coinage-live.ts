@@ -16,6 +16,7 @@ import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   depositTokenOf,
+  isManualSourceId,
   isStablePoolRoute,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -228,6 +229,7 @@ export async function lostRequestHandoff(
     peopleGenesis: PEOPLE_GENESIS,
     ...(await lostRequestFees(sourceId, tradeN, address, route, settleAmount)),
     ...route,
+    ...(isManualSourceId(sourceId) ? { direct: true as const } : {}),
   };
 }
 

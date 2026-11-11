@@ -326,6 +326,23 @@ describe("worker funding engine", () => {
     expect(noFee.reason).toContain("fee rate");
   });
 
+  it("reads a direct deposit at the best block and a provider's payout at the finalized one", async () => {
+    armSeams();
+    mocks.tickOnce.mockResolvedValue(outcome("await-native"));
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify({ ...HANDOFF, direct: true }));
+    expect(storedJob()).toMatchObject({ direct: true });
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce.mock.calls.at(-1)![0]).toMatchObject({ depositAt: "best" });
+
+    // Once the direct job is over, a payout's job is the one ticked.
+    await engine.cancelFunding(JSON.stringify({ sessionId: "s-1" }));
+    await engine.startFunding(JSON.stringify({ ...HANDOFF, sessionId: "s-2" }));
+    expect(storedJob("s-2").direct).toBeUndefined();
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce.mock.calls.at(-1)![0]).toMatchObject({ depositAt: "finalized" });
+  });
+
   it("discovers both pools for a pool job fed with a stable, and refuses a stable it does not know", async () => {
     armSeams();
     mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>

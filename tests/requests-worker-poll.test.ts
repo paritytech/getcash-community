@@ -355,6 +355,8 @@ describe("requests store: the worker poll", () => {
         peopleGenesis: job.peopleGenesis,
         remoteFeeBuffer: job.remoteFeeBuffer,
         keepNativeForFees: job.keepNativeForFees,
+        // Sent again with it, the job keeps taking the deposit at the best block.
+        direct: true,
       },
       status: { kind: "awaiting-deposit" },
       rail: { provider: "manual", status: "waiting", stage: "waiting", updatedAt: job.createdAt },

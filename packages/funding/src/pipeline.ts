@@ -41,8 +41,11 @@
 //
 // THE SUBMIT WAITS FOR INCLUSION; THE ARRIVAL IS READ AT PEOPLE'S BEST BLOCK. The submit
 // resolves once the program is in a best block with its outcome, so a conversion holds the tick
-// for one inclusion at most. The deposit is read at Asset Hub's finalized block. The run is done,
-// and the claim registered, as soon as People's best block holds the target. A shortfall ends
+// for one inclusion at most. A provider's payout is read at Asset Hub's finalized block, since it
+// cannot be asked for again; a deposit the buyer sent from their own Polkadot wallet is read at
+// the best block, and a conversion built on it sits in a later block of the same chain, so a
+// replaced block takes both and the deposit is read again before anything goes out. The run is
+// done, and the claim registered, as soon as People's best block holds the target. A shortfall ends
 // the run, so it is confirmed at People's finalized block. A submit whose answer was lost is
 // settled from the chain: the nonce unmoved means nothing landed and the same nonce may go out
 // again. A best block can be replaced, so the block the program landed in is kept, with its
@@ -575,6 +578,10 @@ export interface TickOnceInput {
   /** The burner's CASH on People at the given block: the best block for the arrival, the
    *  finalized one to confirm a shortfall. */
   readUnderlyingOnPeople: (ss58: string, at: BlockTag) => Promise<bigint>;
+  /** The block the deposit is read at on Asset Hub. The finalized one, the default, for a
+   *  provider's payout, which cannot be asked for again; the best one for a deposit the buyer
+   *  sent from their own Polkadot wallet. */
+  depositAt?: BlockTag;
   /** A claim is registered with the host, which takes the CASH off People as it lands. Any
    *  growth on People past the pre-send balance is then the arrival, whatever its size. */
   claimRegistered?: boolean;
@@ -629,6 +636,13 @@ const readNonce = (api: AssetHubApi, address: string, at: BlockTag) =>
 
 const readBlockNumber = (api: AssetHubApi, at: BlockTag) =>
   api.query.System.Number.getValue({ at });
+
+/** A dry run as the burner reads the block its deposit was read at, or it would not see the
+ *  deposit it spends: a fee estimate's dry run, and the one before the submit. */
+const dryRunAtOf = (input: TickOnceInput) =>
+  input.depositAt === undefined ? {} : { dryRunAt: input.depositAt };
+const burnerAtOf = (input: TickOnceInput) =>
+  input.depositAt === undefined ? {} : { at: input.depositAt };
 
 /** A submit's outcome in the first block it was seen in. */
 type Inclusion = { txHash: string } & TxEventsPayload;
@@ -849,8 +863,16 @@ async function settleLostSubmit(
  *  block or an earlier one. Once the finalized chain is past that block, the burner there shows
  *  whether it ran: its nonce moved, or its deposit gone with the reaped account. Neither, and the
  *  block was replaced: the latch is released, and a later tick finds the program again in a best
- *  block or sends it again. Read after the block number, so they see at least that block. */
-async function convertedAtFinalized(input: TickOnceInput, nonceAtSubmit: number): Promise<boolean> {
+ *  block or sends it again. Read after the block number, so they see at least that block. A
+ *  deposit taken at the best block may never have been final, and a fork can take it with the
+ *  conversion's block, so for one an empty burner says nothing: only People does, the CASH it
+ *  sent arrived there or held in a trap. Until then the latch is released each time, and a
+ *  deposit back on the burner goes out again. */
+async function convertedAtFinalized(
+  input: TickOnceInput,
+  nonceAtSubmit: number,
+  ranOnPeople: () => Promise<boolean>,
+): Promise<boolean> {
   const { api, route, address } = input;
   const [nonce, deposit] = await bounded(
     Promise.all([
@@ -860,7 +882,9 @@ async function convertedAtFinalized(input: TickOnceInput, nonceAtSubmit: number)
     input.tickTimeoutMs,
     "nonce and deposit reads (finalized)",
   );
-  return nonce > nonceAtSubmit || deposit === 0n;
+  if (nonce > nonceAtSubmit) return true;
+  if (deposit !== 0n) return false;
+  return input.depositAt !== "best" || (await ranOnPeople());
 }
 
 /** The program is in a best block the chain may yet replace, so the finalized chain has the last
@@ -875,6 +899,7 @@ async function settleInclusion(
   nonceAtSubmit: number,
   inclusionBlock: number,
   inclusionHash: string | null,
+  ranOnPeople: () => Promise<boolean>,
 ): Promise<void> {
   const { api } = input;
   const finalizedBlock = await bounded(
@@ -887,7 +912,7 @@ async function settleInclusion(
   if (finalizedBlock <= inclusionBlock) return;
   const final =
     inclusionHash === null
-      ? await convertedAtFinalized(input, nonceAtSubmit)
+      ? await convertedAtFinalized(input, nonceAtSubmit, ranOnPeople)
       : (await bounded(
           api.query.System.BlockHash.getValue(inclusionBlock, { at: "finalized" }),
           input.tickTimeoutMs,
@@ -915,13 +940,29 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
   const [depositAh, peopleHeld] = await bounded(
     Promise.all([
-      readDeposit(api, route, address, "finalized"),
+      readDeposit(api, route, address, input.depositAt ?? "finalized"),
       input.readUnderlyingOnPeople(address, "best"),
     ]),
     input.tickTimeoutMs,
     "tick balance reads",
   );
 
+  // The program ran on People: the CASH it sent arrived there, or a trap holds it. Asked only of
+  // a direct deposit whose burner is empty, since a fork can take the deposit with the program.
+  const ranOnPeople = async (): Promise<boolean> =>
+    state.arrived ||
+    peopleHeld > state.peopleAtXcm ||
+    (state.sentToPeople !== null &&
+      (await bounded(
+        findTrap(
+          input.peopleApi,
+          input.beneficiaryHex,
+          state.sentToPeople,
+          trapScanSpan(state.peopleFeeCash),
+        ),
+        input.tickTimeoutMs,
+        "trap read",
+      )) !== null);
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(
       input,
@@ -929,6 +970,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       state.nonceAtSubmit,
       state.inclusionBlock,
       state.inclusionHash,
+      ranOnPeople,
     );
   }
 
@@ -1003,6 +1045,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           transfer: input.transfer,
           feeProbeAddress: address,
           dryRunFrom: address,
+          ...dryRunAtOf(input),
         }),
         input.tickTimeoutMs,
         "dotUSD program fee estimate",
@@ -1043,6 +1086,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           transfer: input.transfer,
           feeProbeAddress: address,
           dryRunFrom: address,
+          ...dryRunAtOf(input),
         }),
         input.tickTimeoutMs,
         "stable program fee estimate",
@@ -1080,6 +1124,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           transfer: input.transfer,
           feeProbeAddress: address,
           dryRunFrom: address,
+          ...dryRunAtOf(input),
         }),
         input.tickTimeoutMs,
         "psm batch fee estimate",
@@ -1167,6 +1212,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         // The burner holds the native, so the delivery fee is priced from the real forwarded
         // program.
         dryRunFrom: address,
+        ...dryRunAtOf(input),
       }),
       input.tickTimeoutMs,
       "funding program fee estimate",
@@ -1239,6 +1285,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         peopleApi: input.peopleApi,
         execArgs,
         from: address,
+        ...burnerAtOf(input),
         beneficiaryHex: input.beneficiaryHex,
         peopleParaId: input.peopleParaId,
         assetHubParaId: input.assetHubParaId,
@@ -1397,6 +1444,7 @@ async function swapThroughStablePool(
       peopleApi: input.peopleApi,
       execArgs,
       from: address,
+      ...burnerAtOf(input),
       beneficiaryHex: input.beneficiaryHex,
       peopleParaId: input.peopleParaId,
       assetHubParaId: input.assetHubParaId,
@@ -1472,6 +1520,7 @@ async function sendDotUsdToPeople(
       peopleApi: input.peopleApi,
       execArgs,
       from: address,
+      ...burnerAtOf(input),
       beneficiaryHex: input.beneficiaryHex,
       peopleParaId: input.peopleParaId,
       assetHubParaId: input.assetHubParaId,
@@ -1586,6 +1635,7 @@ async function mintThroughPsm(
         peopleApi: input.peopleApi,
         batch: { batch, execArgs },
         from: address,
+        ...burnerAtOf(input),
         beneficiaryHex: input.beneficiaryHex,
         peopleParaId: input.peopleParaId,
         assetHubParaId: input.assetHubParaId,

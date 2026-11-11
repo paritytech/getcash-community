@@ -530,17 +530,30 @@ async function deliveryFeeOf(
   return extractFungibleAmount(df.value);
 }
 
+/** The block a dry run as the burner reads: where its deposit is. Absent, the runtime's default,
+ *  the finalized block. */
+export type DryRunAt = "best" | "finalized";
+
+/** A dry run's options for `at`, none when absent. */
+const atOptions = (at: DryRunAt | undefined) => (at === undefined ? [] : [{ at }]);
+
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
- *  origin that already holds what the call withdraws. Returns null when the dry-run cannot
- *  produce it. */
+ *  origin that already holds what the call withdraws, at `at`. Returns null when the dry-run
+ *  cannot produce it. */
 export async function realForwardedProgram(
   api: AssetHubApi,
   call: AssetHubCall,
   peopleParaId: number,
   from: string,
+  at?: DryRunAt,
 ): Promise<unknown | null> {
   try {
-    const dr = await api.apis.DryRunApi.dry_run_call(signedOrigin(from) as never, call as never, 5);
+    const dr = await api.apis.DryRunApi.dry_run_call(
+      signedOrigin(from) as never,
+      call as never,
+      5,
+      ...(atOptions(at) as []),
+    );
     return dr.success ? forwardedTo(dr.value, peopleParaId) : null;
   } catch {
     // A runtime without the dry-run API, or one that rejects this call shape.
@@ -607,6 +620,8 @@ export async function dryRunFundingProgram(args: {
   call?: AssetHubCall;
   /** The burner: it signs the call and holds what it withdraws. */
   from: string;
+  /** The block the burner's deposit is read at; the finalized one when absent. */
+  at?: DryRunAt;
   beneficiaryHex: string;
   peopleParaId: number;
   assetHubParaId: number;
@@ -618,6 +633,7 @@ export async function dryRunFundingProgram(args: {
     signedOrigin(args.from) as never,
     call as never,
     5,
+    ...(atOptions(args.at) as []),
   );
   if (!dr.success) {
     throw new Error(`not submitted: Asset Hub would not dry-run the call (${dr.value.type})`);
@@ -715,6 +731,8 @@ export async function estimateFundingProgramFees(args: {
   /** The burner, once it holds the native. The delivery fee is then priced from the real
    *  forwarded program instead of the stand-in. */
   dryRunFrom?: string;
+  /** The block the burner's deposit is read at; the finalized one when absent. */
+  dryRunAt?: DryRunAt;
 }): Promise<FundingProgramFees> {
   const probe = (
     payFeesNative: bigint,
@@ -785,6 +803,7 @@ export async function estimateFundingProgramFees(args: {
           args.api.tx.PolkadotXcm.execute(probe(allowance, 1n)).decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
+          args.dryRunAt,
         );
   const deliveryNative =
     forwarded === null
@@ -891,6 +910,8 @@ export async function estimateStableProgramFees(args: {
   /** The burner, once it holds the stable. The delivery fee is then priced from the real
    *  forwarded program instead of the stand-in. */
   dryRunFrom?: string;
+  /** The block the burner's deposit is read at; the finalized one when absent. */
+  dryRunAt?: DryRunAt;
 }): Promise<StableLegFees> {
   const token = STABLE_TOKENS[args.stable];
   const stableAsset = { type: "V5", value: token.location };
@@ -959,6 +980,7 @@ export async function estimateStableProgramFees(args: {
             .decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
+          args.dryRunAt,
         )) ??
     forwardedProgramStandIn(
       TOKENS.CASH.locationOnPeople as unknown as AssetLocation,
@@ -1026,6 +1048,8 @@ export async function estimateDotUsdProgramFees(args: {
   /** The burner, once it holds the underlying. The delivery fee is then priced from the real
    *  forwarded program instead of the stand-in. */
   dryRunFrom?: string;
+  /** The block the burner's deposit is read at; the finalized one when absent. */
+  dryRunAt?: DryRunAt;
 }): Promise<StableLegFees> {
   const token = TOKENS.DOTUSD;
   const underlyingAsset = { type: "V5", value: token.location };
@@ -1086,6 +1110,7 @@ export async function estimateDotUsdProgramFees(args: {
             .decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
+          args.dryRunAt,
         )) ??
     forwardedProgramStandIn(
       TOKENS.CASH.locationOnPeople as unknown as AssetLocation,

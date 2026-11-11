@@ -38,6 +38,7 @@ import {
   buildPsmFundingProgram,
   DepositBelowFeesError,
   dryRunFundingProgram,
+  type DryRunAt,
   type DryRunLanding,
   extractFungibleAmount,
   forwardedProgramStandIn,
@@ -185,6 +186,8 @@ export async function estimatePsmBatchFees(args: {
   /** The burner, once it holds the external. The delivery fee is then priced from the real
    *  forwarded program instead of the stand-in. */
   dryRunFrom?: string;
+  /** The block the burner's deposit is read at; the finalized one when absent. */
+  dryRunAt?: DryRunAt;
 }): Promise<PsmBatchFees> {
   const external = EXTERNAL_TOKENS[args.route.external];
   const externalAsset = { type: "V5", value: external.location };
@@ -239,6 +242,7 @@ export async function estimatePsmBatchFees(args: {
           rough.batch.decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
+          args.dryRunAt,
         )) ??
     forwardedProgramStandIn(
       INTERNAL.locationOnPeople,
@@ -292,6 +296,8 @@ export function dryRunPsmBatch(args: {
   batch: PsmBatch;
   /** The burner: it signs the batch and holds the external. */
   from: string;
+  /** The block the burner's deposit is read at; the finalized one when absent. */
+  at?: DryRunAt;
   beneficiaryHex: string;
   peopleParaId: number;
   assetHubParaId: number;
@@ -304,6 +310,7 @@ export function dryRunPsmBatch(args: {
     execArgs: args.batch.execArgs,
     call: args.batch.batch.decodedCall,
     from: args.from,
+    ...(args.at === undefined ? {} : { at: args.at }),
     beneficiaryHex: args.beneficiaryHex,
     peopleParaId: args.peopleParaId,
     assetHubParaId: args.assetHubParaId,

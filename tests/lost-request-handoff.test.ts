@@ -64,6 +64,8 @@ describe("lostRequestHandoff", () => {
       remoteFeeBuffer: "43",
       keepNativeForFees: "0",
       quotedDeposit: "12093512",
+      // The buyer's own deposit, taken at the best block as a fresh hand-off's is.
+      direct: true,
     });
     expect(fees.estimateDotUsdFundingSizing).toHaveBeenCalledWith(
       expect.objectContaining({ settleAmount: 12_000_000n, probeAddress: "5Burner" }),

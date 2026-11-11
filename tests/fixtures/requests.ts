@@ -167,6 +167,8 @@ export interface WorkerJobRecord {
   peopleParaId: number;
   assetHubGenesis: string;
   peopleGenesis: string;
+  /** A deposit the buyer sends from their own Polkadot wallet. */
+  direct?: true;
   phase: "starting" | FundingStep | "failed";
   failure?: "shortfall" | "timeout" | "expired" | "cancelled";
   done: boolean;
@@ -280,7 +282,7 @@ export const fixtureWorkerJobs: Readonly<Record<string, WorkerJobRecord>> = {
     txs: [{ call: "swap", txHash: SWAP_TX_HASH, block: 8_000_450 }],
   }),
   "dot-assethub:3": workerJob(CRYPTO_SOURCE_ID, 3, DOT3_STARTED, "25000000"),
-  "dot-assethub:9": workerJob(CRYPTO_SOURCE_ID, 9, minutesAgo(5), "12000000"),
+  "dot-assethub:9": workerJob(CRYPTO_SOURCE_ID, 9, minutesAgo(5), "12000000", { direct: true }),
 };
 
 /** The jobs as stored under `getsome.funding.jobs`. */

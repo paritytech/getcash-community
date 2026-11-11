@@ -829,6 +829,7 @@ export async function createMockCoinageSession(
     peopleGenesis: "",
     ...handoffFees(fundingSizing),
     ...route,
+    ...(isManualSourceId(args.sourceId) ? { direct: true as const } : {}),
   }));
   return {
     session,
@@ -1307,6 +1308,7 @@ export async function createCoinageSession(
       ...handoffFees(sizing),
       // The worker consumes the recorded tier and never re-decides.
       ...args.route,
+      ...(isManualSourceId(args.sourceId) ? { direct: true as const } : {}),
     };
   });
 

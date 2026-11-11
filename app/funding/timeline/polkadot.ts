@@ -2,7 +2,7 @@
 // 6, their texts, and the failures past the provider's part.
 
 import { cashAmount } from "../../utils/cash";
-import type { DepositInBlock, TopUpRecord } from "../requests/model";
+import { isDirectDeposit, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
 import { earlierFact, factAt } from "./observed";
@@ -76,8 +76,9 @@ function workerOf(record: TopUpRecord) {
 const settledAt = ({ status, settledAt }: TopUpRecord): number | undefined =>
   status.kind === "settled" ? (settledAt ?? status.at) : undefined;
 
-/** Received is the deposit final on Asset Hub, as the worker or the app's own read saw it first.
- *  Added is the Host's claim in a block. */
+/** Received is the deposit as the worker took it, final on Asset Hub or for a direct deposit in a
+ *  best block, or the app's own read of it final, whichever came first. Added is the Host's claim
+ *  in a block. */
 export function polkadotMilestones(record: TopUpRecord): PolkadotMilestones {
   return {
     received: earlierFact(
@@ -135,9 +136,18 @@ export function polkadotPhase(
     case 2: {
       const inBlock = record.depositInBlock;
       const seen = depositOnBurner(record) !== undefined;
+      const seenPart = {
+        ...PARTS.seen,
+        expectedMs: seenExpectedMs,
+        completed: seen ? {} : undefined,
+      };
+      // The worker takes a direct deposit at the best block: nothing waits for it to be final.
+      if (isDirectDeposit(record)) {
+        return { parts: [seenPart], delayed: !seen && sentUnseenMs > LATE.unseenMs };
+      }
       return {
         parts: [
-          { ...PARTS.seen, expectedMs: seenExpectedMs, completed: seen ? {} : undefined },
+          seenPart,
           { ...PARTS.final, fraction: inBlock === undefined ? undefined : finality(inBlock) },
         ],
         delayed: seen
@@ -195,7 +205,11 @@ export function polkadotText(
     case 2:
       return depositOnBurner(record) === undefined
         ? { message: normal("Your money is arriving") }
-        : withDetail(normal("We've spotted your deposit"), confirmationLine(record.depositInBlock));
+        : withDetail(
+            normal("We've spotted your deposit"),
+            // A direct deposit waits for no confirmations.
+            isDirectDeposit(record) ? undefined : confirmationLine(record.depositInBlock),
+          );
     case 3:
       return {
         message: psmRefused(record)

@@ -350,7 +350,8 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     job,
     at,
   );
-  // A job that saw funds is a money observation whatever its phase says (3.2, rule 3).
+  // A job that saw funds is a money observation whatever its phase says. It stands as final: the
+  // worker acts on it, a direct deposit at the best block included.
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
   // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
   // only a retry after a failure drops it.

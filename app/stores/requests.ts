@@ -416,6 +416,7 @@ type WorkerJob = {
   tier?: unknown;
   external?: unknown;
   feeRate?: unknown;
+  direct?: unknown;
   createdAt?: number;
   armedAt?: number;
 };
@@ -760,6 +761,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     keepNativeForFees,
     ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
     ...route,
+    ...(job.direct === true ? { direct: true as const } : {}),
   };
 }
 

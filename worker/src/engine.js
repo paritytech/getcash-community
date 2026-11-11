@@ -85,6 +85,9 @@ const saveJobs = () => store.save();
  *                                            // its claims under ids that key never used
  *   wayHome?: true,                          // that key's way home: a trap fails the job
  *                                            // rather than start a recovery no one funds
+ *   direct?: true,                           // the buyer's own deposit from a Polkadot
+ *                                            // wallet: read at the best block, where a
+ *                                            // provider's payout waits for finality
  *   phase: "starting" | FundingStep | "recovering" | "failed",
  *                                            // await-native: the route's deposit asset
  *                                            // recovering: the CASH is in People's trap and
@@ -241,6 +244,8 @@ function newRecord(input, nowMs) {
     // A sale's key on its way home: no buyer stands behind it to pay a claim's fee, so a trap
     // fails the job for the sale to report instead of starting a recovery.
     ...(input.wayHome === true ? { wayHome: true } : {}),
+    // The buyer sends the deposit from their own Polkadot wallet, so it is read at the best block.
+    ...(input.direct === true ? { direct: true } : {}),
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -459,7 +464,8 @@ export async function amendFunding(params) {
   return describeFunding(record);
 }
 
-/** True while the funding leg waits for a deposit the pipeline has not yet seen final. */
+/** True while the funding leg waits for a deposit the pipeline has not yet taken: final for a
+ *  payout, in a best block for a direct deposit. */
 const waitingForDeposit = (record) => !record.done && record.state.fundsSeenAt === null;
 
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
@@ -886,6 +892,7 @@ async function convert(record, env) {
         ? { quotedDeposit: asBig(record.quotedDeposit) }
         : {}),
       ...(typeof record.quoteFloorPct === "number" ? { quoteFloorPct: record.quoteFloorPct } : {}),
+      depositAt: record.direct === true ? "best" : "finalized",
       followDeposit: true,
       stored: record.state,
       store: (state) => {
@@ -1030,6 +1037,8 @@ async function runConversion(record, env, job) {
         signOptions: { at: anchor.hash },
         readUnderlyingOnPeople: (ss58, at) =>
           peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at }),
+        // Absent for a recovery deposit, which waits for finality as a payout does.
+        ...(job.depositAt === undefined ? {} : { depositAt: job.depositAt }),
         claimRegistered: record.claim != null,
         now: Date.now,
         // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
@@ -1054,9 +1063,9 @@ async function runConversion(record, env, job) {
 }
 
 /**
- * Follows the deposit while the pipeline waits for it to be final: it reads the burner at the
- * anchor until the deposit shows there, then only moves the finalized block number on. The
- * pipeline decides on the finalized deposit alone.
+ * Follows the deposit while the pipeline waits for it: it reads the burner at the anchor until
+ * the deposit shows there, then only moves the finalized block number on. The pipeline decides on
+ * the finalized deposit alone for a payout, and on the best one for a direct deposit.
  */
 async function followDeposit(record, api, route, address, anchor) {
   if (record.depositSeen) {

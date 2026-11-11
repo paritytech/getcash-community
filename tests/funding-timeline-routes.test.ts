@@ -984,6 +984,27 @@ describe("top-up timeline, route by record", () => {
       );
     },
   );
+
+  it("waits for no confirmations on a direct deposit: the phase is full once it is seen, with no count, and a block behind the best one is no delay", () => {
+    // The same block that has a payout counting confirmations and running late.
+    const topUp = direct({
+      depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 130 },
+    });
+    const timeline = createTopUpTimelines()(topUp, SENT + 3 * MINUTE);
+    if (timeline === undefined) throw new Error("The timeline did not open");
+    expect({
+      marks: marks(timeline.view),
+      state: timeline.view.state,
+      message: timeline.message,
+      detail: timeline.detail,
+    }).toEqual({
+      marks: "●●●○○○○",
+      state: "active",
+      message: normal("We've spotted your deposit"),
+      detail: undefined,
+    });
+    expectCurrentLine(timeline.view, 1);
+  });
 });
 
 describe("top-up timeline, failures", () => {
