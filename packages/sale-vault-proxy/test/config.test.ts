@@ -8,6 +8,7 @@ import {
   CF_BLOCK_SECONDS,
   CF_MAX_SWAP_REQUEST_BLOCKS,
   MAX_BACKOFF_SHIFT,
+  PRICE_FLOOR_BPS,
   RELEASE_ATTEMPTS,
   RELEASE_DELAY,
   STALE_DELAY,
@@ -16,7 +17,7 @@ import {
   networkVectors,
 } from "../config/networks";
 import vectors from "../vectors.json";
-import { deployMocks } from "./helpers";
+import { deployMocks, minPriceX128 } from "./helpers";
 
 const DAY = 86_400n;
 
@@ -61,6 +62,37 @@ describe("vectors.json networks", () => {
       expect(written).to.deep.equal(networkVectors(net));
     });
   }
+});
+
+// The return's fill-or-kill floor: a stable USDC to USDT pair, with the egress and network fee
+// taken off by a separate fixed allowance, so the floor only covers the pool fee and the spread.
+describe("price floor", () => {
+  it("is 9950 bps, a 0.5% floor, not the looser 1%", () => {
+    expect(PRICE_FLOOR_BPS).to.equal(9950n);
+    expect(ARBITRUM_ONE.priceFloorBps).to.equal(PRICE_FLOOR_BPS);
+    expect(ARBITRUM_SEPOLIA.priceFloorBps).to.equal(PRICE_FLOOR_BPS);
+  });
+
+  // A floor edit without `pnpm vectors` leaves the app and adapter copying a stale minPriceX128
+  it("vectors.json cfParameters match the configured floor and allowance", () => {
+    const cf = vectors.cfParameters;
+    expect(BigInt(cf.derived.floorBps)).to.equal(PRICE_FLOOR_BPS);
+    expect(BigInt(cf.derived.feeAllowance)).to.equal(ARBITRUM_ONE.feeAllowance);
+    expect(BigInt(cf.derived.minPriceX128)).to.equal(
+      minPriceX128(BigInt(cf.derived.amount), PRICE_FLOOR_BPS, ARBITRUM_ONE.feeAllowance),
+    );
+    const vectorPrice = minPriceX128(10_000_000n, PRICE_FLOOR_BPS, 0n);
+    expect(BigInt(cf.mainnet.minPriceX128)).to.equal(vectorPrice);
+    expect(BigInt(cf.testnet.minPriceX128)).to.equal(vectorPrice);
+  });
+
+  // The least USDT a 10k return accepts, pinned to an independent figure so a change to the floor
+  // or the allowance is caught: 10000 * 0.995 - 0.6 = 9949.4 USDT, an effective floor of 99.494%.
+  it("a 10k USDC return accepts no less than 9949.4 USDT", () => {
+    const amount = 10_000_000_000n;
+    const minOut = (amount * PRICE_FLOOR_BPS) / 10_000n - ARBITRUM_ONE.feeAllowance;
+    expect(minOut).to.equal(9_949_400_000n);
+  });
 });
 
 // Mirrors the adapter's strict sale_vault_proxy schema, deploy prints only these keys

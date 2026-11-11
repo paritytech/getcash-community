@@ -29,7 +29,7 @@ export const ARBITRUM_NODE_INTERFACE = "0x00000000000000000000000000000000000000
 // Return retry window in State Chain blocks, 10 minutes, under Chainflip's 600 block cap
 export const RETRY_BLOCKS = 100;
 // Least USDT per USDC a return accepts before the fee allowance, in bps
-export const PRICE_FLOOR_BPS = 9900n;
+export const PRICE_FLOOR_BPS = 9950n;
 
 export interface SaleVaultProxyNetwork {
   chainId: number;
