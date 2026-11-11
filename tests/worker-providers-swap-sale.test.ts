@@ -45,7 +45,6 @@ const record = {
   swap: {
     id: "cf-channel-7",
     address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
-    lane: "usdc-arbitrum",
     proxyFactory: FACTORY,
     proxyAddress: PROXY,
     claimerAddress: CLAIMER,
@@ -82,6 +81,7 @@ describe("a lane sale's provider", () => {
     payout: "off-chain",
     expired: false,
     expectedAmount: 25_000_000n,
+    soldCurrency: "USDC_ARBITRUM",
     walletAddress: PROXY.toUpperCase().replace("0X", "0x"),
   };
 
@@ -144,16 +144,18 @@ describe("a lane sale's provider", () => {
     });
   });
 
-  it.each([undefined, "", "not-a-lane"])("refuses a swap whose lane is %s", async (lane) => {
-    const { railFor } = await import("../worker/src/providers.js");
-    const { ChannelMismatchError } = await import("@getsome/withdraw");
-    mocks.readChannelRecord.mockResolvedValue(flip);
-    mocks.saleChannel.mockResolvedValue(order);
-    const noLane = { ...record, swap: { ...record.swap, lane } };
-    const read = railFor("meld", noLane)!.channel!("cf-channel-7");
-    await expect(read).rejects.toThrow(/names no known offramp lane/);
-    await expect(read).rejects.toBeInstanceOf(ChannelMismatchError);
-  });
+  it.each([undefined, "", "not-a-lane"])(
+    "refuses a swap whose Meld order sells %s, naming no lane",
+    async (soldCurrency) => {
+      const { railFor } = await import("../worker/src/providers.js");
+      const { ChannelMismatchError } = await import("@getsome/withdraw");
+      mocks.readChannelRecord.mockResolvedValue(flip);
+      mocks.saleChannel.mockResolvedValue({ ...order, soldCurrency });
+      const read = railFor("meld", record)!.channel!("cf-channel-7");
+      await expect(read).rejects.toThrow(/which names no offramp lane/);
+      await expect(read).rejects.toBeInstanceOf(ChannelMismatchError);
+    },
+  );
 
   it("refuses every channel when the job names no factory", async () => {
     const { railFor } = await import("../worker/src/providers.js");

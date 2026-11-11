@@ -231,7 +231,6 @@ const swap = {
   expiresAt: NOW + DAY,
   expectedEgress: "99150000",
   amount: "99800000",
-  lane: "usdc-arbitrum",
   proxyChainId: 421614,
   proxyFactory: FACTORY,
   proxyImplementation: IMPLEMENTATION,

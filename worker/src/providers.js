@@ -13,7 +13,7 @@ import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-statu
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
 import { createMeldClient, ensureMeldAssets, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
-import { LANES, laneSellToken } from "@getsome/offramp";
+import { LANES, laneByMeldCode, laneSellToken } from "@getsome/offramp";
 import {
   ChannelMismatchError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
@@ -157,12 +157,16 @@ function swapSaleRail(sale, record) {
           `channel ${id} carries a CCM gas budget of ${swap.ccmGasBudget || "none"}, not ${SALE_VAULT_PROXY_CCM_GAS_BUDGET}`,
         );
       }
-      const laneId = record.swap?.lane;
-      const lane = typeof laneId === "string" ? LANES.find((l) => l.id === laneId) : undefined;
-      if (lane === undefined) {
-        throw new ChannelMismatchError(`sale ${record.channel.id} names no known offramp lane`);
+      // The lane is read from Meld's order, so a page cannot self-certify its own channel's egress
+      const lane = laneByMeldCode(order.soldCurrency);
+      if (lane === null) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} sells ${order.soldCurrency || "nothing"}, which names no offramp lane`,
+        );
       }
-      if (swap.destChain !== lane.chainflip.chain || swap.destAsset !== lane.chainflip.asset) {
+      const sameChain = swap.destChain.toLowerCase() === lane.chainflip.chain.toLowerCase();
+      const sameAsset = swap.destAsset.toLowerCase() === lane.chainflip.asset.toLowerCase();
+      if (!sameChain || !sameAsset) {
         throw new ChannelMismatchError(
           `channel ${id} egresses ${swap.destAsset || "nothing"} on ${swap.destChain || "no chain"}, not the lane's ${lane.chainflip.asset} on ${lane.chainflip.chain}`,
         );

@@ -618,8 +618,6 @@ export async function openSwapSaleChannel(args: {
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
     amount: size.landing.toString(),
-    // The worker checks the egress chain and asset against this lane's Chainflip values
-    lane: args.lane.id,
     // The worker checks the egress against this factory and the proxy it predicts
     proxyChainId: deployment.chainId,
     proxyFactory: deployment.factory,

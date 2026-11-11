@@ -650,9 +650,6 @@ export interface WithdrawalChannel {
   /** The exact planck the key pays, for a provider that holds it to its quote. Absent: the key
    *  pays everything it holds. */
   amount?: string;
-  /** The offramp lane a lane sale's swap sells through, so the worker checks the egress chain and
-   *  asset against the lane's Chainflip values. */
-  lane?: LaneId;
   /** The chain, SaleVaultProxyFactory and implementation a lane sale's swap delivers through. */
   proxyChainId?: number;
   proxyFactory?: string;
