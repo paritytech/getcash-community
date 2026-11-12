@@ -2,7 +2,8 @@
 // The destination address: the network and token already chosen as pills, the address typed or
 // pasted, checked against the destination's own rule. An address another network would take gets
 // the wrong-network error; anything else invalid is just incorrect. Valid turns the disabled Next
-// into Continue with the design's wrong-network warning. The design's Scan button is left out:
+// into Continue with a warning. A contract that refuses the funds leaves them with the provider,
+// which still reports them as sent. The design's Scan button is left out:
 // the host grants a Camera permission but has no scanner API, so scanning needs an in-page
 // getUserMedia capture and QR decoder that are not built yet.
 import { computed, ref } from "vue";
@@ -114,7 +115,8 @@ async function paste() {
     <template #actions>
       <div class="flex flex-col gap-4">
         <p v-if="valid" class="text-center text-body-s text-fg-secondary">
-          Funds sent to the wrong network can't be recovered.
+          Send to a wallet you control. Funds sent to the wrong network, or to an invalid address,
+          may be lost.
         </p>
         <PillButton class="w-full" :disabled="!valid" @click="emit('next', trimmed)">
           {{ valid ? "Continue" : "Next" }}
