@@ -17,7 +17,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@getsome/meld", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  MELD_SELL_ENABLED: true,
   createMeldClient: mocks.createMeldClient,
   saleRail: mocks.saleRail,
 }));

@@ -14,37 +14,37 @@ describe("the line under the withdrawal amount", () => {
   it("offers the minimum as a hint before anything is entered", () => {
     expect(assess("")).toEqual({
       lead: "Minimum ",
-      amount: "10",
+      amount: "1",
       breach: false,
       withdrawable: false,
     });
     expect(assess("0")).toEqual({
       lead: "Minimum ",
-      amount: "10",
+      amount: "1",
       breach: false,
       withdrawable: false,
     });
   });
 
   it("names the minimum as a breach once an amount under it is entered", () => {
-    expect(assess("1")).toEqual({
+    expect(assess("0.5")).toEqual({
       lead: "Minimum ",
-      amount: "10",
+      amount: "1",
       breach: true,
       withdrawable: false,
     });
-    expect(assess("9.99")).toEqual({
+    expect(assess("0.99")).toEqual({
       lead: "Minimum ",
-      amount: "10",
+      amount: "1",
       breach: true,
       withdrawable: false,
     });
   });
 
   it("names the maximum, grouped, above it", () => {
-    expect(assess("3000")).toEqual({
+    expect(assess("6000")).toEqual({
       lead: "Maximum ",
-      amount: "2,000",
+      amount: "5,000",
       breach: true,
       withdrawable: false,
     });
@@ -60,8 +60,8 @@ describe("the line under the withdrawal amount", () => {
   });
 
   it("reports the maximum before the purse, as the frames pair them", () => {
-    // $3,000 against a 226.78 purse breaks both; the design answers with the maximum.
-    expect(assess("3000").lead).toBe("Maximum ");
+    // $6,000 against a 226.78 purse breaks both; the design answers with the maximum.
+    expect(assess("6000").lead).toBe("Maximum ");
   });
 
   it("carries no line for an amount that breaks nothing", () => {
@@ -79,8 +79,8 @@ describe("the amount a withdrawal can open on", () => {
   it("refuses an empty amount, a broken bound and an amount over the purse", () => {
     expect(assess("").withdrawable).toBe(false);
     expect(assess("0").withdrawable).toBe(false);
-    expect(assess("1").withdrawable).toBe(false);
-    expect(assess("3000").withdrawable).toBe(false);
+    expect(assess("0.5").withdrawable).toBe(false);
+    expect(assess("6000").withdrawable).toBe(false);
     expect(assess("400").withdrawable).toBe(false);
   });
 

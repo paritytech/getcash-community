@@ -10,7 +10,6 @@ import {
   createMeldClient,
   devAdapterFetch,
   ensureMeldAssets,
-  MELD_SELL_ENABLED,
   personhoodAdapterFetch,
   saleRail,
 } from "@getsome/meld";
@@ -20,9 +19,11 @@ import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   exactPaymentLanded,
+  finalizedChainOf,
   payExactOnce,
   readAssetHubAccount,
   readDestinationBalance,
+  settleBlock,
   sweepOnce,
 } from "@getsome/withdraw";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
@@ -68,8 +69,6 @@ export function railFor(provider, record) {
     return { status: (id) => readSwapStatus(id), channel: (id) => readChannelRecord(id) };
   }
   if (provider === "meld") {
-    // Where the build does not sell for fiat, no sale is read or paid, whatever a hand-off says.
-    if (!MELD_SELL_ENABLED) return null;
     const meld = record?.meld;
     if (meld?.offline === true) {
       return NETWORK.testnet ? { status: async () => ({ status: "receiving" }) } : null;
@@ -235,6 +234,7 @@ export async function exactPaymentOut(record, amount, exact) {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     return await exactPaymentLanded(
       {
+        assetHubApi,
         amount,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token),
@@ -242,6 +242,42 @@ export async function exactPaymentOut(record, amount, exact) {
       },
       exact,
     );
+  } finally {
+    client.destroy();
+  }
+}
+
+/**
+ * What became of the key's payment to the channel, seen in a best block: "final" once Asset Hub's
+ * finalized chain holds that block, or shows the payment's effect in another; "pending" while it
+ * is not past that block, or while the payment shows only at the best head; "gone" when it shows
+ * nowhere, and the key pays again. A block that was replaced, or one too old for the chain to
+ * name, says nothing of the payment itself, which usually landed in the block that took its
+ * place: `shows(key)` reads its effect on the key, its balance in the sale's token and its nonce.
+ * With `unknownStands`, a block too old to name stands without that read: a sweep empties the key
+ * and a swap's refund can fill it again, so the key could not tell a sweep never left.
+ */
+export async function paymentOutcome(record, seen, shows, { unknownStands = false } = {}) {
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    const assetHubApi = client.getTypedApi(paseo_next_v2);
+    const verdict = await settleBlock(
+      finalizedChainOf(assetHubApi),
+      seen,
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    );
+    if (verdict === "pending" || verdict === "final") return verdict;
+    if (verdict === "unknown" && unknownStands) return "final";
+    const token = depositTokenOf(recordedRoute(record));
+    const read = (at) =>
+      bounded(
+        readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token, { at }),
+        DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        `key read on asset hub (${at})`,
+      );
+    if (shows(await read("finalized"))) return "final";
+    if (shows(await read("best"))) return "pending";
+    return "gone";
   } finally {
     client.destroy();
   }

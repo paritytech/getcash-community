@@ -43,13 +43,13 @@ inputs:
     default: ""
   top-up-minimum:
     description: >
-      Optional VITE_TOP_UP_MINIMUM, the least a top up can be, in CASH. Empty uses the build's
-      default, 1 CASH.
+      Optional VITE_TOP_UP_MINIMUM, the least a top up or a withdrawal can be, in CASH. Empty uses
+      the build's default, 1 CASH.
     default: ""
   top-up-maximum:
     description: >
-      Optional VITE_TOP_UP_MAXIMUM, the most a top up can be, in CASH. Empty uses the build's
-      default, 5000 CASH.
+      Optional VITE_TOP_UP_MAXIMUM, the most a top up or a withdrawal can be, in CASH. Empty uses
+      the build's default, 5000 CASH.
     default: ""
   sentry-dsn:
     description: >

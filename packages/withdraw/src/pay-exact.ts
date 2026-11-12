@@ -12,11 +12,17 @@
 //
 // A transfer the chain refused at dispatch spent its nonce and moved nothing, so the next attempt
 // takes the next one. A dry run before every broadcast keeps that rare.
+//
+// DONE AT THE BEST BLOCK. The payment resolves once a best block holds it, and that block is kept
+// on the state for the driver to watch until it is final (inclusion.ts). The attempt stays in
+// flight meanwhile, so one whose block is replaced is found unpaid at its nonce and goes out
+// again there: still one nonce, still never twice.
 
 import type { PolkadotSigner } from "polkadot-api";
 import type { TokenSpec } from "@getsome/core";
 import {
   describeDispatchError,
+  includedInBlock,
   isStable,
   priceNativeFeeIn,
   signedOrigin,
@@ -26,7 +32,9 @@ import {
 } from "@getsome/funding";
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
+import { seenAtBest, type SeenBlock } from "./inclusion";
 import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
+import { AT_BEST } from "./paseo";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 /** Headroom on the payment's fee estimate, percent. */
@@ -63,6 +71,9 @@ export interface ExactPayState {
   anchor?: number | null;
   /** Refusals at dispatch so far. */
   rejections: number;
+  /** The best block the payment was seen in, kept until the finalized chain settles it, with no
+   *  hash for one whose answer was lost. Absent before any, and once it is final. */
+  seen?: SeenBlock | null;
 }
 
 export const freshExactPayState = (): ExactPayState => ({
@@ -101,7 +112,7 @@ export interface ExactPayInput {
   signOptions?: Record<string, unknown>;
   /** The number of the block `signOptions` anchors the payment at. */
   anchorNumber?: number;
-  /** The key's balance in `token` and its nonce on Asset Hub, at the finalized head. */
+  /** The key's balance in `token` and its nonce on Asset Hub, at the best head. */
   readKey: () => Promise<{ free: bigint; nonce: number }>;
   /** The finalized head's number on Asset Hub. */
   readFinalizedNumber?: () => Promise<number>;
@@ -185,12 +196,27 @@ function judge(
       `the key signed at nonce ${state.nonce} and its balance fell by ${fell}, less than the ${amount} it pays`,
     );
   }
+  // The best head can fall behind for a moment when a block with the key's last transaction is
+  // dropped. Nothing is sent meanwhile, and the next tick reads again.
   if (key.nonce < state.nonce) {
-    throw new PaymentUnresolvedError(
+    throw new Error(
       `the key is at nonce ${key.nonce} on Asset Hub, behind the payment's ${state.nonce}`,
     );
   }
   return "open";
+}
+
+/**
+ * A payment whose answer was lost and which the key shows paid at the best head: no block is
+ * known, so the driver watches it from that head until the finalized chain shows it too. True,
+ * for the caller to answer with.
+ */
+async function watchedFromBest(
+  input: Pick<ExactPayInput, "assetHubApi" | "tickTimeoutMs">,
+  state: ExactPayState,
+): Promise<true> {
+  state.seen ??= await seenAtBest(input.assetHubApi, input.tickTimeoutMs);
+  return true;
 }
 
 /**
@@ -202,12 +228,15 @@ function judge(
  * land: it is no longer in flight, and the payment is free to go again or to stand down.
  */
 export async function exactPaymentLanded(
-  input: Pick<ExactPayInput, "readKey" | "readFinalizedNumber" | "amount" | "tickTimeoutMs">,
+  input: Pick<
+    ExactPayInput,
+    "assetHubApi" | "readKey" | "readFinalizedNumber" | "amount" | "tickTimeoutMs"
+  >,
   state: ExactPayState,
 ): Promise<boolean> {
   if (!state.inFlight) return false;
   const key = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
-  if (judge(key, state, input.amount) === "paid") return true;
+  if (judge(key, state, input.amount) === "paid") return watchedFromBest(input, state);
   const anchor = state.anchor ?? null;
   if (anchor !== null && input.readFinalizedNumber !== undefined) {
     const finalized = await bounded(
@@ -216,6 +245,10 @@ export async function exactPaymentLanded(
       "finalized head read",
     );
     if (!mayStillLand(anchor, finalized)) {
+      // Read again after the finalized head, so the best head holds every block the attempt
+      // could have landed in.
+      const again = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
+      if (judge(again, state, input.amount) === "paid") return watchedFromBest(input, state);
       state.inFlight = false;
       state.balanceBefore = null;
       state.anchor = null;
@@ -231,7 +264,10 @@ export async function exactPaymentLanded(
  */
 export async function payExactOnce(input: ExactPayInput, state: ExactPayState): Promise<void> {
   const key = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
-  if (judge(key, state, input.amount) === "paid") return;
+  if (judge(key, state, input.amount) === "paid") {
+    await watchedFromBest(input, state);
+    return;
+  }
 
   const tx = buildExactPay(input.assetHubApi, input.to, input.amount, input.token);
   const dr = await bounded(
@@ -239,6 +275,7 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
       signedOrigin(input.key.address) as never,
       tx.decodedCall as never,
       5,
+      AT_BEST,
     ),
     input.tickTimeoutMs,
     "payment dry run",
@@ -256,8 +293,8 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
   // The newest attempt's anchor: an earlier one at this nonce lands no later than this one can.
   state.anchor = input.anchorNumber ?? state.anchor ?? null;
   await input.onBeforeSubmit?.();
-  const res = await bounded(
-    tx.signAndSubmit(input.key.signer, {
+  const res = await includedInBlock(
+    tx.signSubmitAndWatch(input.key.signer, {
       ...feeOptionsOf(input.token),
       ...input.signOptions,
       nonce: state.nonce,
@@ -267,13 +304,19 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
     "payment submit",
   );
   input.onTx?.({ call: "pay", txHash: res.txHash, block: res.block?.number, ok: res.ok });
-  if (res.ok) return;
+  if (res.ok) {
+    // In a best block the chain may yet replace: the driver watches it until it is final. The
+    // attempt stays in flight, so one whose block is replaced goes out again at the same nonce.
+    state.seen = { number: res.block.number, hash: res.block.hash };
+    return;
+  }
   // Included and refused: the nonce is spent and nothing moved, so the next attempt takes the
   // next nonce.
   state.nonce += 1;
   state.inFlight = false;
   state.balanceBefore = null;
   state.anchor = null;
+  state.seen = null;
   state.rejections += 1;
   const reason = describeDispatchError(res.dispatchError);
   if (state.rejections >= MAX_REJECTIONS) throw new WithdrawRejectedError("pay", reason);

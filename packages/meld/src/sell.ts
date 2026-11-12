@@ -5,20 +5,12 @@
 import {
   meldAssetOf,
   meldCodeOf,
-  NETWORK,
   TOKENS,
   type MeldAssetId,
   type SwapStatusResult,
 } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
 import { formatBaseUnits, parseBaseUnits, type MeldToken } from "./units";
-
-/** Whether this build sells CASH for fiat through Meld, the card and bank withdrawals. On a test
- *  network the sale only ever moves test funds. On a live one it stays off until a small real sale
- *  has been watched end to end: Meld settles a sell only in production, so the sandbox never
- *  proves the payout. The page offers card and bank by it and the worker refuses a sale without
- *  it, so neither trusts the other to hold the line. */
-export const MELD_SELL_ENABLED = NETWORK.testnet;
 
 /** What a sale sells unless its code names another asset: the native on Asset Hub. */
 export const SELL_TOKEN: MeldToken = TOKENS.PAS as MeldToken;

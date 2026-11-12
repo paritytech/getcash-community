@@ -718,6 +718,9 @@ export interface WithdrawJobView {
   /** Where a PSM-tier job's CASH leaves the key on Asset Hub: the PSM, or the pool once the user
    *  chose it from a hold. */
   exit?: "psm" | "pool";
+  /** What the destination received, base units of the landing asset, read when the arrival was
+   *  seen: what a direct withdrawal's user got. Null until then. */
+  received?: string | null;
   txs?: {
     call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
     txHash: string;
@@ -806,6 +809,9 @@ export interface WithdrawalRecord {
           lastError?: string;
           at: number;
           txs?: WithdrawJobView["txs"];
+          /** What the destination received, as the worker reported it
+           *  (`WithdrawJobView.received`). */
+          received?: string;
         }
       | { known: false; at: number };
     host?: { status: HostPaymentStatus; at: number };

@@ -15,8 +15,8 @@ if (!NETWORK.testnet && process.env.VITE_FAUCET_SEED?.trim()) {
   );
 }
 
-// The top-up bounds are inlined too. A value the app ignores is reported here, in the build log
-// whoever set it reads, with the bounds the build uses instead.
+// The top-up bounds are inlined too, and hold a withdrawal as well. A value the app ignores is
+// reported here, in the build log whoever set it reads, with the bounds the build uses instead.
 const topUpBounds = readTopUpBounds({
   minimum: process.env.VITE_TOP_UP_MINIMUM,
   maximum: process.env.VITE_TOP_UP_MAXIMUM,

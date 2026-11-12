@@ -60,6 +60,8 @@ export type {
   WithdrawTickState,
 } from "./tick";
 export { readAssetHubAccount, readDestinationBalance } from "./destination";
+export { finalizedChainOf, seenAtBest, settleBlock } from "./inclusion";
+export type { BlockVerdict, FinalizedChain, SeenBlock } from "./inclusion";
 export {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
@@ -94,6 +96,7 @@ export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {
   ASSET_HUB_CASH_TX_OPTIONS,
+  AT_BEST,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   PEOPLE_POOL_FEE_PPM,

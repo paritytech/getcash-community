@@ -7,7 +7,6 @@ import { useCryptoWithdrawalTopUpAdapter, useFiatWithdrawalTopUpAdapter } from "
 import type { FundingRoute, FundingSelection } from "./selection";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import type { FundingTopUp } from "./top-ups";
-import { MELD_SELL_ENABLED } from "~~/lib/config";
 
 export interface FundingRouteTopUps {
   useAdapter: () => FundingTopUpAdapter;
@@ -150,8 +149,8 @@ export const getcashWithdrawPackages = {
       loadStatus: loadCryptoWithdrawRoute,
     },
   },
-  // Unavailable in a build that does not sell for fiat yet; see MELD_SELL_ENABLED.
-  ...(MELD_SELL_ENABLED ? { card: meldWithdrawPackage, bank: meldWithdrawPackage } : {}),
+  card: meldWithdrawPackage,
+  bank: meldWithdrawPackage,
 } satisfies FundingRoutePackages;
 
 export const getcashRoutePackages = {

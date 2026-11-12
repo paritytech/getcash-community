@@ -25,3 +25,9 @@ export const PEOPLE_TX_OPTIONS = {
 /** Signing on Asset Hub from a key that holds only CASH: the fee is charged in CASH through its
  *  pool. The same options price the fee. */
 export const ASSET_HUB_CASH_TX_OPTIONS = { asset: asLocation(TOKENS.CASH.location) };
+
+/** Where the withdrawal reads both chains and runs its dry runs: the best head, as the top up
+ *  does. Every step acts on what its own transactions did a block ago, and the finalized head
+ *  lags it by 12 to 60 s. Finality is read only to settle what a best block showed: whether the
+ *  block a transaction was seen in still stands, and whether one never seen can still land. */
+export const AT_BEST = { at: "best" } as const;

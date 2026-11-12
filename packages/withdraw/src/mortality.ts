@@ -1,6 +1,7 @@
 // How long the key's submits on Asset Hub stay valid, shared by the exact payment and the PSM
 // tier's exit: each is signed at one nonce under this period, so one whose answer was lost is
-// settled from the chain, and called dead once finality is past its mortality.
+// settled from the chain, and called dead once finality is past its mortality. A submit that was
+// seen in a block needs none of this: its block is watched instead (inclusion.ts).
 
 /** Blocks a submit stays valid after the block it is anchored at. Signed in rather than left to
  *  papi's default, since `exactPaymentLanded` and the exit's settling count on it to call an

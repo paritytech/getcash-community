@@ -247,15 +247,21 @@ describe("requests store: withdrawals", () => {
         [SESSION]: job({
           phase: "done",
           done: true,
-          state: { fundsSeenAt: seenAt, submitted: true },
+          state: {
+            fundsSeenAt: seenAt,
+            submitted: true,
+            expectedLanding: "43200000000",
+            received: "43151334329",
+          },
         }),
       }),
     );
     await requests.reconcile("refresh");
+    // What arrived is read off the job for the success screen, not what the dry run expected.
     expect(requests.get(REF)).toMatchObject({
       status: { kind: "sent", at: FIXTURE_NOW },
       rail: { stage: "delivered" },
-      witnesses: { worker: { phase: "done", done: true } },
+      witnesses: { worker: { phase: "done", done: true, received: "43151334329" } },
     });
     expect(await stored(REF)).toMatchObject({ status: { kind: "sent" } });
   });

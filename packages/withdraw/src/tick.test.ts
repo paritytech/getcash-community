@@ -7,6 +7,7 @@ import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
 import { MAX_PSM_REFUSALS, withFeeMargin, type ConversionRoute } from "@getsome/funding";
+import { bestBlockWatch } from "@getsome/testing";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   estimateDirectFeesCash,
@@ -19,12 +20,14 @@ import { cashInFor } from "./pool";
 import { psmRedeemOut } from "./program";
 import {
   freshWithdrawTickState,
+  landingCeiling,
   landingFloor,
   MAX_REJECTIONS,
   withdrawTickOnce,
   WithdrawHeldError,
   WithdrawRejectedError,
   type WithdrawStep,
+  type WithdrawTickInput,
   type WithdrawTickOutcome,
   type WithdrawTickState,
 } from "./tick";
@@ -68,7 +71,16 @@ const PSM_MIN_SWAP = 1_000_000n;
 /** Asset Hub's best block when the exit is first signed, and its finalized head then. */
 const AH_ANCHOR = 1_000;
 const AH_FINALIZED = 998;
+/** The People blocks the swap and the XCM are seen in, and People's finalized head then. */
+const SWAP_BLOCK = 499;
+const XCM_BLOCK = 500;
+const PEOPLE_FINALIZED = 498;
+/** A block's hash on the chain that stands, and on a fork that replaced it. */
+const peopleHash = (number: number) => `0xpeople-${number}`;
+/** The block the nth XCM the key sends is seen in: each one ten blocks after the last. */
+const xcmBlockOf = (nth: number) => XCM_BLOCK + 10 * nth;
 const anchorHash = (number: number) => `0xah-${number}`;
+const forkHash = (number: number) => `0xfork-${number}`;
 /** The exit's options: the fee in CASH, anchored at `anchor` on Asset Hub, signed at `nonce` and
  *  mortal. */
 const exitOptions = (anchor: number, nonce: number) => ({
@@ -154,6 +166,8 @@ function scriptedWorld(
     rejectXcm?: string;
     /** The XCM lands but the submit's answer never comes back. */
     loseXcmAnswer?: boolean;
+    /** The first XCM is seen in a best block that is dropped, and no other block takes it. */
+    dropXcm?: boolean;
     /** Asset Hub's dry run traps this much. */
     trapOnAssetHubDryRun?: bigint;
     /** The PSM refuses the redeem with this error of its own, at the dry run and at inclusion. */
@@ -162,6 +176,8 @@ function scriptedWorld(
     dropExit?: boolean;
     /** The exit is included and refused, and the submit's answer never comes back. */
     refuseExitLost?: boolean;
+    /** The exit is charged this much CASH over its fee: its estimate fell short. */
+    overchargeExit?: bigint;
     /** The exit lands but the submit's answer never comes back. */
     loseExitAnswer?: boolean;
   } = {},
@@ -186,6 +202,16 @@ function scriptedWorld(
     keyNonceAh: 0,
     anchorAh: AH_ANCHOR,
     finalizedAh: AH_FINALIZED,
+    bestAh: AH_ANCHOR + 1,
+    /** People's best and finalized heads, and the key there at the finalized one when it lags. */
+    bestPeople: XCM_BLOCK,
+    finalizedPeople: PEOPLE_FINALIZED,
+    keyCashFinalized: null as bigint | null,
+    /** Blocks the finalized chain holds another hash for: a fork replaced them. */
+    replacedPeople: new Set<number>(),
+    replacedAh: new Set<number>(),
+    /** Blocks too old for People to name any more: their hash reads as zeroes. */
+    forgottenPeople: new Set<number>(),
     destinationPas: DESTINATION_PAS,
     /** What the last Asset Hub dry run credited to the program's beneficiary. */
     lastDryRunLanded: 0n,
@@ -235,28 +261,34 @@ function scriptedWorld(
   }
 
   const txHashFor = () => `0x${state.submits.length.toString(16).padStart(64, "0")}`;
+  let xcmDropsLeft = opts.dropXcm ? 1 : 0;
+  /** The best block a submit is seen in, as its watch reports it. */
+  const seenOnPeople = (number: number) => ({ number, hash: peopleHash(number) });
+  const seenOnAssetHub = (number: number) => ({ number, hash: anchorHash(number) });
 
   /** The swap as People runs it: the fee comes off the CASH first, then the pool sells the exact
    *  PAS for what its reserves ask, within the cap. */
   const swapTx = (args: SwapArgs) => ({
     decodedCall: { type: "AssetConversion", value: { type: "swap", value: args } },
     getEstimatedFees: async () => SWAP_TX_FEE_PAS,
-    signAndSubmit: async (_signer: unknown, options: Record<string, unknown>) => {
-      state.submits.push({ call: "swap", args, options });
-      state.keyCash -= SWAP_FEE_CASH;
-      const cashIn = cashInFor(args.amount_out, RESERVES);
-      if (cashIn > args.amount_in_max) {
-        return {
-          ok: false,
-          txHash: txHashFor(),
-          dispatchError: moduleError("AssetConversion", "ProvidedMaximumNotSufficientForSwap"),
-          events: [],
-        };
-      }
-      state.keyCash -= cashIn;
-      state.keyPas += args.amount_out;
-      return { ok: true, txHash: txHashFor(), block: { number: 499 }, events: [] };
-    },
+    signSubmitAndWatch: bestBlockWatch(
+      async (_signer: unknown, options: Record<string, unknown>) => {
+        state.submits.push({ call: "swap", args, options });
+        state.keyCash -= SWAP_FEE_CASH;
+        const cashIn = cashInFor(args.amount_out, RESERVES);
+        if (cashIn > args.amount_in_max) {
+          return {
+            ok: false,
+            txHash: txHashFor(),
+            dispatchError: moduleError("AssetConversion", "ProvidedMaximumNotSufficientForSwap"),
+            events: [],
+          };
+        }
+        state.keyCash -= cashIn;
+        state.keyPas += args.amount_out;
+        return { ok: true, txHash: txHashFor(), block: seenOnPeople(SWAP_BLOCK), events: [] };
+      },
+    ),
   });
 
   /** The XCM as People runs it: the pool refuses it unless the fee leaves the existential deposit
@@ -265,43 +297,53 @@ function scriptedWorld(
   const executeTx = (args: ExecuteArgs) => ({
     decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
     getEstimatedFees: async () => XCM_TX_FEE_PAS,
-    signAndSubmit: async (_signer: unknown, options: Record<string, unknown>) => {
-      state.submits.push({ call: "execute", args, options });
-      if (state.keyPas - XCM_TX_FEE_PAS < ED) {
-        throw new Error(JSON.stringify({ type: "Invalid", value: { type: "Payment" } }));
-      }
-      state.keyPas -= XCM_TX_FEE_PAS;
-      const [pasWithdrawn, cashWithdrawn] = withdrawnOf(args.message);
-      const short =
-        pasWithdrawn!.fun.value > state.keyPas || cashWithdrawn!.fun.value > state.keyCash;
-      if (short || opts.rejectXcm) {
-        return {
-          ok: false,
-          txHash: txHashFor(),
-          dispatchError: incomplete(
-            short ? 0 : 2,
-            short ? "FailedToTransactAsset" : opts.rejectXcm!,
-          ),
-          events: [],
-        };
-      }
-      state.keyCash -= cashWithdrawn!.fun.value;
-      state.keyPas -= pasWithdrawn!.fun.value;
-      // Below the existential deposit the account is reaped and its PAS is dust.
-      if (state.keyPas < ED) {
-        state.dustLost += state.keyPas;
-        state.keyPas = 0n;
-      }
-      state.xcmLanded = true;
-      state.xcmTo = beneficiaryOf(
-        (args.message.value[2]!.value as { remote_xcm: Instruction[] }).remote_xcm,
-      );
-      // A program aimed at the key lands its CASH there at once; the destination's reads below
-      // pace a landing aimed at it.
-      if (state.xcmTo === KEY.publicKeyHex) state.keyCashAh += state.lastDryRunLanded;
-      if (opts.loseXcmAnswer) throw new Error("withdrawal submit timed out after 1s");
-      return { ok: true, txHash: txHashFor(), block: { number: 500 }, events: [] };
-    },
+    signSubmitAndWatch: bestBlockWatch(
+      async (_signer: unknown, options: Record<string, unknown>) => {
+        state.submits.push({ call: "execute", args, options });
+        if (state.keyPas - XCM_TX_FEE_PAS < ED) {
+          throw new Error(JSON.stringify({ type: "Invalid", value: { type: "Payment" } }));
+        }
+        // Seen in a best block a fork then replaces, and no other block takes it: the submit
+        // settles as landed and nothing moves.
+        const block = xcmBlockOf(state.submits.filter((s) => s.call === "execute").length - 1);
+        if (xcmDropsLeft > 0) {
+          xcmDropsLeft -= 1;
+          state.replacedPeople.add(block);
+          return { ok: true, txHash: txHashFor(), block: seenOnPeople(block), events: [] };
+        }
+        state.keyPas -= XCM_TX_FEE_PAS;
+        const [pasWithdrawn, cashWithdrawn] = withdrawnOf(args.message);
+        const short =
+          pasWithdrawn!.fun.value > state.keyPas || cashWithdrawn!.fun.value > state.keyCash;
+        if (short || opts.rejectXcm) {
+          return {
+            ok: false,
+            txHash: txHashFor(),
+            dispatchError: incomplete(
+              short ? 0 : 2,
+              short ? "FailedToTransactAsset" : opts.rejectXcm!,
+            ),
+            events: [],
+          };
+        }
+        state.keyCash -= cashWithdrawn!.fun.value;
+        state.keyPas -= pasWithdrawn!.fun.value;
+        // Below the existential deposit the account is reaped and its PAS is dust.
+        if (state.keyPas < ED) {
+          state.dustLost += state.keyPas;
+          state.keyPas = 0n;
+        }
+        state.xcmLanded = true;
+        state.xcmTo = beneficiaryOf(
+          (args.message.value[2]!.value as { remote_xcm: Instruction[] }).remote_xcm,
+        );
+        // A program aimed at the key lands its CASH there at once; the destination's reads below
+        // pace a landing aimed at it.
+        if (state.xcmTo === KEY.publicKeyHex) state.keyCashAh += state.lastDryRunLanded;
+        if (opts.loseXcmAnswer) throw new Error("withdrawal submit timed out after 1s");
+        return { ok: true, txHash: txHashFor(), block: seenOnPeople(block), events: [] };
+      },
+    ),
   });
 
   const peopleApi = {
@@ -312,6 +354,19 @@ function scriptedWorld(
           getValue: async (who: string) => ({
             data: { free: who === PASEO_PEOPLE_POOL_ACCOUNT ? RESERVES.pas : state.keyPas },
           }),
+        },
+        Number: {
+          getValue: async ({ at }: { at: string }) =>
+            at === "finalized" ? state.finalizedPeople : state.bestPeople,
+        },
+        // What the finalized chain holds for a block: its own hash, or a fork's that replaced it.
+        BlockHash: {
+          getValue: async (number: number) =>
+            state.forgottenPeople.has(number)
+              ? `0x${"00".repeat(32)}`
+              : state.replacedPeople.has(number)
+                ? forkHash(number)
+                : peopleHash(number),
         },
       },
       Assets: {
@@ -430,18 +485,26 @@ function scriptedWorld(
     return {
       decodedCall,
       getEstimatedFees: async () => AH_TX_FEE_PAS,
-      signAndSubmit: async (_signer: unknown, options: Record<string, unknown>) => {
-        state.submits.push({ call: name, args, options });
-        const lostAnswer = () => new Error("redeem submit timed out after 1s");
-        if (opts.dropExit) throw lostAnswer();
-        state.keyNonceAh += 1;
-        state.keyCashAh -= AH_TX_FEE_CASH;
-        if (opts.refuseExitLost) throw lostAnswer();
-        const dispatchError = apply(decodedCall);
-        if (opts.loseExitAnswer) throw lostAnswer();
-        if (dispatchError) return { ok: false, txHash: txHashFor(), dispatchError, events: [] };
-        return { ok: true, txHash: txHashFor(), block: { number: 501 }, events: [] };
-      },
+      signSubmitAndWatch: bestBlockWatch(
+        async (_signer: unknown, options: Record<string, unknown>) => {
+          state.submits.push({ call: name, args, options });
+          const lostAnswer = () => new Error("redeem submit timed out after 1s");
+          if (opts.dropExit) throw lostAnswer();
+          state.keyNonceAh += 1;
+          state.keyCashAh -= AH_TX_FEE_CASH + (opts.overchargeExit ?? 0n);
+          if (opts.refuseExitLost) throw lostAnswer();
+          const dispatchError = apply(decodedCall);
+          if (opts.loseExitAnswer) throw lostAnswer();
+          if (dispatchError) return { ok: false, txHash: txHashFor(), dispatchError, events: [] };
+          // Seen in the block after the one it is anchored at.
+          return {
+            ok: true,
+            txHash: txHashFor(),
+            block: seenOnAssetHub(state.anchorAh + 1),
+            events: [],
+          };
+        },
+      ),
     };
   };
 
@@ -456,6 +519,16 @@ function scriptedWorld(
       },
     },
     query: {
+      System: {
+        Number: {
+          getValue: async ({ at }: { at: string }) =>
+            at === "finalized" ? state.finalizedAh : state.bestAh,
+        },
+        BlockHash: {
+          getValue: async (number: number) =>
+            state.replacedAh.has(number) ? forkHash(number) : anchorHash(number),
+        },
+      },
       Psm: {
         PsmDebt: { getValue: async () => state.psmDebt },
         Psm: { getValue: async () => ({ min_swap_amount: PSM_MIN_SWAP }) },
@@ -563,6 +636,7 @@ async function drive(
   state: WithdrawTickState = freshWithdrawTickState(),
   sale: ConversionRoute = { tier: "pool" },
   destinationHex = DESTINATION_HEX,
+  overrides: Partial<WithdrawTickInput> = {},
 ) {
   const steps: WithdrawStep[] = [];
   const outcomes: WithdrawTickOutcome[] = [];
@@ -584,7 +658,13 @@ async function drive(
         transfer: "teleport",
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
-        readKeyOnPeople: async () => ({ cash: world.state.keyCash, pas: world.state.keyPas }),
+        readKeyOnPeople: async (_ss58, at) => ({
+          cash:
+            at === "finalized"
+              ? (world.state.keyCashFinalized ?? world.state.keyCash)
+              : world.state.keyCash,
+          pas: world.state.keyPas,
+        }),
         readKeyOnAssetHub: world.readKeyOnAssetHub,
         readDestinationOnAssetHub: world.readDestinationOnAssetHub,
         assetHubAnchor: async () => ({
@@ -594,6 +674,7 @@ async function drive(
         readFinalizedNumber: async () => world.state.finalizedAh,
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
+        ...overrides,
       },
       state,
     );
@@ -654,6 +735,8 @@ describe("withdrawTickOnce", () => {
       // The baseline is what the destination held before the XCM; the landing is the dry run's.
       destinationBefore: DESTINATION_PAS,
       expectedLanding: world.state.lastDryRunLanded,
+      // What the destination gained, here all the dry run said.
+      received: world.state.lastDryRunLanded,
     });
     expect(run.state.fundsSeenAt).toBe(2_000);
     expect(run.transients).toEqual([]);
@@ -750,6 +833,7 @@ describe("withdrawTickOnce", () => {
       psmRefusals: 0,
       destinationBefore: DESTINATION_PAS,
       expectedLanding: net,
+      received: net,
     });
     // The destination gained the net exactly; the key keeps its CASH account alive with the
     // minimum and the fee margin's unspent part.
@@ -879,10 +963,86 @@ describe("withdrawTickOnce", () => {
       keep_alive: false,
     });
     expect(swap.options).toEqual(exitOptions(AH_ANCHOR, 0));
-    // Held to the quote less the headroom; the destination gained the quote itself.
-    expect(state).toMatchObject({ expectedLanding: minOut, redeemSubmitted: true });
+    // Held to the quote less the headroom; the destination gained the quote itself, and that is
+    // what it received, not the floor.
+    expect(state).toMatchObject({
+      expectedLanding: minOut,
+      received: quote,
+      redeemSubmitted: true,
+    });
     expect(world.state.destinationPas).toBe(DESTINATION_PAS + quote);
     expect(world.state.psmDebt).toBe(0n);
+  });
+
+  it("takes the pool exit's floor as what it delivered when the destination moved the stable on before it was read", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const { cashIn } = sizedExit(world);
+    const minOut = (((cashIn * AH_RATE) / STABLE_PLANCK) * 95n) / 100n;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    world.state.destinationPas = 0n;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    // The exit cannot have paid less than its floor, so the floor stands in for the lost reading.
+    expect(state).toMatchObject({ arrived: true, expectedLanding: minOut, received: minOut });
+  });
+
+  it("takes the pool exit's floor as what it delivered when someone else paid the destination in with it", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const quote = (sizedExit(world).cashIn * AH_RATE) / STABLE_PLANCK;
+    const minOut = (quote * 95n) / 100n;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // The exit paid the quote, and a payment from elsewhere took the gain past it plus 5%.
+    world.state.destinationPas += landingCeiling(quote, 5) - quote + 2n;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, received: minOut });
+  });
+
+  it("settles the exit again when the read of what it delivered fails, so the done always carries the figure", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const quote = (sizedExit(world).cashIn * AH_RATE) / STABLE_PLANCK;
+    expect((await drive(world, 1, state, PSM_SALE)).steps).toEqual(["redeem"]);
+    const failing = drive(world, 1, state, PSM_SALE, DESTINATION_HEX, {
+      readDestinationOnAssetHub: async () => {
+        throw new Error("destination balance read timed out");
+      },
+    });
+    await expect(failing).rejects.toThrow(/timed out/);
+    expect(state).toMatchObject({ arrived: false, received: null });
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, received: quote });
+  });
+
+  it("finishes a pool exit whose answer was lost by the key's CASH, and watches it until it is final", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    state.exit = "pool";
+    const { cashIn } = sizedExit(world);
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    expect(state).toMatchObject({ redeemCashIn: cashIn, redeemBlock: null });
+    world.state.bestAh = AH_ANCHOR + 2;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: AH_ANCHOR + 2, redeemHash: null });
+    world.state.finalizedAh = AH_ANCHOR + 2;
+    await drive(world, 1, state, PSM_SALE);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual([
+      "swap",
+      "execute",
+      "swap_exact_tokens_for_tokens",
+    ]);
   });
 
   it("sends nothing while an exit whose answer was lost may still land: the key at its nonce, finality within its mortality", async () => {
@@ -937,6 +1097,48 @@ describe("withdrawTickOnce", () => {
       destinationBefore: DESTINATION_PAS + 5n,
       expectedLanding: net,
     });
+  });
+
+  it("waits instead of signing the exit afresh when the key read after the finalized head is past its nonce", async () => {
+    const world = scriptedWorld({ dropExit: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    world.state.finalizedAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 1;
+    // The first read is a best block on a fork without the exit; the one after the finalized
+    // head is on the chain that holds it.
+    const first = await world.readKeyOnAssetHub();
+    const reads = [first, { ...first, nonce: first.nonce + 1 }];
+    const run = await drive(world, 1, state, PSM_SALE, DESTINATION_HEX, {
+      readKeyOnAssetHub: async () => reads.shift() ?? first,
+    });
+    expect(run.outcomes[0]).toMatchObject({ step: "redeem", submitted: false });
+    expect(state).toMatchObject({ redeemSubmitted: true, redeemNonce: 0, redeemAnchor: AH_ANCHOR });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
+  it("still reads a refused exit as refused when its fee came in over the estimate's margin", async () => {
+    const over = 2n * withFeeMargin(AH_TX_FEE_CASH);
+    const world = scriptedWorld({ refuseExitLost: true, overchargeExit: over });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const first = sizedExit(world);
+    world.state.psmDebt = first.net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // Past the exit's nonce, and under what the exit takes, yet most of it still there.
+    expect(world.state.keyNonceAh).toBe(1);
+    expect(world.state.keyCashAh).toBeLessThan(first.cashIn);
+    world.state.anchorAh = AH_ANCHOR + 2;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // Not taken as a run: sized and signed again from what is left, at the next nonce.
+    expect(state).toMatchObject({ arrived: false, redeemSubmitted: true, redeemNonce: 1 });
+    expect(world.state.submits.map((s) => s.call)).toEqual([
+      "swap",
+      "execute",
+      "batch_all",
+      "batch_all",
+    ]);
   });
 
   it("sizes and submits again when the exit was included and refused with its answer lost: the key past the exit's nonce, the landing not grown", async () => {
@@ -994,7 +1196,7 @@ describe("withdrawTickOnce", () => {
       internal_amount: cashIn,
       max_fee: PSM_FEE_RATE,
     });
-    expect(state).toMatchObject({ destinationBefore: 0n, expectedLanding: net });
+    expect(state).toMatchObject({ destinationBefore: 0n, expectedLanding: net, received: net });
     expect(world.state.keyUsdtAh).toBe(net);
     expect(world.state.destinationPas).toBe(DESTINATION_PAS);
   });
@@ -1037,6 +1239,26 @@ describe("withdrawTickOnce", () => {
     expect(world.state.submits).toEqual([]);
   });
 
+  it("shows what arrived when the sale beat its dry run within the slippage, and the dry run's figure when someone else paid the destination in too", async () => {
+    const beat = scriptedWorld();
+    const beatState = freshWithdrawTickState();
+    await drive(beat, 2, beatState);
+    const landed = beat.state.lastDryRunLanded;
+    const ceiling = landingCeiling(landed, 5);
+    // The market moved for the user, within the slippage: what arrived stands.
+    beat.state.destinationPas += ceiling - landed;
+    expect((await drive(beat, 1, beatState)).steps).toEqual(["done"]);
+    expect(beatState).toMatchObject({ expectedLanding: landed, received: ceiling });
+
+    const paidIn = scriptedWorld();
+    const paidInState = freshWithdrawTickState();
+    await drive(paidIn, 2, paidInState);
+    // A payment from elsewhere lands with the sale.
+    paidIn.state.destinationPas += ceiling - landed + 1n;
+    expect((await drive(paidIn, 1, paidInState)).steps).toEqual(["done"]);
+    expect(paidInState.received).toBe(landed);
+  });
+
   it("keeps waiting while the destination gained less than the landing floor", async () => {
     const world = scriptedWorld({ landShort: 20_000_000_000n });
     const run = await drive(world, 4);
@@ -1060,6 +1282,8 @@ describe("withdrawTickOnce", () => {
     const run = await drive(atFloor, 3, freshWithdrawTickState(), route);
     expect(run.steps).toEqual(["swap", "convert", "done"]);
     expect(run.state.arrivalFloor).toBe(minOut);
+    // What arrived, not what the dry run said would.
+    expect(run.state).toMatchObject({ expectedLanding: landed, received: minOut });
 
     const underFloor = scriptedWorld({ landShort: landed - minOut + 1n });
     const waiting = await drive(underFloor, 3, freshWithdrawTickState(), route);
@@ -1129,6 +1353,280 @@ describe("withdrawTickOnce", () => {
     expect(execute!.options).not.toHaveProperty("asset");
   });
 
+  it("keeps the block the XCM was seen in until the finalized chain is past it, and lets it go when it stands", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state);
+    expect(state).toMatchObject({
+      submitted: true,
+      xcmSigned: true,
+      xcmBlock: XCM_BLOCK,
+      xcmHash: peopleHash(XCM_BLOCK),
+    });
+    // Done at the best block, with the XCM's block still to be settled.
+    const arrived = await drive(world, 1, state);
+    expect(arrived.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: XCM_BLOCK });
+    // The finalized head at the block itself says nothing yet: the next block records its hash.
+    world.state.finalizedPeople = XCM_BLOCK;
+    await drive(world, 1, state);
+    expect(state.xcmBlock).toBe(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    const settled = await drive(world, 1, state);
+    expect(settled.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ submitted: true, arrived: true, xcmBlock: null, xcmHash: null });
+  });
+
+  it("holds the done while the XCM's block stands, whatever the destination does with the funds", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    // The destination spends what landed before the block is final.
+    world.state.destinationPas = 0n;
+    const later = await drive(world, 1, state);
+    expect(later.steps).toEqual(["done"]);
+  });
+
+  it("sends the XCM again when the finalized chain replaced its block, the CASH still on the key", async () => {
+    const world = scriptedWorld({ dropXcm: true });
+    const state = freshWithdrawTickState();
+    const sent = await drive(world, 2, state);
+    expect(sent.steps).toEqual(["swap", "convert"]);
+    expect(world.state.keyCash).toBeGreaterThan(0n);
+    // Not past the block yet: nothing is known, and nothing goes out.
+    world.state.finalizedPeople = XCM_BLOCK;
+    const waiting = await drive(world, 1, state);
+    expect(waiting.steps).toEqual(["await-arrival"]);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+    // Past it, with another hash at that height: sized and sent again, and it arrives.
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    const resent = await drive(world, 3, state);
+    expect(resent.steps).toEqual(["convert", "done"]);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "execute"]);
+    expect(state).toMatchObject({ xcmBlock: xcmBlockOf(1), xcmHash: peopleHash(xcmBlockOf(1)) });
+    expect(world.state.keyCash).toBe(0n);
+  });
+
+  it("takes the done back when the XCM's block is replaced after the arrival, and sends it again", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state);
+    const beforeXcm = { keyCash: world.state.keyCash, keyPas: world.state.keyPas };
+    const done = await drive(world, 2, state);
+    expect(done.steps).toEqual(["convert", "done"]);
+    // A fork replaced the block: on the chain that stands the XCM never ran, nor did its landing.
+    Object.assign(world.state, beforeXcm, {
+      destinationPas: DESTINATION_PAS,
+      xcmLanded: false,
+      pasLanded: false,
+      destinationReads: 0,
+    });
+    world.state.replacedPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    const resent = await drive(world, 1, state);
+    expect(resent.steps).toEqual(["convert"]);
+    // What the replaced block delivered is gone with it.
+    expect(state).toMatchObject({ arrived: false, received: null });
+    const again = await drive(world, 2, state);
+    expect(again.steps).toEqual(["done"]);
+    expect(state.received).toBe(world.state.lastDryRunLanded);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "execute"]);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: xcmBlockOf(1) });
+  });
+
+  it("keeps the done when the XCM's block was replaced but the XCM stands in the finalized chain, though the destination already moved what landed", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: XCM_BLOCK });
+    // Another block at that height holds the XCM: the key is empty at the finalized head too.
+    world.state.replacedPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    world.state.destinationPas = 0n;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ submitted: true, arrived: true, xcmBlock: null, xcmHash: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("watches the XCM again from the best block when its block was replaced and it landed after the finalized head", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    const keyCash = KEY_CASH - SWAP_FEE_CASH - cashInFor(ED + RESERVE, RESERVES);
+    world.state.replacedPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    // The finalized head is past the replaced block and still has the CASH on the key; the best
+    // head holds the XCM in a later block.
+    world.state.keyCashFinalized = keyCash;
+    world.state.bestPeople = XCM_BLOCK + 4;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: XCM_BLOCK + 4, xcmHash: null });
+    // Final there too: let go.
+    world.state.keyCashFinalized = null;
+    world.state.finalizedPeople = XCM_BLOCK + 4;
+    await drive(world, 1, state);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("reads the key, not a guess, when the chain no longer names the XCM's block", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 3, state);
+    world.state.forgottenPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 5_000;
+    // The XCM stands: the key is empty at the finalized head, and the done is kept.
+    const stands = await drive(world, 1, state);
+    expect(stands.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, xcmBlock: null });
+    // Had it not, the CASH on the key at both heads sends it again.
+    const world2 = scriptedWorld({ dropXcm: true });
+    const state2 = freshWithdrawTickState();
+    await drive(world2, 2, state2);
+    world2.state.forgottenPeople.add(XCM_BLOCK);
+    world2.state.finalizedPeople = XCM_BLOCK + 5_000;
+    const resent = await drive(world2, 2, state2);
+    expect(resent.steps).toEqual(["convert", "done"]);
+    expect(world2.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "execute"]);
+  });
+
+  it("settles an XCM whose answer was lost by the key at the finalized head: final once it is empty there, sent again when it is not", async () => {
+    const world = scriptedWorld({ loseXcmAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state);
+    const beforeXcm = { keyCash: world.state.keyCash, keyPas: world.state.keyPas };
+    await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
+    // The empty key says it landed, in the latest block or an earlier one, with no hash known.
+    await drive(world, 1, state);
+    expect(state).toMatchObject({ submitted: true, xcmBlock: XCM_BLOCK, xcmHash: null });
+    // The finalized head is there and still holds the CASH on the key: the block was replaced.
+    world.state.finalizedPeople = XCM_BLOCK;
+    world.state.keyCashFinalized = beforeXcm.keyCash;
+    Object.assign(world.state, beforeXcm, { xcmLanded: false });
+    await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "execute"]);
+    // This one stands: the key is empty at the finalized head too.
+    world.state.keyCashFinalized = null;
+    const landed = await drive(world, 2, state);
+    expect(landed.steps).toEqual(["await-arrival", "done"]);
+    expect(state).toMatchObject({ submitted: true, xcmBlock: null, xcmHash: null });
+  });
+
+  it("lets the exit's block go when the finalized chain already holds it on the tick that sees the exit ran, with no second watch", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    expect((await drive(world, 1, state, PSM_SALE)).steps).toEqual(["redeem"]);
+    expect(state.redeemBlock).toBe(AH_ANCHOR + 1);
+    // The next tick comes only once Asset Hub finalized past the exit's block.
+    world.state.finalizedAh = AH_ANCHOR + 2;
+    world.state.bestAh = AH_ANCHOR + 5;
+    expect((await drive(world, 1, state, PSM_SALE)).steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null, redeemHash: null });
+  });
+
+  it("keeps the block the exit was seen in, and when that block was replaced with the key still at its nonce, waits out the exit's mortality before it signs it afresh there", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = 2n * sizedExit(world).net;
+    const { cashIn } = sizedExit(world);
+    const beforeExit = {
+      keyCashAh: world.state.keyCashAh,
+      keyNonceAh: world.state.keyNonceAh,
+      psmDebt: world.state.psmDebt,
+    };
+    const exitBlock = AH_ANCHOR + 1;
+    const redeemed = await drive(world, 2, state, PSM_SALE);
+    expect(redeemed.steps).toEqual(["redeem", "done"]);
+    expect(state).toMatchObject({
+      arrived: true,
+      redeemBlock: exitBlock,
+      redeemHash: anchorHash(exitBlock),
+      redeemCashIn: cashIn,
+    });
+    // A fork replaced the exit's block and nothing holds the exit: the CASH is back on the key,
+    // which never signed it on the chain that stands.
+    Object.assign(world.state, beforeExit, { destinationPas: DESTINATION_PAS });
+    world.state.replacedAh.add(exitBlock);
+    world.state.finalizedAh = exitBlock + 1;
+    // The copy that went out may still land within its mortality: nothing is signed meanwhile.
+    const held = await drive(world, 1, state, PSM_SALE);
+    expect(held.steps).toEqual(["redeem"]);
+    expect(state).toMatchObject({ arrived: false, redeemSubmitted: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+    // Past it, it never will: signed afresh at the same nonce, and it lands.
+    world.state.finalizedAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 1;
+    world.state.anchorAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 5;
+    const again = await drive(world, 2, state, PSM_SALE);
+    expect(again.steps).toEqual(["redeem", "done"]);
+    const calls = world.state.submits.map((s) => s.call);
+    expect(calls).toEqual(["swap", "execute", "batch_all", "batch_all"]);
+    expect(world.state.submits[3]!.options).toEqual(exitOptions(world.state.anchorAh, 0));
+    expect(state).toMatchObject({ arrived: true, redeemBlock: world.state.anchorAh + 1 });
+    // That block stands: let go, and the done with it.
+    world.state.finalizedAh = world.state.anchorAh + 2;
+    const settled = await drive(world, 1, state, PSM_SALE);
+    expect(settled.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null, redeemHash: null });
+  });
+
+  it("keeps the done when the exit's block was replaced but the exit stands in the finalized chain, though the destination already moved what landed", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    await drive(world, 2, state, PSM_SALE);
+    const exitBlock = AH_ANCHOR + 1;
+    // Another block at that height holds the exit; the destination spent what it got.
+    world.state.replacedAh.add(exitBlock);
+    world.state.finalizedAh = exitBlock + 1;
+    world.state.destinationPas = 0n;
+    const run = await drive(world, 1, state, PSM_SALE);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemSubmitted: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
+  it("finishes an exit whose answer was lost by the key's CASH, not the destination's balance, and watches it from the best block", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    // The exit ran and the destination has already moved the stable on.
+    world.state.destinationPas = 0n;
+    world.state.bestAh = AH_ANCHOR + 3;
+    const done = await drive(world, 1, state, PSM_SALE);
+    expect(done.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: AH_ANCHOR + 3, redeemHash: null });
+    // The finalized head reaches it and the key there shows the exit ran: let go.
+    world.state.finalizedAh = AH_ANCHOR + 3;
+    await drive(world, 1, state, PSM_SALE);
+    expect(state).toMatchObject({ arrived: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
+  it("keeps the exit's latch when its block was replaced but the key signed it in another one", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net;
+    await drive(world, 2, state, PSM_SALE);
+    const exitBlock = AH_ANCHOR + 1;
+    // The exit's first block was replaced and another holds it: the key is past its nonce and
+    // the landing stands.
+    world.state.replacedAh.add(exitBlock);
+    world.state.finalizedAh = exitBlock + 1;
+    const run = await drive(world, 1, state, PSM_SALE);
+    expect(run.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ arrived: true, redeemSubmitted: true, redeemBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
   it("swaps again when the PAS on the key cannot pay the XCM's fee and keep the deposit", async () => {
     const world = scriptedWorld();
     // The existential deposit alone: the pool would refuse the fee charge.
@@ -1175,6 +1673,25 @@ describe("withdrawTickOnce", () => {
     const later = await drive(world, 2, state);
     expect(later.steps).toEqual(["await-arrival", "done"]);
     expect(state.submitted).toBe(true);
+  });
+
+  it("does not take an empty key for a landed XCM when none was signed: a best block that dropped the payment", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    const swapped = await drive(world, 1, state);
+    expect(swapped.steps).toEqual(["swap"]);
+    // The best head moved to a fork without the payment or the swap.
+    const held = { cash: world.state.keyCash, pas: world.state.keyPas };
+    world.state.keyCash = 0n;
+    world.state.keyPas = 0n;
+    const dropped = await drive(world, 1, state);
+    expect(dropped.steps).toEqual(["await-cash"]);
+    expect(state.submitted).toBe(false);
+    // Both are back in a block: the run carries on to the XCM and the arrival.
+    world.state.keyCash = held.cash;
+    world.state.keyPas = held.pas;
+    const resumed = await drive(world, 2, state);
+    expect(resumed.steps).toEqual(["convert", "done"]);
   });
 
   it("holds in await-arrival when the baseline was lost with the state", async () => {

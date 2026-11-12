@@ -91,15 +91,9 @@ export const fundingSelectorConfig = {
   ],
 } as const satisfies FundingSelectorConfig;
 
-export const withdrawalSelectorConfig = {
-  ...fundingSelectorConfig,
-  amount: {
-    ...fundingSelectorConfig.amount,
-    minimum: "10",
-    maximum: "2000",
-    presets: asAmounts(PRESETS),
-  },
-} as const satisfies FundingSelectorConfig;
+/** The withdrawal takes the top up's bounds and presets: a build names one pair for both. A
+ *  provider's own minimum, where it has one, is judged when the destination is picked. */
+export const withdrawalSelectorConfig = fundingSelectorConfig;
 
 /** The route's deposit window, or the shared default for a route the config does not list. */
 export function depositWindowFor(route: FundingRoute): number {

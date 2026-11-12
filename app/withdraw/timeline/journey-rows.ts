@@ -3,13 +3,14 @@
 // reference to quote them for a sale.
 
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import { depositTokenOf, recordedRoute } from "@getsome/funding";
 import { sourceIdFor } from "~~/lib/config";
 import type { DetailRow } from "../../components/ui/DetailRows.vue";
 import { isWithdrawalSideExit, type WithdrawalRecord } from "../../funding/requests/model";
 import { asName } from "../../funding/top-up-projection";
 import { shortRef } from "../../utils/journey";
 import { fmtFiat } from "../../utils/money";
-import { shortDestinationAddress } from "../destinations";
+import { formatLanding, shortDestinationAddress } from "../destinations";
 
 export interface JourneyRowsContext {
   /** The route still holds the quote behind the receive row, so the row opens its fees. */
@@ -30,6 +31,26 @@ export function expectedEgressText(record: WithdrawalRecord): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * What the withdrawal delivers, as its success screen shows it in place of what left the
+ * balance: the fees come out on the way, so the two differ. A direct withdrawal shows what the
+ * worker saw arrive on the destination, in its asset. A provider pays out its own figure, so the
+ * quote's stands in for it, `≈`: the swap's expected egress, or a sale's payout. Null where none
+ * is known.
+ */
+export function receivedText(record: WithdrawalRecord): string | null {
+  if (record.route !== "crypto") {
+    const { sale } = record;
+    return sale === undefined ? null : `≈ ${fmtFiat(sale.quotedPayout, sale.fiat)}`;
+  }
+  if (record.rail.provider !== "direct") return expectedEgressText(record);
+  const worker = record.witnesses.worker;
+  const received = worker?.known === true ? worker.received : undefined;
+  if (received === undefined) return null;
+  const { decimals } = depositTokenOf(recordedRoute(record.handoff));
+  return `${formatLanding(BigInt(received), decimals)} ${record.destination.asset}`;
 }
 
 const ARRIVES: Readonly<Record<"card" | "bank", DetailRow>> = {

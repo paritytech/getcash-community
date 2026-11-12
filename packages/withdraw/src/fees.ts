@@ -38,7 +38,7 @@ import {
   type CashTransfer,
   type ConversionRoute,
 } from "@getsome/funding";
-import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
+import { AT_BEST, PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
 import {
   buildSwap,
@@ -96,8 +96,8 @@ export async function readPoolReserves(
   poolAccount: string,
 ): Promise<PoolReserves> {
   const [native, asset] = await Promise.all([
-    peopleApi.query.System.Account.getValue(poolAccount),
-    peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, poolAccount),
+    peopleApi.query.System.Account.getValue(poolAccount, AT_BEST),
+    peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, poolAccount, AT_BEST),
   ]);
   return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
 }
@@ -294,10 +294,12 @@ async function dryRunOnPeople(
   args: WithdrawXcmArgs,
   assetHubParaId: number,
 ): Promise<PeopleRun> {
+  // At the best head, where the PAS the swap bought a block ago already is.
   const dr = await peopleApi.apis.DryRunApi.dry_run_call(
     signedOrigin(keyAddress) as never,
     buildWithdrawXcm(peopleApi, args).decodedCall as never,
     5,
+    AT_BEST,
   );
   if (!dr.success) {
     return {
@@ -338,6 +340,7 @@ async function deliveryFee(
     siblingOrigin(assetHubParaId) as never,
     message as never,
     { type: "V5", value: PEOPLE_NATIVE } as never,
+    AT_BEST,
   );
   if (!df.success) throw new Error("withdraw sizing: People would not quote the delivery fee");
   return nativeAmount(df.value);
@@ -349,17 +352,15 @@ async function weighed(
   peopleApi: PeopleApi,
   args: WithdrawXcmArgs,
 ): Promise<{ ref_time: bigint; proof_size: bigint } | undefined> {
-  const w = await peopleApi.apis.XcmPaymentApi.query_xcm_weight(withdrawMessage(args) as never);
+  const w = await peopleApi.apis.XcmPaymentApi.query_xcm_weight(
+    withdrawMessage(args) as never,
+    AT_BEST,
+  );
   return w.success ? { ref_time: w.value.ref_time, proof_size: w.value.proof_size } : undefined;
 }
 
-/** Where the sale on Asset Hub is quoted and dry-run: at the best head, since the finalized one
- *  lags 12 to 60 s and the sale's floor sits only DEFAULT_WITHDRAW_SLIPPAGE_PCT under the quote.
- *  The balances an arrival is judged on are still read at the finalized head; only the figure
- *  they are held to comes from these reads. */
-export const SALE_READ_AT = { at: "best" } as const;
-
-/** What `amountIn` of one asset sells for in another on Asset Hub's pools, now, at the best head. */
+/** What `amountIn` of one asset sells for in another on Asset Hub's pools, now, at the best head:
+ *  the sale's floor sits only DEFAULT_WITHDRAW_SLIPPAGE_PCT under the quote. */
 export async function quoted(
   assetHubApi: AssetHubApi,
   give: unknown,
@@ -372,7 +373,7 @@ export async function quoted(
     want as never,
     amountIn,
     true,
-    SALE_READ_AT,
+    AT_BEST,
   );
   if (out === undefined) throw new Error(`withdraw sizing: Asset Hub cannot quote ${what}`);
   return out;
@@ -554,7 +555,7 @@ export async function dryRunOnAssetHub(
   const dr = await assetHubApi.apis.DryRunApi.dry_run_xcm(
     siblingOrigin(peopleParaId) as never,
     forwarded as never,
-    SALE_READ_AT,
+    AT_BEST,
   );
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;

@@ -36,7 +36,6 @@ export {
   formatSellAmount,
   isDirectSellCode,
   isDirectUsdt,
-  MELD_SELL_ENABLED,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
   type SaleChannelRecord,

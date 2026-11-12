@@ -44,8 +44,6 @@ export const JOURNEYS = {
 export type JourneyName = keyof typeof JOURNEYS;
 
 export const FAILURE_KINDS = [
-  // the host cannot run this build (useHostGate)
-  "host-unsupported",
   "permission-refused",
   // the worker would not take a request
   "handoff-failed",
@@ -76,7 +74,6 @@ export type FailureKind = (typeof FAILURE_KINDS)[number];
  */
 export function isExpected(kind: FailureKind, reason: string): boolean {
   switch (kind) {
-    case "host-unsupported":
     case "permission-refused":
     case "payment-refused":
       return true;
