@@ -25,7 +25,7 @@ import {
   countryName,
   fetchOfframpCorridor,
   fetchOfframpCorridors,
-  methodFor,
+  methodsFor,
   type OfframpLaneRef,
   type SupportedCorridor,
   type SupportedCountry,
@@ -262,9 +262,8 @@ export function useMeldSellQuote(
     const read = corridors.value?.get(cc) ?? (await fetchOfframpCorridor(cc));
     const live = read === null ? null : sellableCorridor(read, OFFRAMP_LANE_ORDER);
     if (live !== null) {
-      const found = methodFor(live, method);
-      // A method whose providers all fail the adapter's probes is not quoted until they answer.
-      return found === null || found.temporarilyUnavailable
+      const [found] = methodsFor(live, method);
+      return found === undefined
         ? null
         : {
             fiat: live.fiat,
@@ -282,10 +281,7 @@ export function useMeldSellQuote(
   function failUnrouted(): void {
     const routedAnywhere =
       corridors.value === null ||
-      [...corridors.value.values()].some((c) => {
-        const found = methodFor(c, method);
-        return found !== null && !found.temporarilyUnavailable;
-      });
+      [...corridors.value.values()].some((c) => methodsFor(c, method).length > 0);
     if (routedAnywhere) {
       fail(
         "unrouted",

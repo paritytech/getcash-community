@@ -14,17 +14,19 @@ export type RouteDecline =
 /** A provider's answer about one route: accepted with its figure, or declined. */
 export type RouteAnswer<T> = { kind: "accepted"; value: T } | RouteDecline;
 
-/** The route picked with the provider's figure for it, or why none was. */
-export type RoutePick<T> = { kind: "picked"; route: ConversionRoute; value: T } | RouteDecline;
+/** The route picked with the provider's figure for it, or why none was. `R` is what was walked:
+ *  conversion routes, or anything else asked in order the same way. */
+export type RoutePick<T, R = ConversionRoute> =
+  { kind: "picked"; route: R; value: T } | RouteDecline;
 
 /** Asks `ask` about each route in order, one at a time, and returns the first accepted. An outage
  *  stops the walk, since the next route goes to the same provider, and is what is returned: a
  *  later route might have accepted. Otherwise, with none accepted, the smallest minimum when any
  *  answer was too small, else the first refusal. Errors thrown by `ask` propagate. */
-export async function pickRoute<T>(
-  routes: readonly ConversionRoute[],
-  ask: (route: ConversionRoute) => Promise<RouteAnswer<T>>,
-): Promise<RoutePick<T>> {
+export async function pickRoute<T, R = ConversionRoute>(
+  routes: readonly R[],
+  ask: (route: R) => Promise<RouteAnswer<T>>,
+): Promise<RoutePick<T, R>> {
   let smallest: Extract<RouteDecline, { kind: "too-small" }> | undefined;
   let outage: Extract<RouteDecline, { kind: "outage" }> | undefined;
   let refusal: Extract<RouteDecline, { kind: "refused" }> | undefined;

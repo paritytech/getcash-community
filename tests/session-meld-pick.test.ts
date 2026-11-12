@@ -21,10 +21,12 @@ const PSM: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 1_000 };
 const USDT = TOKENS.USDT.meldAsset as MeldAssetId;
 const DOT = TOKENS.PAS.meldAsset as MeldAssetId;
 
-const { worlds, adapter, corridors, catalogs } = vi.hoisted(() => ({
+const { worlds, adapter, methodsAsked, corridors, catalogs } = vi.hoisted(() => ({
   worlds: { builds: [] as string[], disposed: [] as string[] },
-  /** Keyed by Meld's code for the token quoted. */
+  /** Keyed by Meld's code for the token quoted, or that code and the method as `code/method`. */
   adapter: new Map<string, { status: number; body: unknown } | "timeout">(),
+  /** The methods quoted, each once, in the order first asked. */
+  methodsAsked: [] as string[],
   /** The tokens whose corridor a quote read, and the card limits a token's corridor carries. */
   corridors: {
     reads: [] as string[],
@@ -32,6 +34,8 @@ const { worlds, adapter, corridors, catalogs } = vi.hoisted(() => ({
     /** Tokens whose card providers all fail the adapter's probes. */
     down: new Set<string>(),
     limits: new Map<string, { min: string; max: string }>(),
+    /** The methods a token's corridor lists, when not only CREDIT_DEBIT_CARD; any other is bank. */
+    methods: new Map<string, string[]>(),
   },
   /** The region dropdown's catalogs per token, and every read of them. */
   catalogs: {
@@ -50,15 +54,20 @@ vi.mock("../lib/supported", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/supported")>()),
   fetchCorridor: async (destination: string, country: string): Promise<SupportedCorridor> => {
     corridors.reads.push(destination);
-    const card = {
-      paymentMethodType: "CREDIT_DEBIT_CARD",
-      category: "card" as const,
+    const method = (paymentMethodType: string) => ({
+      paymentMethodType,
+      category: paymentMethodType === "CREDIT_DEBIT_CARD" ? ("card" as const) : ("bank" as const),
       ...(corridors.limits.get(destination) ?? { min: "", max: "" }),
       currency: "USD",
       providers: [],
       ...(corridors.down.has(destination) ? { temporarilyUnavailable: true as const } : {}),
+    });
+    const methods = corridors.methods.get(destination) ?? ["CREDIT_DEBIT_CARD"];
+    return {
+      country,
+      fiat: "USD",
+      methods: corridors.unrouted.has(destination) ? [] : methods.map(method),
     };
-    return { country, fiat: "USD", methods: corridors.unrouted.has(destination) ? [] : [card] };
   },
   fetchSupportedCountries: async (destination: string) => {
     catalogs.reads.push(`countries:${destination}`);
@@ -78,7 +87,10 @@ vi.mock("@getsome/meld", async (importOriginal) => {
     createFakeMeldClient: (...args: Parameters<typeof original.createFakeMeldClient>) => {
       const fake = original.createFakeMeldClient(...args);
       const getQuote: MeldClientLike["getQuote"] = (req) => {
-        const answer = adapter.get(req.destinationCurrencyCode);
+        if (!methodsAsked.includes(req.paymentMethodType)) methodsAsked.push(req.paymentMethodType);
+        const answer =
+          adapter.get(`${req.destinationCurrencyCode}/${req.paymentMethodType}`) ??
+          adapter.get(req.destinationCurrencyCode);
         if (answer === undefined) return fake.getQuote(req);
         if (answer === "timeout") return new Promise(() => {});
         const fetchImpl = (async () =>
@@ -162,6 +174,8 @@ describe("a hosted Meld quote", () => {
     corridors.unrouted.clear();
     corridors.down.clear();
     corridors.limits.clear();
+    corridors.methods.clear();
+    methodsAsked.length = 0;
     catalogs.reads.length = 0;
     catalogs.countries.clear();
     catalogs.corridors.clear();
@@ -287,6 +301,20 @@ describe("a hosted Meld quote", () => {
       expect(session.quoteOutOfRange?.limit ?? null).toBe(outOfRange ?? null);
     },
   );
+
+  it("asks the category's next method on the same route when the first is refused", async () => {
+    corridors.methods.set(USDT, ["SEPA_INSTANT", "SEPA"]);
+    adapter.set(`${TOKENS.USDT.meldCurrencyCode}/SEPA_INSTANT`, noProvider);
+    const session = useSessionStore();
+    session.setMethod("bank");
+    session.setAmount("50");
+    await settle(session.fetchMeldQuote());
+    expect(methodsAsked).toEqual(["SEPA_INSTANT", "SEPA"]);
+    expect(worlds.builds).toEqual(["psm", "psm"]);
+    expect(worlds.disposed).toEqual(["psm"]);
+    expect(session.live?.route.tier).toBe("psm");
+    expect(session.quoteError).toBeNull();
+  });
 
   it("judges the region dropdown on both tokens' catalogs, whichever route quotes", async () => {
     const card = (min: string) => ({
