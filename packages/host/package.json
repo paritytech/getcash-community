@@ -13,7 +13,6 @@
   "dependencies": {
     "@getsome/core": "workspace:*",
     "@getsome/ephemeral": "workspace:*",
-    "@getsome/revive": "workspace:*",
     "polkadot-api": "2.2.2"
   }
 }

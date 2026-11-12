@@ -1106,13 +1106,11 @@ export async function createCoinageSession(
   // The Meld rail when the fiat route injected one; the source's own rail otherwise.
   const chainflip = args.rail ?? (await railFor(args.sourceId, args.route));
   const { connectChain, evictChains, PEOPLE, ASSET_HUB } = await import("./host-chain");
-  const [peopleClient] = await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
+  await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
   const peoplePort = resilientPeoplePort();
   // Resolved per call: after a redial the cached client is a new object.
   const assetHubApi = async () => (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   const { deps: hostDeps } = createHostDeps({
-    // Required by the input type but unread: `chain` below supplies the port.
-    client: peopleClient,
     chain: peoplePort,
     chainflip,
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.

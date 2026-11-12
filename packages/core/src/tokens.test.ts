@@ -5,7 +5,6 @@
 import { describe, expect, it } from "vitest";
 import { PASEO_UNDERLYING_ASSET_ID } from "../../funding/src/paseo";
 import { CASH_DECIMALS, CASH_LOCATION } from "../../people/src/cash";
-import { USDC_ASSET_ID, USDT_ASSET_ID } from "../../revive/src/constants";
 import { PEOPLE_NATIVE } from "../../withdraw/src/paseo";
 import { CASH_ON_ASSET_HUB } from "../../withdraw/src/program";
 import { NETWORK } from "./network";
@@ -43,11 +42,6 @@ describe("re-exported asset constants", () => {
 
   it("PAS on People: packages/withdraw/src/paseo.ts", () => {
     expect(PEOPLE_NATIVE).toStrictEqual({ parents: 1, interior: { type: "Here" } });
-  });
-
-  it("stables on Asset Hub: packages/revive/src/constants.ts", () => {
-    expect(USDC_ASSET_ID).toBe(1337);
-    expect(USDT_ASSET_ID).toBe(1984);
   });
 });
 

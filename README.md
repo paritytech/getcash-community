@@ -165,12 +165,11 @@ session, the worker, and the history need no change.
 ### Ports and wirings
 
 Everything the engine touches outside its own code comes in through a small set of ports:
-`ChainPort` (balances, submit, sweep), `StorageAdapter`, `EntropyPort`, and the rail. Three
+`ChainPort` (balances, submit, sweep), `StorageAdapter`, `EntropyPort`, and the rail. Two
 packages wire them:
 
 - `@getsome/host` for running inside a Polkadot App host: storage, entropy, and chain
   access come from the host API.
-- `@getsome/browser` for a plain browser: local storage and a persisted random seed.
 - `@getsome/testing` fakes for the unit tests. The same fakes drive the mock world the app
   runs when no host is present, so the whole state machine can be exercised at
   `localhost:3000` without a chain.
@@ -200,9 +199,7 @@ brand/        the product icon used in the bulletin manifest
 | `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
 | `@getsome/meld`      | card and bank rail over the Meld adapter                         |
 | `@getsome/people`    | People chain port: CASH balances and the handoff submit          |
-| `@getsome/revive`    | Asset Hub chain port over polkadot-api, batch and sweep building |
 | `@getsome/host`      | port wiring for the Polkadot App host                            |
-| `@getsome/browser`   | port wiring for a plain browser                                  |
 | `@getsome/testing`   | fakes for tests and the mock world                               |
 
 Packages export TypeScript source directly (`exports` points at `src/index.ts`); there is no

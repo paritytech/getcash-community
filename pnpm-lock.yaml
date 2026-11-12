@@ -133,21 +133,6 @@ importers:
         specifier: ^2.1.10
         version: 2.2.12(typescript@5.9.3)
 
-  packages/browser:
-    dependencies:
-      '@getsome/core':
-        specifier: workspace:*
-        version: link:../core
-      '@getsome/ephemeral':
-        specifier: workspace:*
-        version: link:../ephemeral
-      '@getsome/revive':
-        specifier: workspace:*
-        version: link:../revive
-      polkadot-api:
-        specifier: 2.2.2
-        version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
-
   packages/chainflip:
     dependencies:
       '@chainflip/sdk':
@@ -228,9 +213,6 @@ importers:
       '@getsome/ephemeral':
         specifier: workspace:*
         version: link:../ephemeral
-      '@getsome/revive':
-        specifier: workspace:*
-        version: link:../revive
       polkadot-api:
         specifier: 2.2.2
         version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
@@ -252,18 +234,6 @@ importers:
         version: link:../chainflip
 
   packages/people:
-    dependencies:
-      '@getsome/core':
-        specifier: workspace:*
-        version: link:../core
-      '@polkadot-api/descriptors':
-        specifier: file:../../.papi/descriptors
-        version: file:.papi/descriptors(polkadot-api@2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6))
-      polkadot-api:
-        specifier: 2.2.2
-        version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
-
-  packages/revive:
     dependencies:
       '@getsome/core':
         specifier: workspace:*
