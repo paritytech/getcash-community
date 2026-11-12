@@ -1000,16 +1000,13 @@ describe("a sale that fails before its provider is paid", () => {
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses a sale with a real adapter where the build does not sell for fiat", async () => {
+  it("takes a sale with a real adapter on a live network too", async () => {
     vi.doMock("@getsome/core", async (importOriginal) => {
       const actual = await importOriginal<typeof import("@getsome/core")>();
       return { ...actual, NETWORK: { ...actual.NETWORK, testnet: false } };
     });
     const engine = await engineWith({});
-    expect(await engine.startWithdraw(handoff())).toMatchObject({
-      error: "invalid",
-      reason: expect.stringMatching(/not open on this network/),
-    });
+    expect(await engine.startWithdraw(handoff())).toMatchObject({ sessionId: "s-1" });
   });
 });
 

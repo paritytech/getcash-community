@@ -18,7 +18,6 @@ vi.mock("@getsome/chainflip/swap-status", () => ({
 
 vi.mock("@getsome/meld", async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  MELD_SELL_ENABLED: true,
   createMeldClient: () => ({}),
   saleRail: () => ({ channel: mocks.saleChannel, status: mocks.saleStatus }),
 }));

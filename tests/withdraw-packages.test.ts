@@ -38,20 +38,6 @@ describe("getcash withdrawal packages", () => {
     ]);
   });
 
-  it("keeps card and bank unavailable in a build that does not sell for fiat yet", async () => {
-    vi.resetModules();
-    vi.doMock("../lib/config", async (importOriginal) => ({
-      ...(await importOriginal<object>()),
-      MELD_SELL_ENABLED: false,
-    }));
-    const live = await import("../app/funding/packages");
-    expect(
-      live.availableFundingRoutes(live.getcashWithdrawPackages, ["crypto", "card", "bank"]),
-    ).toEqual(["crypto"]);
-    vi.doUnmock("../lib/config");
-    vi.resetModules();
-  });
-
   it("shares one fiat package between card and bank, so the list asks it once", () => {
     expect(uniqueFundingPackages(getcashWithdrawPackages).map((p) => p.packageId)).toEqual([
       "@getsome/withdraw-crypto",

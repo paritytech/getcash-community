@@ -10,7 +10,6 @@ import {
   createMeldClient,
   devAdapterFetch,
   ensureMeldAssets,
-  MELD_SELL_ENABLED,
   personhoodAdapterFetch,
   saleRail,
 } from "@getsome/meld";
@@ -68,8 +67,6 @@ export function railFor(provider, record) {
     return { status: (id) => readSwapStatus(id), channel: (id) => readChannelRecord(id) };
   }
   if (provider === "meld") {
-    // Where the build does not sell for fiat, no sale is read or paid, whatever a hand-off says.
-    if (!MELD_SELL_ENABLED) return null;
     const meld = record?.meld;
     if (meld?.offline === true) {
       return NETWORK.testnet ? { status: async () => ({ status: "receiving" }) } : null;
