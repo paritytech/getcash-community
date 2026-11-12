@@ -970,6 +970,8 @@ function scriptedStableWorld(
     poolDepth?: bigint;
     /** The stable pool's rate at inclusion, in bps of the sizing rate, when it differs. */
     stableAtSubmitBps?: bigint;
+    /** The CASH pool's rate at inclusion, in bps of the sizing rate, when it differs. */
+    priceAtSubmitBps?: bigint;
     /** The pool's stable price for the submitted program's dispatch fee, when it differs from
      *  the stand-in's. */
     dispatchOnProgram?: bigint;
@@ -996,6 +998,8 @@ function scriptedStableWorld(
     dispatchAtSubmit: opts.dispatchAtSubmit,
     /** The stable pool's rate at inclusion, applied on every real submit while set. */
     stableAtSubmitBps: opts.stableAtSubmitBps,
+    /** The CASH pool's rate at inclusion, applied on every real submit while set. */
+    priceAtSubmitBps: opts.priceAtSubmitBps,
     stableAh: 0n,
     underlyingPeople: 0n,
     inFlight: 0n,
@@ -1037,6 +1041,7 @@ function scriptedStableWorld(
     if (!atDryRun && state.stableAtSubmitBps !== undefined) {
       state.stableBps = state.stableAtSubmitBps;
     }
+    if (!atDryRun && state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
     const nativeOut = nativeOutFor(give);
     if (nativeOut < first!.want[0]!.fun.value) return { error: incomplete(2, "NoDeal") };
     const named = (second!.give.value as { type: string; value: { id: unknown } }).value.id;
@@ -3352,6 +3357,32 @@ describe("a burner held to the pool's quote", () => {
     // The pool holds still: the next tick converts everything.
     world.state.priceAtSubmitBps = undefined;
     expect((await drive(world, 1, state)).steps).toEqual(["swap"]);
+  });
+
+  it("spares a surplus the stable tier's second exchange only", async () => {
+    const second = scriptedStableWorld({ priceAtSubmitBps: 10_300n });
+    second.state.stableAh = 2n * STABLE_DEPOSIT;
+    const state = freshTickState();
+    for (let n = 0; n < MAX_PROGRAM_REJECTIONS + 1; n += 1) {
+      await expect(drive(second, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toThrow(
+        /ExchangeAsset #2 failed with NoDeal/,
+      );
+      second.state.priceBps = 10_000n;
+    }
+    expect(state.rejections).toBe(0);
+
+    const first = scriptedStableWorld({ stableAtSubmitBps: 10_600n });
+    first.state.stableAh = 2n * STABLE_DEPOSIT;
+    for (let n = 1; n < MAX_PROGRAM_REJECTIONS; n += 1) {
+      await expect(drive(first, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toThrow(
+        /ExchangeAsset #1 failed with NoDeal/,
+      );
+      expect(state.rejections).toBe(n);
+      first.state.stableBps = 10_000n;
+    }
+    await expect(drive(first, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toBeInstanceOf(
+      FundingHeldError,
+    );
   });
 });
 
