@@ -20,8 +20,13 @@ const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 const PSM: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 1_000 };
 const USDT = TOKENS.USDT.meldAsset as MeldAssetId;
 const DOT = TOKENS.PAS.meldAsset as MeldAssetId;
+const USDC = TOKENS.USDC.meldAsset as MeldAssetId;
+const POOL: ConversionRoute = { tier: "pool" };
+const USDC_POOL: ConversionRoute = { tier: "pool", external: "USDC" };
 
-const { worlds, adapter, methodsAsked, corridors, catalogs } = vi.hoisted(() => ({
+const { ranked, worlds, adapter, methodsAsked, corridors, catalogs } = vi.hoisted(() => ({
+  /** The routes the chain ranks for the quote. */
+  ranked: { routes: [] as ConversionRoute[] },
   worlds: { builds: [] as string[], disposed: [] as string[] },
   /** Keyed by Meld's code for the token quoted, or that code and the method as `code/method`. */
   adapter: new Map<string, { status: number; body: unknown } | "timeout">(),
@@ -109,7 +114,7 @@ vi.mock("@getsome/meld", async (importOriginal) => {
 vi.mock("../lib/coinage-live", async () => {
   const { createMockCoinageSession } = await import("../lib/coinage");
   return {
-    rankHostedRoutes: async () => [PSM, { tier: "pool" }],
+    rankMeldRoutes: async () => ranked.routes,
     nextHostedTradeNumber: async () => 1,
     readHostedTradeCounter: async () => 1,
     readFlowSlot: async () => ({ address: BURNER, slot: null }),
@@ -117,7 +122,8 @@ vi.mock("../lib/coinage-live", async () => {
     createHostedCoinageWorld: async (
       args: Parameters<typeof createMockCoinageSession>[0] & { route: ConversionRoute },
     ) => {
-      const { tier } = args.route;
+      const { route } = args;
+      const tier = route.tier === "pool" && route.external ? `pool:${route.external}` : route.tier;
       worlds.builds.push(tier);
       const mock = await createMockCoinageSession({
         ...args,
@@ -168,6 +174,7 @@ describe("a hosted Meld quote", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     setRecordStorage(createMemoryKeyedStorage());
+    ranked.routes = [PSM, POOL];
     worlds.builds.length = 0;
     worlds.disposed.length = 0;
     corridors.reads.length = 0;
@@ -316,7 +323,21 @@ describe("a hosted Meld quote", () => {
     expect(session.quoteError).toBeNull();
   });
 
-  it("judges the region dropdown on both tokens' catalogs, whichever route quotes", async () => {
+  it("asks for USDC when neither USDT nor DOT quotes", async () => {
+    ranked.routes = [PSM, POOL, USDC_POOL];
+    adapter.set(TOKENS.USDT.meldCurrencyCode as string, noProvider);
+    adapter.set(TOKENS.PAS.meldCurrencyCode as string, noProvider);
+    const session = useSessionStore();
+    session.setMethod("card");
+    session.setAmount("50");
+    await settle(session.fetchMeldQuote());
+    expect(corridors.reads).toEqual([USDT, DOT, USDC]);
+    expect(worlds.builds).toEqual(["psm", "pool", "pool:USDC"]);
+    expect(session.live?.route).toEqual(USDC_POOL);
+    expect(session.quoteError).toBeNull();
+  });
+
+  it("judges the region dropdown on every token's catalog, whichever route quotes", async () => {
     const card = (min: string) => ({
       paymentMethodType: "CREDIT_DEBIT_CARD",
       category: "card" as const,
@@ -341,12 +362,18 @@ describe("a hosted Meld quote", () => {
         ["DE", { country: "DE", fiat: "EUR", methods: [card("15")] }],
       ]),
     );
+    catalogs.countries.set(USDC, [{ country: "RW", name: "Rwanda" }]);
+    catalogs.corridors.set(
+      USDC,
+      new Map([["RW", { country: "RW", fiat: "EUR", methods: [card("25")] }]]),
+    );
     const session = useSessionStore();
     await session.loadSupportedCatalog();
     expect(catalogs.reads.sort()).toEqual(
-      [`corridors:${DOT}`, `corridors:${USDT}`, `countries:${DOT}`, `countries:${USDT}`].sort(),
+      [USDT, DOT, USDC].flatMap((token) => [`corridors:${token}`, `countries:${token}`]).sort(),
     );
-    expect(session.supportedCountries?.map((c) => c.country)).toEqual(["BR", "DE"]);
+    expect(session.supportedCountries?.map((c) => c.country)).toEqual(["BR", "DE", "RW"]);
+    expect(session.corridorByCountry?.get("RW")?.methods[0]?.min).toBe("25");
     expect(session.corridorByCountry?.get("BR")?.methods[0]?.min).toBe("30");
     expect(session.corridorByCountry?.get("DE")?.methods[0]?.min).toBe("15");
 
@@ -356,7 +383,7 @@ describe("a hosted Meld quote", () => {
     session.setAmount("50");
     await session.fetchMeldQuote();
     expect(session.live?.route.tier).toBe("pool");
-    expect(catalogs.reads).toHaveLength(4);
+    expect(catalogs.reads).toHaveLength(6);
   });
 
   it.each([

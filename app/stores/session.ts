@@ -418,13 +418,11 @@ export const useSessionStore = defineStore("session", () => {
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
   /** The tokens the region dropdown's catalogs are read for. Hosted, a card or bank quote tries
-   *  the PSM's external and then the native, so a region counts when a provider delivers either
-   *  there; the external's catalog leads, as its route does. Off-host there is no PSM. */
-  const psmMeldAsset = isHosted() ? TOKENS[PSM_EXTERNAL].meldAsset : undefined;
-  const catalogDestinations: MeldAssetId[] =
-    psmMeldAsset === undefined
-      ? [DEFAULT_MELD_DESTINATION]
-      : [psmMeldAsset, DEFAULT_MELD_DESTINATION];
+   *  the PSM's external, the native and then USDC, so a region counts when a provider delivers
+   *  any of them there; the catalogs lead in the routes' order. Off-host there is no PSM. */
+  const catalogDestinations: MeldAssetId[] = isHosted()
+    ? [TOKENS[PSM_EXTERNAL].meldAsset, DEFAULT_MELD_DESTINATION, TOKENS.USDC.meldAsset]
+    : [DEFAULT_MELD_DESTINATION];
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
@@ -1182,8 +1180,8 @@ export const useSessionStore = defineStore("session", () => {
       // token to the burner and the funding leg converts it to CASH. Each route the chain ranks is
       // asked in turn, on the region's corridor for its token and each of the chosen category's
       // methods there, until a provider quotes it.
-      const { nextHostedTradeNumber, rankHostedRoutes } = await import("~~/lib/coinage-live");
-      const routes = await step("route selection", 10_000, rankHostedRoutes(amountBase.value));
+      const { nextHostedTradeNumber, rankMeldRoutes } = await import("~~/lib/coinage-live");
+      const routes = await step("route selection", 10_000, rankMeldRoutes(amountBase.value));
       if (epoch !== quoteEpoch) return;
       // Every route is tried on one trade number: a Meld world writes nothing to storage and its
       // quote opens no session, so a world let go leaves nothing behind.

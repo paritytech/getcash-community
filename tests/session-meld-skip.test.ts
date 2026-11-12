@@ -55,7 +55,7 @@ vi.mock("../lib/supported", async (importOriginal) => ({
 vi.mock("../lib/coinage-live", async () => {
   const { createMockCoinageSession } = await import("../lib/coinage");
   return {
-    rankHostedRoutes: async () => [PSM],
+    rankMeldRoutes: async () => [PSM],
     nextHostedTradeNumber: async () => trades.next++,
     ensureChainSubmitGrant: async () => {},
     readHostedTradeCounter: async () => 1,
