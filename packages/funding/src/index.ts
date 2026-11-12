@@ -13,6 +13,7 @@ export {
   discoverPool,
   discoverPools,
   freshTickState,
+  includedInBlock,
   psmDepositNeeded,
   quoteNativeInMax,
   quoteNativeOut,
@@ -26,7 +27,7 @@ export {
   tickOnce,
   withHeadroom,
 } from "./pipeline";
-export type { ConversionFact, FundingStep, TickState } from "./pipeline";
+export type { ConversionFact, FundingStep, Inclusion, TickState, Watch } from "./pipeline";
 export {
   buildFundingProgram,
   buildPsmFundingProgram,

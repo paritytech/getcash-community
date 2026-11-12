@@ -518,7 +518,12 @@ function heldWitness(at: number): WithdrawalRecord["witnesses"] {
 async function previewWithdrawal(
   index: number,
   state: WithdrawalPreviewState,
-  over?: { amountHuman?: string; destination?: WithdrawalRecord["destination"] },
+  over?: {
+    amountHuman?: string;
+    destination?: WithdrawalRecord["destination"];
+    /** Straight to Polkadot, no provider: the worker's witness carries what arrived. */
+    direct?: { received: string };
+  },
 ): Promise<void> {
   const requests = useRequestsStore();
   const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + index };
@@ -569,11 +574,16 @@ async function previewWithdrawal(
     address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
     publicKeyHex: `0x${"6e".repeat(32)}`,
   };
-  const destination = over?.destination ?? {
-    chain: "Ethereum",
-    asset: "USDC",
-    address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-  };
+  const direct = over?.direct;
+  const destination =
+    over?.destination ??
+    (direct === undefined
+      ? { chain: "Ethereum", asset: "USDC", address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db" }
+      : {
+          chain: "Polkadot",
+          asset: "DOT",
+          address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+        });
   const record: WithdrawalRecord = {
     schema: 2,
     kind: "withdrawal",
@@ -599,7 +609,7 @@ async function previewWithdrawal(
       amount: "25000000",
       destination,
       landingHex: `0x${"5d".repeat(32)}`,
-      rail: "chainflip",
+      rail: direct === undefined ? "chainflip" : "direct",
       // The redeem and its hold are the PSM tier's.
       ...(state === "redeeming" || state === "held"
         ? { tier: "psm" as const, external: "USDT" as const }
@@ -611,17 +621,21 @@ async function previewWithdrawal(
       poolAccount: "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB",
       slippagePct: 2,
       paymentExpiresAt: now + 3_600_000,
-      channel: {
-        id: "42",
-        address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
-        openedAt: startedAt,
-        expiresAt: now + 3_600_000,
-        expectedEgress: "24440000",
-      },
+      ...(direct === undefined
+        ? {
+            channel: {
+              id: "42",
+              address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
+              openedAt: startedAt,
+              expiresAt: now + 3_600_000,
+              expectedEgress: "24440000",
+            },
+          }
+        : {}),
     },
     status,
     rail: {
-      provider: "chainflip",
+      provider: direct === undefined ? "chainflip" : "direct",
       stage:
         state === "refunded"
           ? "failed"
@@ -639,7 +653,24 @@ async function previewWithdrawal(
     },
     ...(failure === undefined ? {} : { failure }),
     ...(state === "awaiting-payment" ? {} : { paidAmount: "25000000" }),
-    witnesses: state === "handed" ? paidRailWitness(at) : state === "held" ? heldWitness(at) : {},
+    witnesses:
+      direct !== undefined
+        ? {
+            worker: {
+              known: true,
+              phase: "done",
+              done: true,
+              fundsSeenAt: at,
+              lastTickAt: at,
+              at,
+              received: direct.received,
+            },
+          }
+        : state === "handed"
+          ? paidRailWitness(at)
+          : state === "held"
+            ? heldWitness(at)
+            : {},
   };
   await requests.create(ref, record);
   requests.setForeground(ref);
@@ -3026,6 +3057,15 @@ export const SCENES: Scene[] = [
     apply: async (s, f) => {
       base(s, f);
       await previewWithdrawal(2, "sent");
+    },
+  },
+  {
+    // Straight to Polkadot: the success shows the DOT that arrived, not the CASH that left.
+    name: "withdrawal / crypto / journey: success, direct",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(20, "sent", { direct: { received: "43151334329" } });
     },
   },
   {

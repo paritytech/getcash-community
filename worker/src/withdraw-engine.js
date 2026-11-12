@@ -8,6 +8,7 @@ import {
 } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  AT_BEST,
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
   ChannelMismatchError,
@@ -33,7 +34,14 @@ import {
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { CLAIM_UNIT, fundingStatus, startFunding } from "./engine.js";
 import { readParams } from "./params.js";
-import { exactPaymentOut, PAY_TIMEOUT_MS, payRail, payRailExact, railFor } from "./providers.js";
+import {
+  exactPaymentOut,
+  PAY_TIMEOUT_MS,
+  paymentOutcome,
+  payRail,
+  payRailExact,
+  railFor,
+} from "./providers.js";
 import {
   anchorFor,
   asBig,
@@ -53,6 +61,13 @@ import {
 // Each dispatch runs at most one tick per live job, persists what it learned, and exits. Records
 // carry the entropy label, never a secret; the key is re-derived on every wake. The engine never
 // starts a payment: it watches the key the purse pays and moves what lands there.
+//
+// Every step is done at the best block, as on the top up, and a best block can still be replaced.
+// So a job is ticked on after it is done until the finalized chain is past the blocks its
+// transactions were seen in: one that was replaced takes the landing back and the job is live
+// again. The rail leg starts once the message leg's blocks are final, and a payment to the
+// provider is watched the same way, so a replaced one is paid again and nothing goes home before
+// the payment is final.
 
 /** Bump when the record shape changes; readers skip versions they don't know. */
 const RECORD_V = 1;
@@ -110,19 +125,31 @@ const saveJobs = () => store.save();
  *            | "unfundable" | "unresolved",
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
- *            arrivalFloor, fundsSeenAt, psmRefusals, waitingSince, exit?, redeemSubmitted?,
- *            redeemNonce?, redeemAnchor?, workedMs },
+ *   state: { attempts, rejections, submitted, xcmSigned?, xcmBlock?, xcmHash?, arrived?,
+ *            received?, destinationBefore, expectedLanding, arrivalFloor, fundsSeenAt, psmRefusals,
+ *            waitingSince, exit?, redeemSubmitted?, redeemNonce?, redeemAnchor?, redeemCashIn?,
+ *            redeemBlock?, redeemHash?, workedMs },
  *                                            // the three amounts as decimal strings or null;
  *                                            // exit: where the PSM tier's CASH leaves the key
  *                                            // on Asset Hub, "psm" unless the user chose the
  *                                            // pool from a hold; redeemSubmitted: that exit's
  *                                            // transaction went out; redeemNonce, redeemAnchor:
  *                                            // the key's Asset Hub nonce it is signed at and the
- *                                            // block it is anchored at, null while none is out
+ *                                            // block it is anchored at, null while none is out;
+ *                                            // redeemCashIn: the CASH that exit takes, as a
+ *                                            // decimal string;
+ *                                            // xcmBlock, xcmHash, redeemBlock, redeemHash: the
+ *                                            // best block the XCM and the exit were seen in,
+ *                                            // null once the finalized chain settled it;
+ *                                            // arrived: the landing was seen and those blocks
+ *                                            // stand; received: what the destination got then,
+ *                                            // as a decimal string
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
- *                                            // not, and the block its attempt is anchored at
+ *                                            // not, and the block its attempt is anchored at;
+ *                                            // sweep.seen, exact.seen: the best block the
+ *                                            // payment was seen in, until it is final; no
+ *                                            // hash for an exact payment's lost answer
  *   saleNotFound?, saleNotFoundSince?,       // Meld only: the adapter's 404s in a row, and since
  *   residue?: { amount?, returning, whole?, sessionId?, route?, rearms?, stuck? },
  *                                            // Meld only: what the sale left on the key once
@@ -534,6 +561,10 @@ function describeWithdraw(record) {
     psmRefusals: record.state?.psmRefusals ?? 0,
     tier: record.tier,
     exit: exitOf(record.state),
+    // What the destination received, base units of the landing asset, read when the arrival was
+    // seen. On a direct withdrawal that is the user's; a provider's lands on the key, and the
+    // provider pays out its own figure.
+    received: record.state?.received ?? null,
     redeemSubmitted: record.state?.redeemSubmitted === true,
     residue: record.residue ?? null,
   };
@@ -612,6 +643,49 @@ function judgeBounds(record, nowMs, read) {
   }
 }
 
+/** The best block the key's payment to the provider was seen in, or for an exact payment whose
+ *  answer was lost the best head it was read paid at, while the finalized chain has not settled
+ *  it; null once it has, and for a sweep whose answer was lost. */
+const paymentSeen = (record) =>
+  record.leg?.paid === true ? (record.leg.exact?.seen ?? record.leg.sweep?.seen ?? null) : null;
+
+/**
+ * The payment's effect on the key, read at one head: the exact figure is out once the key is past
+ * the payment's nonce with its balance down by at least the figure; the sweep once one was sent
+ * and the key holds none of the sale's token.
+ */
+function paymentShows(record) {
+  const { exact, sweep } = record.leg;
+  if (exact?.seen != null) {
+    const amount = asBig(record.channel?.amount, 0n);
+    return (key) => key.nonce > exact.nonce && asBig(exact.balanceBefore, 0n) - key.free >= amount;
+  }
+  return (key) => (sweep?.attempts ?? 0) > 0 && key.free === 0n;
+}
+
+/**
+ * Settles a payment seen in a best block once Asset Hub's finalized chain is past that block
+ * (`paymentOutcome`): final, and the block is let go; gone, and the leg is unpaid again, so the
+ * key pays again, the exact figure at its same nonce. A payment that landed in another block than
+ * the one it was seen in stands, and so does a sweep in a block too old for the chain to name,
+ * which a swap's refund to the key could otherwise pass off as never sent.
+ */
+async function settlePayment(record) {
+  const seen = paymentSeen(record);
+  if (seen === null) return;
+  const { exact, sweep } = record.leg;
+  const outcome = await paymentOutcome(record, seen, paymentShows(record), {
+    unknownStands: exact?.seen == null,
+  });
+  if (outcome === "pending") return;
+  record.leg = {
+    ...record.leg,
+    ...(exact?.seen == null ? {} : { exact: { ...exact, seen: null } }),
+    ...(sweep?.seen == null ? {} : { sweep: { ...sweep, seen: null } }),
+    paid: outcome === "final",
+  };
+}
+
 /**
  * One tick on the rail leg: the provider's channel opened, then paid, then read. The worker
  * persists the channel before paying it, so a payment whose answer is lost is never made twice.
@@ -624,6 +698,8 @@ async function tickRailLeg(record) {
     fail(record, "no-rail", `no ${record.rail} provider in this build`);
     return;
   }
+  // A payment in a block the chain replaced is taken back before the provider is read.
+  await settlePayment(record);
   // A Meld sale pays the exact figure its provider quoted, never everything the key holds. A swap
   // sale pays everything into its Chainflip channel, whose fill-or-kill floor covers the figure.
   const exactAmount =
@@ -744,9 +820,13 @@ const residueSessionId = (record) => `${record.sessionId}/residue`;
  */
 function returnDue(record, nowMs = Date.now()) {
   if (record.rail !== "meld" || record.residue !== undefined) return null;
-  // A swap sale's key is empty once paid, until the swap ends: a refund comes back to it.
-  if (record.leg?.paid === true)
+  if (record.leg?.paid === true) {
+    // A payment in a block the chain may yet replace is not out for good: nothing goes home until
+    // that block is final.
+    if (paymentSeen(record) !== null) return null;
+    // A swap sale's key is empty once paid, until the swap ends: a refund comes back to it.
     return swapOf(record) !== null && isLive(record) ? null : "residue";
+  }
   if (record.phase !== "failed" || KEPT_ON_FAILURE.has(record.failure)) return null;
   if (record.leg?.exact?.inFlight === true || submitMayLand(record, nowMs)) return null;
   return "whole";
@@ -787,10 +867,11 @@ async function keyHoldsAnything(record, held, token, cash) {
   if (held >= residueReturnFloor(token) || cash >= residueReturnFloor(TOKENS.CASH)) return true;
   const people = await connectChain(record.peopleGenesis, "people");
   try {
+    // At the best head, as the tick that saw the CASH read it.
     const onPeople = await bounded(
       people
         .getTypedApi(paseo_people_next)
-        .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress),
+        .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress, AT_BEST),
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
       "key read on people",
     );
@@ -876,6 +957,18 @@ async function sendHome(record, kind) {
           record.residue = { amount: "0", returning: false, stuck: true };
           return;
         }
+      }
+      // The way home is sized from the finalized head, where a payment a best block holds has not
+      // left the key yet. It starts once both heads agree on what the key holds.
+      const settled = await bounded(
+        readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId, {
+          at: "finalized",
+        }),
+        DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        "residue read (finalized)",
+      );
+      if (settled !== held) {
+        throw new Error("waiting for the payment to be final before the residue goes home");
       }
       if (held < residueReturnFloor(token)) {
         record.residue = { amount: held.toString(), returning: false };
@@ -1055,11 +1148,28 @@ async function keepWayHome(record) {
   record.residue = { ...residue, rearms: rearms + 1 };
 }
 
+/** A transaction of the message leg is in a best block the finalized chain has not settled yet:
+ *  the block may still be replaced, and the landing with it. */
+const messageUnsettled = (record) =>
+  record.state?.xcmBlock != null || record.state?.redeemBlock != null;
+
+/** A done job whose message leg is still unsettled is ticked on until its blocks are final. */
+const settling = (record) =>
+  record.done === true && record.phase !== "failed" && messageUnsettled(record);
+
+/** The landing a replaced block took with it: the job is live again on the message leg. */
+function takeLandingBack(record) {
+  if (!record.landed) return;
+  record.landed = false;
+  record.done = false;
+}
+
 /** One tick for one record: connect, read the world, act at most once, persist, let go. The
- *  message leg until the funds are on Asset Hub, the rail leg after that for a provider rail. */
+ *  message leg until the funds are on Asset Hub and its blocks are final, the rail leg after that
+ *  for a provider rail: the provider is never paid out of a landing the chain may yet take back. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
-  if (record.landed && record.rail !== "direct") {
+  if (record.landed && record.rail !== "direct" && !messageUnsettled(record)) {
     await tickRailLeg(record);
     return;
   }
@@ -1109,6 +1219,11 @@ async function tickRecord(record, nowMs) {
     state.attempts = record.state.attempts ?? 0;
     state.rejections = record.state.rejections ?? 0;
     state.submitted = !!record.state.submitted;
+    state.xcmSigned = record.state.xcmSigned === true;
+    state.xcmBlock = record.state.xcmBlock ?? null;
+    state.xcmHash = record.state.xcmHash ?? null;
+    state.arrived = record.state.arrived === true;
+    state.received = asBig(record.state.received, null);
     state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
     state.arrivalFloor = asBig(record.state.arrivalFloor, null);
@@ -1119,6 +1234,9 @@ async function tickRecord(record, nowMs) {
     state.redeemSubmitted = record.state.redeemSubmitted === true;
     state.redeemNonce = record.state.redeemNonce ?? null;
     state.redeemAnchor = record.state.redeemAnchor ?? null;
+    state.redeemCashIn = asBig(record.state.redeemCashIn, null);
+    state.redeemBlock = record.state.redeemBlock ?? null;
+    state.redeemHash = record.state.redeemHash ?? null;
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
     // mutates the state as it works and a lost submit answer must keep its baseline.
@@ -1127,6 +1245,11 @@ async function tickRecord(record, nowMs) {
         attempts: state.attempts,
         rejections: state.rejections,
         submitted: state.submitted,
+        xcmSigned: state.xcmSigned,
+        xcmBlock: state.xcmBlock,
+        xcmHash: state.xcmHash,
+        arrived: state.arrived,
+        received: state.received === null ? null : String(state.received),
         destinationBefore:
           state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
@@ -1138,10 +1261,14 @@ async function tickRecord(record, nowMs) {
         redeemSubmitted: state.redeemSubmitted,
         redeemNonce: state.redeemNonce,
         redeemAnchor: state.redeemAnchor,
+        redeemCashIn: state.redeemCashIn === null ? null : String(state.redeemCashIn),
+        redeemBlock: state.redeemBlock,
+        redeemHash: state.redeemHash,
         workedMs: record.state.workedMs ?? 0,
       };
     };
 
+    const arrivedBefore = state.arrived;
     let outcome;
     try {
       outcome = await withdrawTickOnce(
@@ -1180,19 +1307,19 @@ async function tickRecord(record, nowMs) {
           signOptions: await signOptionsFor(peopleClient),
           assetHubAnchor: () => anchorFor(ahClient),
           readFinalizedNumber: async () => (await ahClient.getFinalizedBlock()).number,
-          readKeyOnPeople: async (ss58) => {
+          readKeyOnPeople: async (ss58, at) => {
             const [asset, native] = await Promise.all([
-              peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58),
-              peopleApi.query.System.Account.getValue(ss58),
+              peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58, { at }),
+              peopleApi.query.System.Account.getValue(ss58, { at }),
             ]);
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },
           readDestinationOnAssetHub: (hex) =>
             readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
-          readKeyOnAssetHub: async (hex) => {
+          readKeyOnAssetHub: async (hex, at) => {
             const [{ free: cash, nonce }, usdt] = await Promise.all([
-              readAssetHubAccount(assetHubApi, hex, TOKENS.CASH),
-              readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
+              readAssetHubAccount(assetHubApi, hex, TOKENS.CASH, { at }),
+              readDestinationBalance(assetHubApi, hex, landingToken.assetHubId, { at }),
             ]);
             return { cash, usdt, nonce };
           },
@@ -1213,6 +1340,11 @@ async function tickRecord(record, nowMs) {
         },
         state,
       );
+    } catch (error) {
+      // The tick found a block replaced and failed after that: the landing goes with the block
+      // here as it would have at the end of the tick.
+      if (arrivedBefore && !state.arrived) takeLandingBack(record);
+      throw error;
     } finally {
       persistState();
     }
@@ -1224,10 +1356,14 @@ async function tickRecord(record, nowMs) {
     delete record.lastError;
     if (outcome.step === "done") {
       // The funds are on Asset Hub. That is the whole job for a direct rail; a provider rail
-      // carries on from the key on the next tick.
+      // carries on from the key once the message leg's blocks are final.
       record.landed = true;
       if (record.rail === "direct") record.done = true;
       else record.phase = "handoff";
+    } else {
+      // The landing follows the latest tick: a block that was replaced takes it back while the
+      // message leg goes out again.
+      takeLandingBack(record);
     }
   } finally {
     try {
@@ -1243,38 +1379,37 @@ let ticking = false;
 
 const isLive = (record) => !record.done && record.phase !== "failed";
 
+/** Whether a pass has anything to do for the job: it is live, a block of its is still to be
+ *  settled by the finalized chain, or its key still owes the purse. */
+const isDue = (record) =>
+  isLive(record) ||
+  settling(record) ||
+  paymentSeen(record) !== null ||
+  returnDue(record) !== null ||
+  wayHomeOpen(record) ||
+  inFlightAfterFailure(record);
+
 /**
  * Drives every live job one tick, and sends home what a sale's key still owes the purse, done or
- * failed, following that way home until it is over. Per-job errors are recorded on the job and
- * contained. A job ends only through `fail` or its message's processing; a re-sent hand-off
- * re-arms a failed one, except as `rearm` says.
+ * failed, following that way home until it is over. A done job is ticked on until the blocks its
+ * transactions were seen in are final, and is live again when one was replaced. Per-job errors are
+ * recorded on the job and contained. A job ends only through `fail` or its message's processing;
+ * a re-sent hand-off re-arms a failed one, except as `rearm` says.
  */
 export async function tickAllWithdraw() {
   if (ticking) return { ticked: 0, holding: 0, busy: true };
   ticking = true;
   try {
     const all = await loadJobs();
-    const due = Object.values(all).filter(
-      (record) =>
-        record?.v === RECORD_V &&
-        (isLive(record) ||
-          returnDue(record) !== null ||
-          wayHomeOpen(record) ||
-          inFlightAfterFailure(record)),
-    );
+    const due = Object.values(all).filter((record) => record?.v === RECORD_V && isDue(record));
     let ticked = 0;
     for (const record of due) {
       // Cancelled since this pass began, with nothing owed.
-      if (
-        !isLive(record) &&
-        returnDue(record) === null &&
-        !wayHomeOpen(record) &&
-        !inFlightAfterFailure(record)
-      ) {
-        continue;
-      }
-      if (isLive(record)) {
+      if (!isDue(record)) continue;
+      if (isLive(record) || settling(record)) {
         const nowMs = Date.now();
+        // A done job watched until its blocks are final is on no clock.
+        const judged = isLive(record);
         let read = false;
         try {
           await tickRecord(record, nowMs);
@@ -1300,7 +1435,17 @@ export async function tickAllWithdraw() {
             record.lastError = String(error?.message ?? error);
           }
         }
-        judgeBounds(record, nowMs, read);
+        if (judged) judgeBounds(record, nowMs, read);
+      }
+      // A payment seen in a best block is settled by the chain whatever became of the job since:
+      // the rail leg settles a live job's, this a done or failed one's.
+      if (!isLive(record) && paymentSeen(record) !== null) {
+        try {
+          await settlePayment(record);
+          delete record.residueError;
+        } catch (error) {
+          record.residueError = String(error?.message ?? error);
+        }
       }
       // Off the payment's path, and tried again on every pass until it is over, whatever became of
       // the job meanwhile: a sale done or failed is not ticked again, but its key still goes home.

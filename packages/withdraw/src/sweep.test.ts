@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
-import { freshSweepState, sweepOnce, type SweepInput } from "./sweep";
+import { bestBlockWatch } from "@getsome/testing";
+import { freshSweepState, sweepOnce, type SweepInput, type SweepState } from "./sweep";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 const CHANNEL = "5Channel";
@@ -17,12 +18,19 @@ function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<Sweep
   const submits: Submit[] = [];
   const events: string[] = [];
   const transferAll = (pallet: string) => (args: unknown) => ({
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
+    signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       submits.push({ pallet, args, options });
       events.push("submit");
       const outcome = outcomes.shift() ?? { ok: true };
       return outcome.ok
-        ? { ok: true, txHash: `0x${submits.length}`, block: { number: 100 + submits.length } }
+        ? {
+            ok: true,
+            txHash: `0x${submits.length}`,
+            block: {
+              number: 100 + submits.length,
+              hash: `0xblock-${100 + submits.length}`,
+            },
+          }
         : {
             ok: false,
             txHash: `0x${submits.length}`,
@@ -31,7 +39,7 @@ function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<Sweep
               value: { type: pallet, value: { type: outcome.error } },
             },
           };
-    },
+    }),
   });
   const api = {
     tx: {
@@ -72,7 +80,19 @@ describe("the sweep", () => {
     ]);
     expect(events).toEqual(["persist", "submit"]);
     expect(txs).toEqual([{ call: "sweep", txHash: "0x1", block: 101, ok: true }]);
-    expect(state).toEqual({ attempts: 1, rejections: 0 });
+    // The best block it was seen in is kept, for the driver to watch until it is final.
+    expect(state).toEqual({
+      attempts: 1,
+      rejections: 0,
+      seen: { number: 101, hash: "0xblock-101" },
+    });
+  });
+
+  it("keeps no block for a sweep the chain refused", async () => {
+    const { input } = world([7_000_000_000n], [{ ok: false, error: "Frozen" }]);
+    const state = freshSweepState();
+    await expect(sweepOnce(input, state)).rejects.toThrow(/sweep rejected/);
+    expect(state.seen).toBeUndefined();
   });
 
   it("moves a pallet-assets token through its own transfer, by the token's id", async () => {
@@ -99,10 +119,13 @@ describe("the sweep", () => {
     expect(seen).toEqual([1]);
   });
 
-  it("takes an empty key after a submit as done, without submitting again", async () => {
+  it("takes an empty key after a submit as done, without submitting again or watching a block", async () => {
     const { input, submits } = world([0n], []);
-    await sweepOnce(input, { attempts: 1, rejections: 0 });
+    const state: SweepState = { attempts: 1, rejections: 0 };
+    await sweepOnce(input, state);
     expect(submits).toEqual([]);
+    // A swap's refund can fill the key again, so the key could not settle it later.
+    expect(state.seen).toBeUndefined();
   });
 
   it("refuses an empty key before any submit: there is nothing to move", async () => {

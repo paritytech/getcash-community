@@ -631,7 +631,7 @@ const readBlockNumber = (api: AssetHubApi, at: BlockTag) =>
   api.query.System.Number.getValue({ at });
 
 /** A submit's outcome in the first block it was seen in. */
-type Inclusion = { txHash: string } & TxEventsPayload;
+export type Inclusion = { txHash: string } & TxEventsPayload;
 
 /** The event a successful transaction of each tier carries once it converted the deposit. A fee
  *  paid in an asset other than the native is swapped through the pool as well, so on the PSM tier
@@ -656,11 +656,11 @@ export function isConverted(
   );
 }
 
-type Watch = ReturnType<Transaction["signSubmitAndWatch"]>;
+export type Watch = ReturnType<Transaction["signSubmitAndWatch"]>;
 
 /** Resolves at the first event that places the transaction in a block, with its outcome there,
  *  and lets the watch go; past `timeoutMs` it rejects and lets the watch go too. */
-function includedInBlock(watch: Watch, timeoutMs: number, what: string): Promise<Inclusion> {
+export function includedInBlock(watch: Watch, timeoutMs: number, what: string): Promise<Inclusion> {
   return new Promise<Inclusion>((resolve, reject) => {
     let subscription: { unsubscribe: () => void } | null = null;
     let settled = false;

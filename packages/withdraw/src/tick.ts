@@ -9,17 +9,29 @@
 // swap, read to the unit, and the PAS left for the transaction fee's headroom is reaped with the
 // account. The redeem takes everything but its fee's margin and the CASH account's minimum.
 //
+// EVERY READ IS AT THE BEST HEAD, and a submit is settled as soon as a best block holds it, as the
+// top up does: each step acts on what the step before did, and waiting for finality between them
+// added a minute to every withdrawal. A best block can still be replaced. So the XCM's block and
+// the exit's are kept, number and hash, and the run is ticked on after it is done until the
+// finalized chain is past them (inclusion.ts). A block that stands is let go. Otherwise the key
+// says what became of the transaction, as the top up's deposit does: it usually landed in the
+// block that took its place, and only one that shows nowhere takes the arrival back and goes out
+// again. A swap needs no block kept: no PAS on the key sends it again.
+//
 // ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
 // not ours, so its balance in the landing asset is measured against a baseline taken just before
 // the XCM leaves, and the arrival is what the Asset Hub dry run said would land, less the
 // slippage the program itself allows, or the program's own floor when that is lower: a sale that
 // slips further fails the program, so nothing less can be a landing. The key must hold no CASH
 // too, which says the XCM executed on People; a deposit from elsewhere alone does not count. The
-// redeem's landing is read the same way, exact, since the PSM's rate is fixed. Nothing is followed
-// through block history: hosts serve the current head and nothing older, and a run that resumes
-// after a reload has no memory but the persisted state. A program that fails on Asset Hub traps
-// its assets there and never shows on the destination; the run holds until the driver's bound,
-// and the claimer named in the program can recover the assets.
+// exit on the PSM tier, the redeem or the pool sale, is the key's own transaction on Asset Hub, so
+// the key says it ran: past the exit's nonce with its CASH gone. The success screen shows what the
+// destination received: the PSM's exact net, or else the gain measured on the destination
+// (`received`). Nothing is followed through block history: hosts serve the current head and
+// nothing older, and a run that resumes after a reload has no memory but the persisted state. A
+// program that fails on Asset Hub traps its assets there and never shows on the destination; the
+// run holds until the driver's bound, and the claimer named in the program can recover the
+// assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next; CASH on the key's Asset Hub account
@@ -34,6 +46,7 @@
 import type { PolkadotSigner } from "polkadot-api";
 import {
   describeDispatchError,
+  includedInBlock,
   MAX_PSM_REFUSALS,
   mintingOpen,
   ProgramRejectedError,
@@ -45,7 +58,8 @@ import {
   type PsmRoute,
 } from "@getsome/funding";
 import { bounded } from "./bounded";
-import { ASSET_HUB_CASH_TX_OPTIONS, PEOPLE_TX_OPTIONS } from "./paseo";
+import { finalizedChainOf, settleBlock, type FinalizedChain } from "./inclusion";
+import { ASSET_HUB_CASH_TX_OPTIONS, AT_BEST, PEOPLE_TX_OPTIONS } from "./paseo";
 import {
   CommitmentUnfundableError,
   lessHeadroom,
@@ -81,7 +95,7 @@ type TickCall = "swap" | "withdraw" | "redeem" | "pool-exit";
 
 /** Bound on a tick's chain reads and dry runs. */
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
-/** Bound on a submitted transaction's resolution. */
+/** Bound on a submitted transaction's inclusion in a best block. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
 /** Headroom below the quoted sale on Asset Hub before the program fails there, percent. The sale
  *  is quoted and dry-run on Asset Hub just before the XCM leaves, so the headroom only covers the
@@ -95,6 +109,11 @@ export const MAX_REJECTIONS = 3;
  *  covers Asset Hub's fee moving between the dry run and inclusion. */
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
+
+/** The most a sale can land: the dry run's landing plus the slippage. The destination is not
+ *  ours, so a gain past it also holds a deposit from elsewhere. */
+export const landingCeiling = (landed: bigint, slippagePct: number): bigint =>
+  landed + (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
 
 /** The least the destination must gain for a sized XCM to count as arrived: its landing less the
  *  slippage, or the floor the program holds the sale to when that is lower. A program that runs
@@ -146,6 +165,20 @@ export interface WithdrawTickState {
   rejections: number;
   /** Set once the XCM landed on People; holds the run in await-arrival. */
   submitted: boolean;
+  /** An XCM was signed: set before its broadcast. Only then can an empty key mean it landed. */
+  xcmSigned: boolean;
+  /** The People block the XCM was seen in, kept until the finalized chain settles it. Null once
+   *  it is final, and while no XCM is out. */
+  xcmBlock: number | null;
+  /** That block's hash. Null when the XCM's answer was lost and the empty key alone said it
+   *  landed, in that block or an earlier one. */
+  xcmHash: string | null;
+  /** The arrival was seen. Holds the done while the blocks stand, whatever the destination does
+   *  with the funds since; a block that is replaced clears it. */
+  arrived: boolean;
+  /** What the destination received, in the landing asset, as read when the arrival was seen:
+   *  what the user's success screen shows. Null until then. */
+  received: bigint | null;
   /** The destination's balance in the landing asset on Asset Hub, read just before the XCM, or
    *  on the PSM tier the redeem, left; what the arrival adds to. */
   destinationBefore: bigint | null;
@@ -170,18 +203,32 @@ export interface WithdrawTickState {
   exit: "psm" | "pool";
   /** Set before the redeem or the pool swap is broadcast; holds the run on its landing. */
   redeemSubmitted: boolean;
-  /** The nonce that exit is signed at, the key's on Asset Hub at the finalized head just before
-   *  it; null while none is in flight. A key past it signed the exit. */
+  /** The nonce that exit is signed at, the key's on Asset Hub at the best head just before it;
+   *  null while none is in flight. A key past it signed the exit. */
   redeemNonce: number | null;
   /** The block that exit is anchored at: it can land only within PAY_MORTAL_PERIOD blocks of it,
    *  so once the finalized chain is past that with the nonce unmoved, it never will. */
   redeemAnchor: number | null;
+  /** The CASH that exit takes off the key, which says whether a key past its nonce ran it or had
+   *  it refused (`exitRan`). Null while none is out. */
+  redeemCashIn: bigint | null;
+  /** The Asset Hub block that exit was seen in, kept until the finalized chain settles it. Null
+   *  once it is final and while none is out. */
+  redeemBlock: number | null;
+  /** That block's hash. Null when the exit's answer was lost and the key alone said it ran, in
+   *  that block or an earlier one. */
+  redeemHash: string | null;
 }
 
 export const freshWithdrawTickState = (): WithdrawTickState => ({
   attempts: 0,
   rejections: 0,
   submitted: false,
+  xcmSigned: false,
+  xcmBlock: null,
+  xcmHash: null,
+  arrived: false,
+  received: null,
   destinationBefore: null,
   expectedLanding: null,
   arrivalFloor: null,
@@ -192,6 +239,9 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   redeemSubmitted: false,
   redeemNonce: null,
   redeemAnchor: null,
+  redeemCashIn: null,
+  redeemBlock: null,
+  redeemHash: null,
 });
 
 export interface WithdrawTickInput {
@@ -229,12 +279,20 @@ export interface WithdrawTickInput {
   assetHubAnchor: () => Promise<{ hash: string; number: number }>;
   /** The finalized head's number on Asset Hub. */
   readFinalizedNumber: () => Promise<number>;
-  /** The key's CASH and PAS on People. */
-  readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The key's CASH and USDT on Asset Hub, and its nonce there, at the finalized head, for the
-   *  PSM tier. */
-  readKeyOnAssetHub: (hex: string) => Promise<{ cash: bigint; usdt: bigint; nonce: number }>;
-  /** The destination's balance in the landing asset on Asset Hub at the finalized head
+  /** The key's CASH and PAS on People, at the best head or the finalized one. Every step reads
+   *  the best head; the finalized one only settles an XCM whose block the chain can no longer
+   *  vouch for. */
+  readKeyOnPeople: (
+    ss58: string,
+    at: "best" | "finalized",
+  ) => Promise<{ cash: bigint; pas: bigint }>;
+  /** The key's CASH and USDT on Asset Hub, and its nonce there, at the best head or the finalized
+   *  one, for the PSM tier. The finalized one only settles an exit as the XCM's is settled. */
+  readKeyOnAssetHub: (
+    hex: string,
+    at: "best" | "finalized",
+  ) => Promise<{ cash: bigint; usdt: bigint; nonce: number }>;
+  /** The destination's balance in the landing asset on Asset Hub at the best head
    *  (`readDestinationBalance`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
@@ -250,6 +308,63 @@ export interface WithdrawTickOutcome {
   submitted: boolean;
   /** The PSM has no room for the redeem: nothing was submitted, and the next tick reads again. */
   waiting?: boolean;
+}
+
+/**
+ * Whether the finalized chain can vouch for the block a transaction was seen in: "final" when it
+ * holds it, "pending" while it is not there yet, and "unsettled" when only the transaction's own
+ * effect can tell: the block was replaced, the chain no longer names a block that old, or no
+ * block was known, for a lost answer. Then the finalized head is at least that far.
+ */
+async function vouch(
+  chain: FinalizedChain,
+  block: number,
+  hash: string | null,
+  timeoutMs: number,
+): Promise<"final" | "pending" | "unsettled"> {
+  const verdict = await settleBlock(chain, { number: block, hash }, timeoutMs);
+  return verdict === "final" || verdict === "pending" ? verdict : "unsettled";
+}
+
+/**
+ * The XCM is in a best block People may yet replace, so its finalized chain has the last word once
+ * it is past that block. The block stands: the XCM is final and the block is let go. Otherwise the
+ * XCM usually landed in the block that took its place, and the key says so, as the top up's deposit
+ * does: the XCM takes all the CASH, so a key empty at the finalized head means it is final. Empty
+ * only at the best head, it landed later, and is watched again from there. Holding CASH at both,
+ * it never landed: the latch is released and the tick sends again what the key holds.
+ */
+async function settleXcm(input: WithdrawTickInput, state: WithdrawTickState): Promise<void> {
+  const block = state.xcmBlock;
+  if (block === null) return;
+  const said = await vouch(
+    finalizedChainOf(input.peopleApi),
+    block,
+    state.xcmHash,
+    input.tickTimeoutMs,
+  );
+  if (said === "pending") return;
+  const letGo = () => {
+    state.xcmBlock = null;
+    state.xcmHash = null;
+  };
+  if (said === "final") return letGo();
+  const read = (at: "best" | "finalized") =>
+    bounded(input.readKeyOnPeople(input.key.address, at), input.tickTimeoutMs, `key read (${at})`);
+  if ((await read("finalized")).cash === 0n) return letGo();
+  if ((await read("best")).cash === 0n) {
+    state.xcmBlock = await bounded(
+      input.peopleApi.query.System.Number.getValue(AT_BEST),
+      input.tickTimeoutMs,
+      "block number read",
+    );
+    state.xcmHash = null;
+    return;
+  }
+  letGo();
+  state.submitted = false;
+  state.arrived = false;
+  state.received = null;
 }
 
 /** Counts a rejection at inclusion, and gives the run up at MAX_REJECTIONS. */
@@ -269,13 +384,18 @@ export async function withdrawTickOnce(
 ): Promise<WithdrawTickOutcome> {
   const { key } = input;
   const balances = await bounded(
-    input.readKeyOnPeople(key.address),
+    input.readKeyOnPeople(key.address, "best"),
     input.tickTimeoutMs,
     "tick balance read",
   );
 
+  // A block that was replaced releases the latch here, and what the key holds is sent again below.
+  if (state.submitted) await settleXcm(input, state);
   if (state.submitted) {
     if (input.sale.tier === "psm") return exitFromAssetHub(input, state, balances, input.sale);
+    // The arrival was seen and the XCM's block stands: done, whatever the destination has done
+    // with the funds since.
+    if (state.arrived) return { step: "done", balances, submitted: false };
     // The XCM left People; the funds show on the destination. Without the baseline the arrival
     // cannot be measured, so the run holds here until the driver's bound.
     if (state.destinationBefore === null || state.expectedLanding === null) {
@@ -290,17 +410,39 @@ export async function withdrawTickOnce(
     // People; and the destination gained at least what a successful sale can land. Either alone
     // is not an arrival.
     const cashGone = balances.cash === 0n;
+    const gained = destination - state.destinationBefore;
     const landed =
-      destination - state.destinationBefore >=
-      (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
-    return { step: cashGone && landed ? "done" : "await-arrival", balances, submitted: false };
+      gained >= (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
+    if (!cashGone || !landed) return { step: "await-arrival", balances, submitted: false };
+    // What the sale delivered at the market's price, not what its dry run expected. A gain past
+    // what the sale can land holds someone else's deposit too, so the dry run's figure stands in.
+    state.arrived = true;
+    state.received =
+      gained > landingCeiling(state.expectedLanding, input.slippagePct)
+        ? state.expectedLanding
+        : gained;
+    return { step: "done", balances, submitted: false };
   }
 
   if (balances.cash === 0n) {
-    // Only the XCM empties the key of both assets. Seen CASH, a submit, and now nothing: the
+    // Only the XCM empties the key of both assets. Seen CASH, an XCM signed, and now nothing: the
     // XCM landed and its answer was lost. The baseline taken before the submit still measures
-    // the arrival.
-    if (balances.pas === 0n && state.fundsSeenAt !== null && state.attempts > 0) {
+    // the arrival. With no XCM signed, an empty key is a best block that dropped the payment, and
+    // the run waits for it to come back.
+    if (
+      balances.pas === 0n &&
+      state.fundsSeenAt !== null &&
+      state.attempts > 0 &&
+      state.xcmSigned
+    ) {
+      // The XCM is in the latest block or an earlier one, with no hash known: the key at the
+      // finalized head settles it once that head is there (`settleXcm`).
+      state.xcmBlock = await bounded(
+        input.peopleApi.query.System.Number.getValue(AT_BEST),
+        input.tickTimeoutMs,
+        "block number read",
+      );
+      state.xcmHash = null;
       state.submitted = true;
       return { step: "await-arrival", balances, submitted: false };
     }
@@ -357,11 +499,14 @@ export async function withdrawTickOnce(
         state.expectedLanding = sizing.landed;
         state.arrivalFloor = arrivalFloor(sizing, input.slippagePct);
       }
+      state.xcmSigned = true;
+      state.arrived = false;
+      state.received = null;
       await input.onBeforeSubmit?.("withdraw");
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
       state.attempts += 1;
-      const res = await bounded(
-        tx.signAndSubmit(key.signer, xcmOptions as never),
+      const res = await includedInBlock(
+        tx.signSubmitAndWatch(key.signer, xcmOptions as never),
         input.submitTimeoutMs,
         "withdrawal submit",
       );
@@ -373,7 +518,10 @@ export async function withdrawTickOnce(
           describeDispatchError(res.dispatchError, { message: withdrawMessage(sizing.args) }),
         );
       }
+      // In a best block People may yet replace: kept until the finalized chain settles it.
       state.submitted = true;
+      state.xcmBlock = res.block.number;
+      state.xcmHash = res.block.hash;
       return { step: "convert", balances, submitted: true };
     } catch (error) {
       if (!(error instanceof NeedsSwapError)) throw error;
@@ -399,8 +547,8 @@ export async function withdrawTickOnce(
   );
   await input.onBeforeSubmit?.("swap");
   state.attempts += 1;
-  const res = await bounded(
-    buildSwap(input.peopleApi, swap).signAndSubmit(key.signer, swapOptions as never),
+  const res = await includedInBlock(
+    buildSwap(input.peopleApi, swap).signSubmitAndWatch(key.signer, swapOptions as never),
     input.submitTimeoutMs,
     "swap submit",
   );
@@ -415,23 +563,112 @@ function exitNeverLands(state: WithdrawTickState): void {
   state.redeemSubmitted = false;
   state.redeemNonce = null;
   state.redeemAnchor = null;
+  state.redeemCashIn = null;
+  state.redeemBlock = null;
+  state.redeemHash = null;
+}
+
+/**
+ * Whether the key, read at one head, shows the exit ran: past the exit's nonce, with the CASH the
+ * exit takes gone. A run leaves only the fee's unspent margin and the account's minimum; a
+ * refusal rolls the batch back and leaves all of it but the fee. The line is half of what the exit
+ * takes, so that a fee charged over its estimate cannot pass a refusal off as a run.
+ */
+const exitRan = (state: WithdrawTickState, key: { nonce: number; cash: bigint }): boolean =>
+  state.redeemNonce !== null &&
+  state.redeemCashIn !== null &&
+  key.nonce > state.redeemNonce &&
+  key.cash < state.redeemCashIn / 2n;
+
+/**
+ * The exit is in a best block Asset Hub may yet replace, so its finalized chain has the last word
+ * once it is past that block. The block stands: the exit is final and the block is let go.
+ * Otherwise the key says it, as for the XCM: the exit ran at the finalized head, and it is final;
+ * only at the best head, and it is watched again from there; at neither, and the arrival goes
+ * with it, while the exit's own settling decides from the nonce what is sent, waiting out its
+ * mortality while the key is still at it. True when the finalized chain settled the exit as run.
+ */
+async function settleExitBlock(
+  input: WithdrawTickInput,
+  state: WithdrawTickState,
+): Promise<boolean> {
+  const block = state.redeemBlock;
+  if (block === null) return false;
+  const said = await vouch(
+    finalizedChainOf(input.assetHubApi),
+    block,
+    state.redeemHash,
+    input.tickTimeoutMs,
+  );
+  if (said === "pending") return false;
+  const letGo = () => {
+    state.redeemBlock = null;
+    state.redeemHash = null;
+    return true;
+  };
+  if (said === "final") return letGo();
+  const read = (at: "best" | "finalized") =>
+    bounded(
+      input.readKeyOnAssetHub(input.key.publicKeyHex, at),
+      input.tickTimeoutMs,
+      `key read on Asset Hub (${at})`,
+    );
+  if (exitRan(state, await read("finalized"))) return letGo();
+  if (exitRan(state, await read("best"))) {
+    await watchExitFromBest(input, state);
+    return false;
+  }
+  letGo();
+  state.arrived = false;
+  state.received = null;
+  return false;
+}
+
+/**
+ * What an exit that ran delivered. The PSM pays its net at a fixed rate, so the redeem's net is
+ * exact. The pool pays the market's price, at least its floor: what the landing gained since the
+ * exit was sized. The destination is not ours, so where the gain is under the floor it moved
+ * some on, and where it is past the quote plus the slippage someone else paid in too; the floor
+ * stands in for either.
+ */
+async function deliveredByExit(
+  state: WithdrawTickState,
+  readLanding: () => Promise<bigint>,
+  slippagePct: number,
+): Promise<bigint | null> {
+  const net = state.expectedLanding;
+  if (state.exit === "psm" || net === null || state.destinationBefore === null) return net;
+  const gained = (await readLanding()) - state.destinationBefore;
+  // The floor is the quote less the slippage (`lessHeadroom`): the quote back from it.
+  const quote = (net * 10_000n) / BigInt(Math.round((100 - slippagePct) * 100));
+  return gained >= net && gained <= landingCeiling(quote, slippagePct) ? gained : net;
+}
+
+/** An exit that ran with no block known for it is watched from the best block, and settled at
+ *  the finalized head by the key (`settleExitBlock`). */
+async function watchExitFromBest(input: WithdrawTickInput, state: WithdrawTickState) {
+  state.redeemBlock = await bounded(
+    input.assetHubApi.query.System.Number.getValue(AT_BEST),
+    input.tickTimeoutMs,
+    "block number read",
+  );
+  state.redeemHash = null;
 }
 
 /**
  * What the chain says of an exit that was broadcast, whatever became of its answer. A key past
- * the exit's nonce signed it, and the landing says whether it paid: `done` once the landing grew
- * by what the exit pays; otherwise the exit was refused at inclusion, since the nonce and the
- * landing are read at the same finalized head, and null frees the run to size afresh. A key at
- * that nonce has not signed it: the exit may land until its mortality is out, and nothing is
- * sent meanwhile; past it unlanded, it never will, and null again. A record from before the
- * nonce was kept is judged by the landing alone, and never sent again.
+ * the exit's nonce signed it, and the key's CASH says whether it ran (`exitRan`): `done`, or
+ * refused at inclusion, and null frees the run to size afresh. The destination is not ours and
+ * may already have moved what landed, so its balance is not asked. A key at that nonce has not
+ * signed it: the exit may land until its mortality is out, and nothing is sent meanwhile; past it
+ * unlanded, it never will, and null again.
  */
 async function settleExit(
   input: WithdrawTickInput,
   state: WithdrawTickState,
-  nonce: number,
-  readLanding: () => Promise<bigint>,
+  key: { nonce: number; cash: bigint },
 ): Promise<"done" | "redeem" | null> {
+  const { nonce } = key;
   const pinned = state.redeemNonce;
   if (pinned !== null && nonce < pinned) {
     throw new Error(`the key is at nonce ${nonce} on Asset Hub, behind the exit's ${pinned}`);
@@ -442,15 +679,19 @@ async function settleExit(
       input.tickTimeoutMs,
       "finalized head read",
     );
-    if (state.redeemAnchor !== null && !mayStillLand(state.redeemAnchor, finalized)) {
-      exitNeverLands(state);
-      return null;
-    }
-    return "redeem";
+    if (state.redeemAnchor === null || mayStillLand(state.redeemAnchor, finalized)) return "redeem";
+    // Read again after the finalized head, so the best head holds every block the exit could have
+    // landed in. A nonce that moved since is settled on the next tick.
+    const again = await bounded(
+      input.readKeyOnAssetHub(input.key.publicKeyHex, "best"),
+      input.tickTimeoutMs,
+      "key read on Asset Hub",
+    );
+    if (again.nonce !== pinned) return "redeem";
+    exitNeverLands(state);
+    return null;
   }
-  if (state.destinationBefore === null || state.expectedLanding === null) return "redeem";
-  const landed = (await readLanding()) - state.destinationBefore >= state.expectedLanding;
-  if (landed) return "done";
+  if (exitRan(state, key)) return "done";
   if (pinned === null) return "redeem";
   // Refused at inclusion with the answer lost: the batch rolled back whole and the nonce is
   // spent. Not counted as a rejection, since the reason is unknown; the dry run before the next
@@ -464,7 +705,7 @@ async function settleExit(
  * account, then redeems it through the PSM, or sells it on the pool when the user chose that,
  * and reads the stable's arrival. The exit is signed once at the key's nonce, under a mortality:
  * the CASH stays on the key until the exit takes it, so a lost answer is settled from the nonce
- * and the landing, and nothing is sized or sent again while that exit can still land.
+ * and the key's CASH, and nothing is sized or sent again while that exit can still land.
  */
 async function exitFromAssetHub(
   input: WithdrawTickInput,
@@ -474,10 +715,13 @@ async function exitFromAssetHub(
 ): Promise<WithdrawTickOutcome> {
   const { key, assetHubApi } = input;
   const onKey = await bounded(
-    input.readKeyOnAssetHub(key.publicKeyHex),
+    input.readKeyOnAssetHub(key.publicKeyHex, "best"),
     input.tickTimeoutMs,
     "key read on Asset Hub",
   );
+  const exitFinal = await settleExitBlock(input, state);
+  // The stable was seen landed and the blocks stand: done, whatever became of it since.
+  if (state.arrived) return { step: "done", balances, submitted: false };
   if (!state.redeemSubmitted && onKey.cash === 0n) {
     return { step: "await-arrival", balances, submitted: false };
   }
@@ -493,7 +737,15 @@ async function exitFromAssetHub(
           "destination balance read",
         );
   if (state.redeemSubmitted) {
-    const settled = await settleExit(input, state, onKey.nonce, readLanding);
+    const settled = await settleExit(input, state, onKey);
+    if (settled === "done") {
+      state.received = await deliveredByExit(state, readLanding, input.slippagePct);
+      // Its answer lost, or its block given up on: no block is known, so it is watched from the
+      // best block, as a lost XCM is. One the finalized chain settled on this tick needs no watch.
+      if (state.redeemBlock === null && !exitFinal) await watchExitFromBest(input, state);
+      // Last, so a read that fails above leaves the exit to be settled again on the next tick.
+      state.arrived = true;
+    }
     if (settled !== null) return { step: settled, balances, submitted: false };
   }
   const floors = await bounded(
@@ -542,6 +794,7 @@ async function exitFromAssetHub(
   );
   let exit: ExitCall;
   let net: bigint;
+  let takes: bigint;
   if (state.exit === "psm") {
     const sized = sizeRedeem(onKey.cash, feeCash, route, floors);
     // The PSM redeems only against the pair's debt. Short of the net, the run waits where it is,
@@ -565,6 +818,7 @@ async function exitFromAssetHub(
       return unavailable("the PSM has no room for the redeem and minting is stopped");
     }
     net = sized.net;
+    takes = sized.cashIn;
     exit = buildRedeemBatch(assetHubApi, {
       route,
       cashIn: sized.cashIn,
@@ -578,6 +832,7 @@ async function exitFromAssetHub(
       "pool exit quote",
     );
     net = lessHeadroom(quote, input.slippagePct);
+    takes = cashIn;
     exit = buildPoolExit(assetHubApi, { route, cashIn, minOut: net, deliverTo });
   }
   state.waitingSince = null;
@@ -604,11 +859,12 @@ async function exitFromAssetHub(
   state.expectedLanding = net;
   state.redeemNonce = onKey.nonce;
   state.redeemAnchor = anchor.number;
+  state.redeemCashIn = takes;
   state.redeemSubmitted = true;
   await input.onBeforeSubmit?.(call);
   state.attempts += 1;
-  const res = await bounded(
-    exit.signAndSubmit(key.signer, {
+  const res = await includedInBlock(
+    exit.signSubmitAndWatch(key.signer, {
       ...ASSET_HUB_CASH_TX_OPTIONS,
       at: anchor.hash,
       nonce: state.redeemNonce,
@@ -624,5 +880,8 @@ async function exitFromAssetHub(
     exitNeverLands(state);
     return refusal(res.dispatchError);
   }
+  // In a best block Asset Hub may yet replace: kept until the finalized chain settles it.
+  state.redeemBlock = res.block.number;
+  state.redeemHash = res.block.hash;
   return { step: "redeem", balances, submitted: true };
 }

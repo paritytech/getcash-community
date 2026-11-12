@@ -16,7 +16,7 @@ import { sellTokenOf } from "../../funding/requests/transitions/withdrawal";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import { useRequestsStore } from "../../stores/requests";
 import { formatWhenShort } from "../../utils/journey";
-import { withdrawalJourneyRows } from "../../withdraw/timeline/journey-rows";
+import { receivedText, withdrawalJourneyRows } from "../../withdraw/timeline/journey-rows";
 import { WITHDRAWAL_TIMELINE } from "../../withdraw/timeline/spec";
 import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
 import TimelineBand from "../funding/timeline/TimelineBand.vue";
@@ -75,6 +75,8 @@ const sentWhen = computed(() =>
 const rows = computed(() =>
   withdrawalJourneyRows(props.record, { feesAvailable: props.feesAvailable === true }),
 );
+/** What the withdrawal delivered, shown once it is sent; null keeps the amount that left. */
+const received = computed(() => receivedText(props.record));
 const copyable = computed(() => rows.value.some((row) => row.copy !== undefined));
 
 /** What a sale left over once the provider was paid, and where it is. A sale that ended unpaid
@@ -157,8 +159,15 @@ const canCancel = computed(
             { 'journey-amount-out': successPlaying },
           ]"
         />
+        <!-- What arrived, the fees taken on the way, rather than what left the balance. -->
+        <span
+          v-if="successShown && received"
+          class="text-fg-primary"
+          :class="{ 'journey-amount-in': successPlaying }"
+          >{{ received }}</span
+        >
         <CashAmount
-          v-if="successShown"
+          v-else-if="successShown"
           :amount="record.amountHuman"
           sign="-"
           class="text-fg-primary"

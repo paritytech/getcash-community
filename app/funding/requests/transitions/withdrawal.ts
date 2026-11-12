@@ -252,6 +252,7 @@ function workerWitness(job: WithdrawJobView, at: number): Witnesses["worker"] {
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
+    ...(job.received == null ? {} : { received: job.received }),
   };
 }
 
