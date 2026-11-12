@@ -1,4 +1,5 @@
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
+import { hostEntropyKey } from "@getsome/host";
 import { createClient } from "polkadot-api";
 import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
 
@@ -136,7 +137,7 @@ export async function anchorFor(client) {
 
 /** The keypair the entropy label `label` derives, from host entropy. Never persisted. */
 export async function keypairFor(label) {
-  const result = await deriveEntropy(new TextEncoder().encode(label));
+  const result = await deriveEntropy(hostEntropyKey(new TextEncoder().encode(label)));
   if (!result.ok) {
     throw new Error(`deriveEntropy refused: ${String(result.error?.message ?? result.error)}`);
   }

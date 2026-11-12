@@ -92,8 +92,15 @@ type UriBuilder = (
   decimals: number,
 ) => string;
 
+/** The EVM chains on mainnet: the id EIP 681 names after `@`, and the short name EIP 3770 puts in
+ *  front of an address, as `eth:0x…`. */
+export const EVM_CHAINS: Readonly<Record<string, { id: number; shortName: string }>> = {
+  Ethereum: { id: 1, shortName: "eth" },
+  Arbitrum: { id: 42161, shortName: "arb1" },
+};
+
 /** The token contracts a payment URI names, on mainnet, as the Chainflip SDK lists them. */
-const TOKEN_CONTRACTS: Record<string, Record<string, string>> = {
+export const TOKEN_CONTRACTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   Ethereum: {
     USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
@@ -119,7 +126,7 @@ function evmUri(
   asset: string,
   amount: string | bigint,
   chainId: number,
-  contracts: Record<string, string>,
+  contracts: Readonly<Record<string, string>>,
 ): string {
   if (asset === "ETH") return `ethereum:${addr}@${chainId}?value=${amount.toString()}`;
   const contract = contracts[asset];
@@ -130,8 +137,10 @@ function evmUri(
 const CHAIN_URI_BUILDERS: Record<string, UriBuilder> = {
   Bitcoin: (addr, _asset, amount, decimals) =>
     `bitcoin:${addr}?amount=${formatBaseUnits(amount, decimals)}`,
-  Ethereum: (addr, asset, amount) => evmUri(addr, asset, amount, 1, TOKEN_CONTRACTS.Ethereum!),
-  Arbitrum: (addr, asset, amount) => evmUri(addr, asset, amount, 42161, TOKEN_CONTRACTS.Arbitrum!),
+  Ethereum: (addr, asset, amount) =>
+    evmUri(addr, asset, amount, EVM_CHAINS.Ethereum!.id, TOKEN_CONTRACTS.Ethereum!),
+  Arbitrum: (addr, asset, amount) =>
+    evmUri(addr, asset, amount, EVM_CHAINS.Arbitrum!.id, TOKEN_CONTRACTS.Arbitrum!),
   Solana: (addr, asset, amount, decimals) => {
     // Solana Pay names the recipient first on every asset; a token adds its mint.
     const base = `solana:${addr}?amount=${formatBaseUnits(amount, decimals)}`;

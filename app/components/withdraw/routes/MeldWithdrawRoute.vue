@@ -7,6 +7,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { trackAction } from "~~/lib/telemetry";
 import { PSM_EXTERNAL } from "@getsome/funding";
+import { httpsUrl } from "@getsome/meld";
 import { useDrillIn } from "../../../composables/useDrillIn";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
 import { useScreen } from "../../../composables/useScreen";
@@ -285,7 +286,7 @@ function followSale(withdrawalRef: RequestRef) {
 }
 
 /** The provider's page for the sale on screen, while it still waits on KYC. */
-const widgetUrl = computed(() => record.value?.sale?.widgetUrl ?? null);
+const widgetUrl = computed(() => httpsUrl(record.value?.sale?.widgetUrl) ?? null);
 
 /** Cancel is offered on the provider's page until the balance is asked: from then on the seller
  *  may already be approving the payment. */

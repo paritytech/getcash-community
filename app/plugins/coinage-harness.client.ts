@@ -3,6 +3,7 @@
 
 import { devLog } from "~~/lib/log";
 export default defineNuxtPlugin(() => {
+  if (!import.meta.env.DEV) return;
   if (!new URLSearchParams(window.location.search).has("coinage")) return;
   void Promise.all([import("~~/lib/coinage"), import("~~/lib/coinage-live")]).then(
     ([mock, live]) => {

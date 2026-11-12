@@ -20,7 +20,6 @@ import {
   type Subscription,
   type TokenSpec,
 } from "@getsome/core";
-import { blake2b } from "@noble/hashes/blake2.js";
 import {
   chainflipTokenOf,
   createChainflipRail,
@@ -59,7 +58,7 @@ import {
   psmDepositNeeded,
   sizeNativeBudget,
 } from "@getsome/funding";
-import { createHostDeps } from "@getsome/host";
+import { createHostDeps, hostEntropyKey } from "@getsome/host";
 import type { FundingSizing } from "./funding-fees";
 import {
   CASH_DECIMALS,
@@ -1060,12 +1059,10 @@ export async function runFundingViaWorker(input: {
   }
 }
 
-/** Adapts the host's deriveEntropy to the {isErr,value|error} shape the entropy port consumes.
- *  Labels over the host's 32-byte key cap are pre-hashed with BLAKE2b. */
+/** Adapts the host's deriveEntropy to the {isErr,value|error} shape the entropy port consumes. */
 export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
   return async (key: Uint8Array) => {
-    const hostKey = key.length <= 32 ? key : blake2b(key, { dkLen: 32 });
-    const r = await deriveEntropy(hostKey);
+    const r = await deriveEntropy(hostEntropyKey(key));
     return r.ok ? { isErr: () => false, value: r.value } : { isErr: () => true, error: r.error };
   };
 }
@@ -1106,13 +1103,11 @@ export async function createCoinageSession(
   // The Meld rail when the fiat route injected one; the source's own rail otherwise.
   const chainflip = args.rail ?? (await railFor(args.sourceId, args.route));
   const { connectChain, evictChains, PEOPLE, ASSET_HUB } = await import("./host-chain");
-  const [peopleClient] = await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
+  await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
   const peoplePort = resilientPeoplePort();
   // Resolved per call: after a redial the cached client is a new object.
   const assetHubApi = async () => (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   const { deps: hostDeps } = createHostDeps({
-    // Required by the input type but unread: `chain` below supplies the port.
-    client: peopleClient,
     chain: peoplePort,
     chainflip,
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.

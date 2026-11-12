@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createHostEntropyPort, type ResultLike } from "./entropy";
+import { createHostEntropyPort, hostEntropyKey, type ResultLike } from "./entropy";
 import { createHostStorageAdapter, type HostLocalStorageLike } from "./storage";
 
 function fakeHostStorage(): { host: HostLocalStorageLike; map: Map<string, string> } {
@@ -70,6 +70,16 @@ describe("createHostStorageAdapter", () => {
       clear: async () => {},
     });
     await expect(adapter.read("k")).rejects.toThrow("bridge down");
+  });
+});
+
+describe("hostEntropyKey", () => {
+  it("passes a label within the host's cap and hashes a longer one down to it", () => {
+    const short = new Uint8Array(32).fill(1);
+    const long = new Uint8Array(33).fill(1);
+    expect(hostEntropyKey(short)).toBe(short);
+    expect(hostEntropyKey(long)).toHaveLength(32);
+    expect(hostEntropyKey(long)).toEqual(hostEntropyKey(Uint8Array.from(long)));
   });
 });
 

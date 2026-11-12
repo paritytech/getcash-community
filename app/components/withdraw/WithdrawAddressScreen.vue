@@ -1,22 +1,22 @@
 <script setup lang="ts">
-// The destination address: the network and token already chosen as pills, the address typed or
-// pasted, checked against the destination's own rule. An address another network would take gets
-// the wrong-network error; anything else invalid is just incorrect. Valid turns the disabled Next
-// into Continue with a warning. A contract that refuses the funds leaves them with the provider,
-// which still reports them as sent. The design's Scan button is left out:
-// the host grants a Camera permission but has no scanner API, so scanning needs an in-page
-// getUserMedia capture and QR decoder that are not built yet.
+// The destination address: the network and token already chosen as pills, the address typed,
+// pasted or scanned from a QR code, checked against the destination's own rule. An address another
+// network would take gets the wrong-network error; anything else invalid is just incorrect. A
+// scanned code made for another network or token says so. Valid turns the disabled Next into
+// Continue with a warning.
 import { computed, ref } from "vue";
-import { CircleAlert, ClipboardPaste } from "lucide-vue-next";
+import { CircleAlert, Clipboard, Scan } from "lucide-vue-next";
 import {
   destinationTokenIcon,
   matchesOtherNetwork,
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../withdraw/destinations";
+import { readScannedCode, scanMismatch } from "../../withdraw/scan";
 import PillButton from "../ui/PillButton.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
 import SourcePill from "../ui/SourcePill.vue";
+import QrScanner from "./QrScanner.vue";
 import { devLog } from "~~/lib/log";
 
 const props = defineProps<{
@@ -32,14 +32,29 @@ const field = ref<HTMLTextAreaElement | null>(null);
 /** Nothing is judged until something was typed; an address brought in is judged at once. */
 const touched = ref(address.value !== "");
 const trimmed = computed(() => address.value.trim());
-const valid = computed(
+/** A scanned code made for another chain or token than the destination, with the address it
+ *  gave: that address stays refused while the field holds it, in any case. */
+const scannedMismatch = ref<{ address: string; problem: "network" | "token" } | null>(null);
+const scanProblem = computed(() =>
+  scannedMismatch.value?.address.toLowerCase() === trimmed.value.toLowerCase()
+    ? scannedMismatch.value.problem
+    : null,
+);
+const addressOk = computed(
   () => trimmed.value !== "" && props.destination.validateAddress(trimmed.value),
 );
+const valid = computed(() => addressOk.value && scanProblem.value === null);
+const wrongNetwork = computed(() => `This is not ${props.network.label} address`);
 const error = computed<string | null>(() => {
-  if (!touched.value || trimmed.value === "" || valid.value) return null;
-  return matchesOtherNetwork(props.network, trimmed.value)
-    ? `This is not ${props.network.label} address`
-    : "Incorrect address";
+  if (!touched.value || trimmed.value === "") return null;
+  if (!addressOk.value) {
+    return matchesOtherNetwork(props.network, trimmed.value)
+      ? wrongNetwork.value
+      : "Incorrect address";
+  }
+  if (scanProblem.value === "network") return `This QR code is not for ${props.network.label}`;
+  if (scanProblem.value === "token") return `This QR code is not for ${props.destination.asset}`;
+  return null;
 });
 
 function onInput(event: Event) {
@@ -62,6 +77,20 @@ async function paste() {
     devLog("withdraw", "clipboard read unavailable", error, "warn");
   }
   field.value?.focus();
+}
+
+const scanning = ref(false);
+
+/** A code read by the camera fills the field as a paste does, the address taken out of a
+ *  payment URI when the code is one. A code naming another chain or token is shown but not
+ *  taken. */
+function scanned(text: string) {
+  scanning.value = false;
+  const code = readScannedCode(text);
+  address.value = code.address;
+  touched.value = true;
+  const problem = scanMismatch(code, props.network.chain, props.destination.asset);
+  scannedMismatch.value = problem === null ? null : { address: code.address.trim(), problem };
 }
 </script>
 
@@ -101,16 +130,25 @@ async function paste() {
       {{ error }}
     </p>
 
-    <div class="mt-4 flex justify-center">
+    <div class="mt-4 flex justify-center gap-2">
       <button
         type="button"
-        class="flex h-8 items-center gap-2 rounded-full bg-action-tertiary px-4 text-label-l text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        class="flex h-8 w-[105px] items-center justify-center gap-2 rounded-full bg-action-tertiary px-4 text-label-l text-fg-primary transition-colors hover:bg-action-tertiary-hover"
         @click="paste"
       >
-        <ClipboardPaste class="size-4" aria-hidden="true" />
+        <Clipboard class="size-4" aria-hidden="true" />
         Paste
       </button>
+      <button
+        type="button"
+        class="flex h-8 w-[105px] items-center justify-center gap-2 rounded-full bg-action-tertiary px-4 text-label-l text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="scanning = true"
+      >
+        <Scan class="size-4" aria-hidden="true" />
+        Scan
+      </button>
     </div>
+    <QrScanner v-if="scanning" @scanned="scanned" @close="scanning = false" />
 
     <template #actions>
       <div class="flex flex-col gap-4">

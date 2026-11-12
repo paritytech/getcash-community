@@ -68,6 +68,8 @@
 // costs its dispatch fee. After MAX_PROGRAM_REJECTIONS rejections with the same answer the run
 // is held with the deposit on the burner, as a PSM refusal holds it. A different answer, or a
 // program that lands, starts the count over. A dry run's refusal costs nothing and is not counted.
+// Nor is an exchange that missed a floor the slippage share raised above the target: the pool
+// moved, and the next tick takes a fresh quote.
 //
 // THE DISPATCH FEE IS PRICED ON THE PROGRAM THAT GOES OUT. The fee is taken before the program
 // runs, for the declared weight, and the unused part comes back after it. The stable tiers keep
@@ -564,7 +566,8 @@ export interface TickOnceInput {
   /** Pool tier: how far below the pool's quote for what it converts the exchange may fill,
    *  percent, for a burner whose target is a token one and does not bound the price (a
    *  withdrawal's key sent home whole). The target stays the floor where it is higher. Absent:
-   *  the target alone is the floor. */
+   *  `slippagePct` is the share, and a fill that misses a floor it raised is retried without
+   *  counting toward the hold. */
   quoteFloorPct?: number;
   tickTimeoutMs: number;
   /** Bound on the submit reaching a best block; past it the tick throws and a later tick settles
@@ -790,14 +793,18 @@ export function sentAmountOf(
 
 /** A paid rejection: the program was in a block and rolled back, and the dispatch fee is gone.
  *  The same answer MAX_PROGRAM_REJECTIONS times in a row holds the run. Otherwise the tick fails
- *  and the next one re-prices and retries. */
+ *  and the next one re-prices and retries. The miss a `floor` spares is not counted. */
 function rejected(
   state: TickState,
   what: string,
   dispatchError: unknown,
   execArgs: unknown,
+  floor?: ExchangeFloor,
 ): never {
   const answer = describeDispatchError(dispatchError, execArgs);
+  if (answer === floor?.spared) {
+    throw new Error(`${what} dispatch rejected: ${answer}`);
+  }
   state.rejections = answer === state.lastRejection ? state.rejections + 1 : 1;
   state.lastRejection = answer;
   if (state.rejections >= MAX_PROGRAM_REJECTIONS) {
@@ -1208,20 +1215,21 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       );
       if (absorbable === null) throw new Error("pool cannot quote even the target amount");
     }
-    // The floor is the requirement itself, not a share of the expected fill. A fill under it would
-    // fail the whole program and cost a dispatch fee, so a quote already under it waits for the
-    // next tick instead of submitting. Anything above lands as extra CASH. A burner held to the
-    // quote (`quoteFloorPct`) has a token target, so its floor is a share of the fill instead.
+    // A fill under the target would fail the whole program and cost a dispatch fee, so a quote
+    // already under it waits for the next tick instead of submitting. The floor is the target, or
+    // a share of the quote where a surplus puts that higher, so the surplus converts at the
+    // quoted price too.
     if (absorbable < buyNow) {
       throw new Error(
         `pool quote ${absorbable} for the spend is below the target ${buyNow}; waiting for the price`,
       );
     }
+    const floor = exchangeFloorFor(input, buyNow, absorbable, POOL_EXCHANGE_MISSED);
     const execArgs = buildFundingProgram({
       pool,
       withdrawNative: spend + payFeesNative,
       payFeesNative,
-      minUnderlyingOut: exchangeFloor(buyNow, absorbable, input.quoteFloorPct),
+      minUnderlyingOut: floor.amount,
       remoteFeesCash: earmark,
       beneficiaryHex: input.beneficiaryHex,
       peopleParaId: input.peopleParaId,
@@ -1262,7 +1270,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     // A rejected program rolls back whole: the deposit stays native and the next tick re-prices
     // and retries. It happens when the pool moved past the floor, a fee allowance fell short, or
     // the balance was already spent by an earlier run.
-    if (!res.ok) rejected(state, "funding program", res.dispatchError, execArgs);
+    if (!res.ok) rejected(state, "funding program", res.dispatchError, execArgs, floor);
     return { step: effective, balances, submitted: true };
   }
 
@@ -1274,16 +1282,34 @@ const poolOf = (input: TickOnceInput): Pool => {
   return input.pool;
 };
 
-/** The least the exchange may fill: the target, or `quoteFloorPct` below the pool's quote for
- *  what is converted when that is more. */
-export function exchangeFloor(
+/** The least the exchange may fill: the target, or `floorPct` below the pool's quote for what is
+ *  converted when that is more. */
+export function exchangeFloor(target: bigint, quoted: bigint, floorPct: number): bigint {
+  if (!(floorPct >= 0 && floorPct < 100)) return target;
+  const held = (quoted * BigInt(Math.round((100 - floorPct) * 100))) / 10_000n;
+  return held > target ? held : target;
+}
+
+/** How a rejection reads when the exchange into CASH filled under its floor: the pool tier's only
+ *  exchange, and the stable tier's second. */
+const POOL_EXCHANGE_MISSED = "ExchangeAsset failed with NoDeal";
+const STABLE_EXCHANGE_MISSED = "ExchangeAsset #2 failed with NoDeal";
+
+interface ExchangeFloor {
+  amount: bigint;
+  /** The rejection that is retried without counting toward the hold. Set when the slippage share
+   *  alone put the floor above the target, so missing it is the pool moving under a surplus. */
+  spared: string | null;
+}
+
+function exchangeFloorFor(
+  input: TickOnceInput,
   target: bigint,
   quoted: bigint,
-  quoteFloorPct: number | undefined,
-): bigint {
-  if (quoteFloorPct === undefined || !(quoteFloorPct >= 0 && quoteFloorPct < 100)) return target;
-  const held = (quoted * BigInt(Math.round((100 - quoteFloorPct) * 100))) / 10_000n;
-  return held > target ? held : target;
+  missed: string,
+): ExchangeFloor {
+  const amount = exchangeFloor(target, quoted, input.quoteFloorPct ?? input.slippagePct);
+  return { amount, spared: input.quoteFloorPct === undefined && amount > target ? missed : null };
 }
 
 const stablePoolOf = (input: TickOnceInput): Pool => {
@@ -1325,6 +1351,7 @@ async function swapThroughStablePool(
     return cashOut === null ? null : { nativeOut, cashOut };
   };
   let fellBack = false;
+  let floor: ExchangeFloor = { amount: buyNow, spared: null };
   // Converts everything the fees leave, not just enough for the target: the dispatch fee, the
   // min_balance and the fee allowance stay out, as on the PSM tier, and the cushion the deposit
   // was asked with reaches the exchange.
@@ -1353,13 +1380,14 @@ async function swapThroughStablePool(
       quotes = await twoHop(spend);
       if (quotes === null) throw new Error("the pools cannot quote even the target amount");
     }
-    // The second exchange's floor is the requirement itself, as on the native pool tier: a quote
-    // already under it waits for the next tick instead of submitting.
+    // As on the native pool tier: a quote already under the target waits for the next tick
+    // instead of submitting, and the second exchange's floor follows the quote above it.
     if (quotes.cashOut < buyNow) {
       throw new Error(
         `pool quote ${quotes.cashOut} for the spend is below the target ${buyNow}; waiting for the price`,
       );
     }
+    floor = exchangeFloorFor(input, buyNow, quotes.cashOut, STABLE_EXCHANGE_MISSED);
     // The first exchange's floor is its quote less the headroom.
     const minNativeOut =
       (quotes.nativeOut * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
@@ -1369,7 +1397,7 @@ async function swapThroughStablePool(
       withdrawStable: spend + fees.feeAllowanceExternal,
       payFeesStable: fees.feeAllowanceExternal,
       minNativeOut,
-      minUnderlyingOut: buyNow,
+      minUnderlyingOut: floor.amount,
       remoteFeesCash,
       beneficiaryHex: input.beneficiaryHex,
       peopleParaId: input.peopleParaId,
@@ -1419,7 +1447,7 @@ async function swapThroughStablePool(
   );
   // A rejected program rolls back whole: the deposit stays in the stable minus the dispatch fee,
   // and the next tick re-prices and retries.
-  if (!res.ok) rejected(state, "stable program", res.dispatchError, execArgs);
+  if (!res.ok) rejected(state, "stable program", res.dispatchError, execArgs, floor);
 }
 
 /** The dotUSD tier's swap step: send everything the fees leave, not just the target, to the
