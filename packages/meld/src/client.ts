@@ -423,6 +423,16 @@ function toQuoteEntries(raw: Record<string, unknown>[]): MeldQuoteEntry[] {
     }));
 }
 
+/** `value` when it is an `https:` URL, the only kind a widget frame may load. */
+export function httpsUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    return new URL(value).protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The deposit terms on a funding record, all required parts or nothing. Half a disclosure is
  * worse than none: an empty address is somewhere to send real funds, and a made-up `observedAt`
@@ -549,14 +559,14 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     const data = await read(res, "the payment status");
     const funding = (data.funding as Record<string, unknown> | undefined) ?? {};
     const deposit = depositOf(funding.deposit);
+    const serviceProviderWidgetUrl = httpsUrl(funding.serviceProviderWidgetUrl);
+    const widgetUrl = httpsUrl(funding.widgetUrl);
     return {
       status: String(funding.status ?? ""),
       ...(funding.providerStatus != null ? { providerStatus: String(funding.providerStatus) } : {}),
       // Present only while the purchase is still payable.
-      ...(funding.serviceProviderWidgetUrl != null
-        ? { serviceProviderWidgetUrl: String(funding.serviceProviderWidgetUrl) }
-        : {}),
-      ...(funding.widgetUrl != null ? { widgetUrl: String(funding.widgetUrl) } : {}),
+      ...(serviceProviderWidgetUrl !== undefined ? { serviceProviderWidgetUrl } : {}),
+      ...(widgetUrl !== undefined ? { widgetUrl } : {}),
       ...(typeof funding.expiresAt === "number" ? { expiresAt: funding.expiresAt } : {}),
       // The terms the row was opened with. Reported for concluded rows too.
       ...(funding.walletAddress != null ? { walletAddress: String(funding.walletAddress) } : {}),
@@ -639,8 +649,8 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
             "[meld] the adapter returned no fundingRequestId; status could not be polled",
           );
         }
-        const widgetUrl = String(data.serviceProviderWidgetUrl ?? "");
-        const meldWidgetUrl = data.widgetUrl != null ? String(data.widgetUrl) : undefined;
+        const widgetUrl = httpsUrl(data.serviceProviderWidgetUrl) ?? "";
+        const meldWidgetUrl = httpsUrl(data.widgetUrl);
         if (!widgetUrl && !meldWidgetUrl) throw new Error(walk.noSurfaceMessage(fundingRequestId));
         return {
           fundingRequestId,

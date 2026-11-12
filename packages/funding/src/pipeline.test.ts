@@ -970,6 +970,8 @@ function scriptedStableWorld(
     poolDepth?: bigint;
     /** The stable pool's rate at inclusion, in bps of the sizing rate, when it differs. */
     stableAtSubmitBps?: bigint;
+    /** The CASH pool's rate at inclusion, in bps of the sizing rate, when it differs. */
+    priceAtSubmitBps?: bigint;
     /** The pool's stable price for the submitted program's dispatch fee, when it differs from
      *  the stand-in's. */
     dispatchOnProgram?: bigint;
@@ -996,6 +998,8 @@ function scriptedStableWorld(
     dispatchAtSubmit: opts.dispatchAtSubmit,
     /** The stable pool's rate at inclusion, applied on every real submit while set. */
     stableAtSubmitBps: opts.stableAtSubmitBps,
+    /** The CASH pool's rate at inclusion, applied on every real submit while set. */
+    priceAtSubmitBps: opts.priceAtSubmitBps,
     stableAh: 0n,
     underlyingPeople: 0n,
     inFlight: 0n,
@@ -1037,6 +1041,7 @@ function scriptedStableWorld(
     if (!atDryRun && state.stableAtSubmitBps !== undefined) {
       state.stableBps = state.stableAtSubmitBps;
     }
+    if (!atDryRun && state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
     const nativeOut = nativeOutFor(give);
     if (nativeOut < first!.want[0]!.fun.value) return { error: incomplete(2, "NoDeal") };
     const named = (second!.give.value as { type: string; value: { id: unknown } }).value.id;
@@ -1307,7 +1312,9 @@ describe("tickOnce", () => {
     const exchange = exchangeOf(args);
     expect(exchange.give.value[0]!.fun.value).toBe(FUND - OVERHEAD);
     expect(exchange.give.value[0]!.fun.value).toBeGreaterThan(MAX_IN);
-    expect(exchange.want[0]!.fun.value).toBe(BUY);
+    // The surplus puts the slippage share of the quote above the target.
+    const quoted = ((FUND - OVERHEAD) * BUY) / QUOTED;
+    expect(exchange.want[0]!.fun.value).toBe((quoted * 9_800n) / 10_000n);
     expect(exchange.maximal).toBe(true);
     const transfer = instruction(args, "InitiateTransfer") as {
       destination: { interior: { value: { value: number } } };
@@ -3307,7 +3314,6 @@ describe("a burner held to the pool's quote", () => {
     ({ settleAmount: TOKEN_TARGET, quoteFloorPct }) satisfies Partial<TickOnceInput>;
 
   it("is the target, or the share of the quote when that is more", () => {
-    expect(exchangeFloor(BUY, 10_000_000n, undefined)).toBe(BUY);
     expect(exchangeFloor(BUY, 10_000_000n, 2)).toBe(9_800_000n);
     expect(exchangeFloor(BUY, 5_000_000n, 2)).toBe(BUY);
     // Nothing that is not a share below the whole: the target alone.
@@ -3326,21 +3332,57 @@ describe("a burner held to the pool's quote", () => {
     expect(exchange.want[0]!.fun.value).toBe((quoted * 9_800n) / 10_000n);
   });
 
-  it("lets a move past that share fail at inclusion, where the token target alone would fill", async () => {
+  it("lets a move past that share fail at inclusion, and counts it toward the hold", async () => {
     const held = scriptedWorld({ priceAtSubmitBps: 10_300n });
     held.state.nativeAh = FUND;
-    await expect(drive(held, 1, freshTickState(), POOL, undefined, heldTo(2))).rejects.toThrow(
-      /NoDeal/,
-    );
+    const state = freshTickState();
+    await expect(drive(held, 1, state, POOL, undefined, heldTo(2))).rejects.toThrow(/NoDeal/);
     // Rolled back whole: only the dispatch fee left the burner.
     expect(held.state.nativeAh).toBe(FUND - DISPATCH);
+    expect(state.rejections).toBe(1);
+  });
 
-    const unheld = scriptedWorld({ priceAtSubmitBps: 10_300n });
-    unheld.state.nativeAh = FUND;
-    const run = await drive(unheld, 1, freshTickState(), POOL, undefined, {
-      settleAmount: TOKEN_TARGET,
-    });
-    expect(run.steps).toEqual(["swap"]);
+  it("never holds a surplus whose floor the slippage share alone raised", async () => {
+    const world = scriptedWorld({ priceAtSubmitBps: 10_300n });
+    world.state.nativeAh = FUND;
+    const state = freshTickState();
+    for (let n = 0; n < MAX_PROGRAM_REJECTIONS + 1; n += 1) {
+      const tick = drive(world, 1, state);
+      await expect(tick).rejects.toThrow(/ExchangeAsset failed with NoDeal/);
+      await expect(tick).rejects.not.toBeInstanceOf(FundingHeldError);
+      world.state.priceBps = 10_000n;
+    }
+    expect(state.rejections).toBe(0);
+
+    // The pool holds still: the next tick converts everything.
+    world.state.priceAtSubmitBps = undefined;
+    expect((await drive(world, 1, state)).steps).toEqual(["swap"]);
+  });
+
+  it("spares a surplus the stable tier's second exchange only", async () => {
+    const second = scriptedStableWorld({ priceAtSubmitBps: 10_300n });
+    second.state.stableAh = 2n * STABLE_DEPOSIT;
+    const state = freshTickState();
+    for (let n = 0; n < MAX_PROGRAM_REJECTIONS + 1; n += 1) {
+      await expect(drive(second, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toThrow(
+        /ExchangeAsset #2 failed with NoDeal/,
+      );
+      second.state.priceBps = 10_000n;
+    }
+    expect(state.rejections).toBe(0);
+
+    const first = scriptedStableWorld({ stableAtSubmitBps: 10_600n });
+    first.state.stableAh = 2n * STABLE_DEPOSIT;
+    for (let n = 1; n < MAX_PROGRAM_REJECTIONS; n += 1) {
+      await expect(drive(first, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toThrow(
+        /ExchangeAsset #1 failed with NoDeal/,
+      );
+      expect(state.rejections).toBe(n);
+      first.state.stableBps = 10_000n;
+    }
+    await expect(drive(first, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toBeInstanceOf(
+      FundingHeldError,
+    );
   });
 });
 

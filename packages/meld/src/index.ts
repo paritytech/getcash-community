@@ -1,6 +1,7 @@
 export {
   createMeldClient,
   fiatLimitOf,
+  httpsUrl,
   refusalOf,
   isAdapterOutage,
   isAdapterUnreachable,
