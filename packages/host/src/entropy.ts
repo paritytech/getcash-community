@@ -2,6 +2,14 @@
 // label); the same label yields the same seed after a reload.
 
 import type { EntropyPort } from "@getsome/core";
+import { blake2b } from "@noble/hashes/blake2.js";
+
+const HOST_KEY_BYTES = 32;
+
+/** The key the host is asked for under `label`: the label itself, hashed when over the host's cap. */
+export function hostEntropyKey(label: Uint8Array): Uint8Array {
+  return label.length <= HOST_KEY_BYTES ? label : blake2b(label, { dkLen: HOST_KEY_BYTES });
+}
 
 /**
  * Structural mirror of a neverthrow Result; host-api-wrapper's `ResultAsync` satisfies it.

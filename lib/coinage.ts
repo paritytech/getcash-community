@@ -20,7 +20,6 @@ import {
   type Subscription,
   type TokenSpec,
 } from "@getsome/core";
-import { blake2b } from "@noble/hashes/blake2.js";
 import {
   chainflipTokenOf,
   createChainflipRail,
@@ -59,7 +58,7 @@ import {
   psmDepositNeeded,
   sizeNativeBudget,
 } from "@getsome/funding";
-import { createHostDeps } from "@getsome/host";
+import { createHostDeps, hostEntropyKey } from "@getsome/host";
 import type { FundingSizing } from "./funding-fees";
 import {
   CASH_DECIMALS,
@@ -1060,12 +1059,10 @@ export async function runFundingViaWorker(input: {
   }
 }
 
-/** Adapts the host's deriveEntropy to the {isErr,value|error} shape the entropy port consumes.
- *  Labels over the host's 32-byte key cap are pre-hashed with BLAKE2b. */
+/** Adapts the host's deriveEntropy to the {isErr,value|error} shape the entropy port consumes. */
 export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
   return async (key: Uint8Array) => {
-    const hostKey = key.length <= 32 ? key : blake2b(key, { dkLen: 32 });
-    const r = await deriveEntropy(hostKey);
+    const r = await deriveEntropy(hostEntropyKey(key));
     return r.ok ? { isErr: () => false, value: r.value } : { isErr: () => true, error: r.error };
   };
 }

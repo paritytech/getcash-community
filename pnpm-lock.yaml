@@ -213,6 +213,9 @@ importers:
       '@getsome/ephemeral':
         specifier: workspace:*
         version: link:../ephemeral
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.4.0
       polkadot-api:
         specifier: 2.2.2
         version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
