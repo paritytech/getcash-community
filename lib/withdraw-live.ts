@@ -38,19 +38,18 @@ import { CASH_DECIMALS, CASH_LOCATION } from "@getsome/people";
 import {
   buildRedeemBatch,
   CASH_ON_ASSET_HUB,
-  cashToExit,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   estimateDirectFeesCash,
   estimateRedeemFeeCash,
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
-  psmRedeemOut,
   readDestinationBalance,
   readRedeemFloors,
   redeemAmountOf,
   RedeemTooSmallError,
   residueReturnFloor,
+  sizeRedeem,
   type AssetHubApi,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
@@ -218,9 +217,9 @@ export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
 /** The sale a direct withdrawal of `amount` CASH makes for the token it lands, decided the way
  *  the on-ramp decides a deposit's tier the other way round: the native takes the pool and
  *  dotUSD the teleport, with no chain read; a stable takes the PSM when it is approved for
- *  redeeming and can serve the amount, the pool fed through the native otherwise. `reserved` is
- *  the CASH this app's own in-flight PSM withdrawals have yet to redeem, which the PSM's room is
- *  judged without. */
+ *  redeeming, can serve the amount and the redeem clears its floors (`redeemFits`), the pool fed
+ *  through the native otherwise. `reserved` is the CASH this app's own in-flight PSM withdrawals
+ *  have yet to redeem, which the PSM's room is judged without. */
 export async function chooseWithdrawRoute(
   amount: bigint,
   landing: DepositAsset,
@@ -229,18 +228,25 @@ export async function chooseWithdrawRoute(
   if (landing === "native") return { tier: "pool" };
   if (landing === "dotUSD") return { tier: "dotusd" };
   const { api, query } = await withdrawRouteQuery(amount, reserved);
-  return chooseRoute(api, { ...query, deposit: landing });
+  const route = await chooseRoute(api, { ...query, deposit: landing });
+  if (route.tier !== "psm" || (await redeemFits(api, amount, route))) return route;
+  return { tier: "pool", external: landing };
 }
 
 /** The sales a provider withdrawal of `amount` CASH could make, best first: USDT through the PSM
- *  when it can serve, with `reserved` of its room spoken for, then the native through the pool.
- *  The provider is asked about them in that order. */
+ *  when it can serve and the redeem clears its floors (`redeemFits`), with `reserved` of its room
+ *  spoken for, then the native through the pool. The provider is asked about them in that
+ *  order. */
 async function rankWithdrawRoutes(
   amount: bigint,
   reserved: bigint,
 ): Promise<readonly ConversionRoute[]> {
   const { api, query } = await withdrawRouteQuery(amount, reserved);
-  return rankRoutes(api, query);
+  const routes = await rankRoutes(api, query);
+  const fits = await Promise.all(
+    routes.map((route) => route.tier !== "psm" || redeemFits(api, amount, route)),
+  );
+  return routes.filter((_, at) => fits[at]);
 }
 
 /** The Asset Hub a withdrawal's sale is decided on, and the redeem it is judged on: what the
@@ -259,11 +265,23 @@ async function withdrawRouteQuery(
  *  depends on the call, not on who makes it. */
 const FEE_ESTIMATE_ACCOUNT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
 
-/** What the PSM tier lands of `sold` CASH in its stable, sized as the worker sizes the redeem
- *  from what reaches the key: the batch's own fee with its margin and the CASH account's minimum
- *  stay on the key, the rest is redeemed at the frozen rate. The redeem alone is priced, as a
- *  provider rail runs it. 0 when the fee and the minimum take the whole amount. */
-async function psmLanding(api: AssetHubApi, sold: bigint, sale: PsmRoute): Promise<bigint> {
+/** How many times today's fee estimates a PSM pick must survive: the redeem is sized as if the
+ *  fees came to this much, so fees that rise before it runs cannot leave it under a floor the
+ *  worker would then refuse it at. Only an amount near the PSM's minimum is turned away by it. */
+const REDEEM_FEE_DRIFT = 2n;
+
+/** The redeem of `sold` CASH reaching the key, sized as the worker sizes it (`sizeRedeem`): the
+ *  batch's own fee with its margin and the CASH account's minimum stay on the key, the rest is
+ *  redeemed at the frozen rate, held to the PSM's minimum and the stable's. The redeem alone is
+ *  priced, as a provider rail runs it, and its fee taken `feeTimes` over for a pick's margin.
+ *  Null when the chain would refuse it. */
+async function redeemNow(
+  api: AssetHubApi,
+  sold: bigint,
+  sale: PsmRoute,
+  feeTimes = 1n,
+): Promise<{ cashIn: bigint; net: bigint } | null> {
+  if (sold <= 0n) return null;
   const [floors, feeCash] = await Promise.all([
     readRedeemFloors(api, sale),
     estimateRedeemFeeCash(
@@ -273,11 +291,19 @@ async function psmLanding(api: AssetHubApi, sold: bigint, sale: PsmRoute): Promi
     ),
   ]);
   try {
-    return psmRedeemOut(cashToExit(sold, feeCash, floors), sale.feeRate);
+    return sizeRedeem(sold, feeCash * feeTimes, sale, floors);
   } catch (e) {
-    if (e instanceof RedeemTooSmallError) return 0n;
+    if (e instanceof RedeemTooSmallError) return null;
     throw e;
   }
+}
+
+/** Whether a withdrawal of `amount` CASH can take the PSM `sale`: the redeem it makes clears the
+ *  chain's floors with every fee at REDEEM_FEE_DRIFT times today's estimate. */
+async function redeemFits(api: AssetHubApi, amount: bigint, sale: PsmRoute): Promise<boolean> {
+  const fees = await directFeesCash(sale);
+  const sold = amount - fees * REDEEM_FEE_DRIFT;
+  return (await redeemNow(api, sold, sale, REDEEM_FEE_DRIFT)) !== null;
 }
 
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
@@ -290,7 +316,7 @@ export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute):
   if (sale.tier === "dotusd") return sold;
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  if (sale.tier === "psm") return psmLanding(api, sold, sale);
+  if (sale.tier === "psm") return (await redeemNow(api, sold, sale))?.net ?? 0n;
   const native = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
     CASH_ON_ASSET_HUB as never,
     PEOPLE_NATIVE as never,

@@ -38,7 +38,7 @@ export interface RedeemFloors {
   cashMinBalance: bigint;
   /** The least the stable's receiving account can hold. */
   externalMinBalance: bigint;
-  /** The least the PSM redeems. */
+  /** The least CASH the PSM redeems, judged before its fee. */
   minSwapAmount: bigint;
 }
 
@@ -81,8 +81,9 @@ export function cashToExit(cashOnKey: bigint, feeCash: bigint, floors: RedeemFlo
 }
 
 /** The redeem sized from what the key holds: `cashIn` through the PSM for `net` of the stable
- *  at the fee rate the hand-off froze. Throws when the net is under a floor the chain would
- *  refuse it at. */
+ *  at the fee rate the hand-off froze. Held to the floors as the chain holds it: the PSM's
+ *  minimum swap on the CASH going in, before its fee, and the stable account's minimum on what
+ *  comes out. Throws when either would refuse it. */
 export function sizeRedeem(
   cashOnKey: bigint,
   feeCash: bigint,
@@ -90,12 +91,13 @@ export function sizeRedeem(
   floors: RedeemFloors,
 ): { cashIn: bigint; net: bigint } {
   const cashIn = cashToExit(cashOnKey, feeCash, floors);
+  if (cashIn < floors.minSwapAmount) {
+    throw new RedeemTooSmallError(cashOnKey, floors.minSwapAmount);
+  }
   const net = psmRedeemOut(cashIn, route.feeRate);
-  const floor =
-    floors.minSwapAmount > floors.externalMinBalance
-      ? floors.minSwapAmount
-      : floors.externalMinBalance;
-  if (net < floor) throw new RedeemTooSmallError(cashOnKey, floor);
+  if (net < floors.externalMinBalance) {
+    throw new RedeemTooSmallError(cashOnKey, floors.externalMinBalance);
+  }
   return { cashIn, net };
 }
 
