@@ -52,8 +52,8 @@ const error = computed<string | null>(() => {
       ? wrongNetwork.value
       : "Incorrect address";
   }
-  if (scanProblem.value === "network") return `This code is not for ${props.network.label}`;
-  if (scanProblem.value === "token") return `This code is not for ${props.destination.asset}`;
+  if (scanProblem.value === "network") return `This QR code is not for ${props.network.label}`;
+  if (scanProblem.value === "token") return `This QR code is not for ${props.destination.asset}`;
   return null;
 });
 
