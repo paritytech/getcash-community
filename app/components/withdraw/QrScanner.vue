@@ -49,7 +49,10 @@ function read() {
   canvas.width = width;
   canvas.height = height;
   context.drawImage(picture, 0, 0, width, height);
-  const code = jsQR(context.getImageData(0, 0, width, height).data, width, height);
+  // Dark codes on a light ground only: looking for light ones too doubles what a read costs.
+  const code = jsQR(context.getImageData(0, 0, width, height).data, width, height, {
+    inversionAttempts: "dontInvert",
+  });
   if (code === null) return;
   stop();
   emit("scanned", code.data);
@@ -102,13 +105,15 @@ onBeforeUnmount(() => {
       >
         <div :class="FRAME" class="shadow-[0_0_0_100vmax_#000]" />
       </div>
-      <div
-        :class="FRAME"
-        class="flex items-center justify-center border-4 border-fg-static-white px-6"
-      >
-        <p v-if="failure" class="text-center text-body-m text-fg-primary" role="alert">
-          {{ message }}
-        </p>
+      <!-- WebKit shrinks an aspect-square box by its border and padding, so both sit on a child. -->
+      <div :class="FRAME">
+        <div
+          class="absolute inset-0 flex items-center justify-center rounded-[inherit] border-4 border-fg-static-white px-6"
+        >
+          <p v-if="failure" class="text-center text-body-m text-fg-primary" role="alert">
+            {{ message }}
+          </p>
+        </div>
       </div>
       <div class="relative mx-auto w-full max-w-md" style="padding-top: env(safe-area-inset-top)">
         <Toolbar back close @back="emit('close')" />
