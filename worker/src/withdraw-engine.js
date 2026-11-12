@@ -6,7 +6,6 @@ import {
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
 } from "@getsome/funding";
-import { MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   AT_BEST,
@@ -220,11 +219,6 @@ function newRecord(input, nowMs) {
   }
   if (input.rail === "meld" && meldOf(input.meld)?.offline === true && !NETWORK.testnet) {
     throw new Error("startWithdraw: the stand-in sale runs only on a test network");
-  }
-  // The page offers card and bank only where the build sells for fiat; the worker holds the same
-  // line rather than trusting the page not to ask.
-  if (input.rail === "meld" && !MELD_SELL_ENABLED) {
-    throw new Error("startWithdraw: card and bank withdrawals are not open on this network");
   }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
