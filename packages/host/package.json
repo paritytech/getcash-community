@@ -13,7 +13,7 @@
   "dependencies": {
     "@getsome/core": "workspace:*",
     "@getsome/ephemeral": "workspace:*",
-    "@getsome/revive": "workspace:*",
+    "@noble/hashes": "^2.2.0",
     "polkadot-api": "2.2.2"
   }
 }

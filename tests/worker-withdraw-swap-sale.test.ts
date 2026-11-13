@@ -364,6 +364,8 @@ describe("a fiat sale through an offramp lane", () => {
     await resumed.tickAllWithdraw();
     expect(storedJob().phase).not.toBe("failed");
     expect(storedJob().leg.paid).toBe(true);
+    // Not watched: a refund to the key could later pass it off as never sent.
+    expect(storedJob().leg.sweep.seen).toBeUndefined();
     expect(mocks.channel).not.toHaveBeenCalled();
     expect(mocks.payRail).not.toHaveBeenCalled();
   });

@@ -310,12 +310,26 @@ export async function chooseHostedRoute(
 }
 
 /** The conversion tiers a hosted request with no named deposit could take, best first, read off
- *  the live PSM: a Chainflip pick or a card or bank top-up asks its provider about each in order,
- *  before any deposit address or provider session exists, and keeps the first it can quote. */
+ *  the live PSM: a Chainflip pick asks its provider about each in order, before any deposit
+ *  address exists, and keeps the first it can quote. */
 export async function rankHostedRoutes(
   amount: bigint,
 ): Promise<[ConversionRoute, ...ConversionRoute[]]> {
   return rankRoutes(await routeApi(), { direction: "mint", internalAmount: amount });
+}
+
+/** The tiers a card or bank top-up asks its provider about, best first: `rankHostedRoutes`'
+ *  order, then USDC, through the PSM when it can take the amount and the pool otherwise. */
+export async function rankMeldRoutes(
+  amount: bigint,
+): Promise<[ConversionRoute, ...ConversionRoute[]]> {
+  const api = await routeApi();
+  const query = { direction: "mint", internalAmount: amount } as const;
+  const [ranked, usdc] = await Promise.all([
+    rankRoutes(api, query),
+    rankRoutes(api, { ...query, deposit: "USDC" }),
+  ]);
+  return [...ranked, ...usdc];
 }
 
 /** Asset Hub's typed API, which the routing rule reads the PSM through. */

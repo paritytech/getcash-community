@@ -22,12 +22,13 @@ vi.mock("../lib/host-payments", () => ({
 }));
 
 // The fee estimate asks the chains how CASH moves and reads People's pool; here the move is a
-// teleport and the fees are the 0.45 CASH the figures below assume. The sales a provider
-// withdrawal could make are the ones each test ranks.
+// teleport and the fees are the 0.45 CASH the figures below assume. The sales a withdrawal could
+// make are the ones each test ranks, a direct one the first of them.
 const ranking: { routes: ConversionRoute[] } = { routes: [] };
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@getsome/funding")>()),
   chooseCashTransfer: async () => "teleport",
+  chooseRoute: async () => ranking.routes[0],
   rankRoutes: async () => ranking.routes,
 }));
 vi.mock("@getsome/withdraw", async (importOriginal) => ({
@@ -136,6 +137,31 @@ describe("what a direct withdrawal lands per token", () => {
   it("decides the native and dotUSD without a chain read", async () => {
     expect(await chooseWithdrawRoute(21_000_000n, "native", 0n)).toEqual({ tier: "pool" });
     expect(await chooseWithdrawRoute(21_000_000n, "dotUSD", 0n)).toEqual({ tier: "dotusd" });
+  });
+});
+
+describe("taking the PSM only when the redeem clears its floors with the fees doubled", () => {
+  /** The scripted fees doubled: 0.9 CASH before the redeem, its own 0.1 with a tenth of margin,
+   *  and 0.07 left on the key. The PSM redeems 1 CASH at least, so the redeem clears it from 2.08
+   *  CASH, where today's fees would clear it from 1.575. */
+  const CLEARS = 2_080_000n;
+
+  it("keeps the PSM for a direct withdrawal from there, and feeds the pool through the native under it", async () => {
+    reset([PSM]);
+    expect(await chooseWithdrawRoute(CLEARS, "USDT", 0n)).toEqual(PSM);
+    expect(await chooseWithdrawRoute(CLEARS - 1n, "USDT", 0n)).toEqual({
+      tier: "pool",
+      external: "USDT",
+    });
+  });
+
+  it("asks a provider about the pool alone under it", async () => {
+    reset([PSM, POOL]);
+    script.quote = () => ({ type: "REGULAR", egressAmount: "1", estimatedDurationSeconds: null });
+    const offers = await quoteWithdrawOffers(CLEARS - 1n, PROVIDERS, 0n);
+    expect(asked).toHaveLength(PROVIDERS.length);
+    expect(asked.every((q) => q.from === "DOT")).toBe(true);
+    expect(offers.get("btc")).toMatchObject({ state: "available", sale: POOL });
   });
 });
 
@@ -279,8 +305,9 @@ describe("quoting the provider destinations for an amount", () => {
     const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     // ceil(20 / 0.995) CASH redeems to 20 USDT, plus the 0.45 CASH of fees; no headroom.
     expect(offers.get("btc")).toEqual({ state: "too-small", minimumCash: 20_100_503n + 450_000n });
-    // The one reverse quote priced the redeem's fee for the sellable; none priced the minimum.
-    expect(poolReverseQuotes).toEqual([REDEEM_FEE_NATIVE]);
+    // The reverse quotes priced the redeem's fee, once for the pick and once for the sellable;
+    // none priced the minimum.
+    expect(poolReverseQuotes).toEqual([REDEEM_FEE_NATIVE, REDEEM_FEE_NATIVE]);
   });
 
   it("marks a single refused pair alone and keeps asking the rest", async () => {

@@ -106,8 +106,19 @@ pallet will not take, holds the withdrawal with the CASH safe on the key. The jo
 "Try again", which starts the count over, and "Sell on the pool", one swap from CASH through PAS
 to USDT paid to the same destination; the worker never takes the pool by itself.
 Arrival is a balance read at the head, like every other read in the engine: the destination's
-balance in the landing token is read just before the XCM, or on the PSM tier the redeem, leaves,
-and the run is done once it has grown by what the Asset Hub dry run said would land. Hosts serve
+balance in the landing token is read just before the XCM leaves, and the run is done once it has
+grown by what the Asset Hub dry run said would land. On the PSM tier the exit, the redeem or the
+pool sale, is the key's own transaction on Asset Hub, so the key says it ran: past the exit's
+nonce with its CASH gone. The success screen shows what the destination received, net of the
+fees: the PSM's net, which is exact, or else the gain measured on the destination, falling back to
+the dry run's figure or the exit's floor when that gain also holds someone else's deposit. Every
+read is
+at the best block, as on the top-up, and each transaction counts as sent once a best block holds
+it. A best block can still be replaced, so the block each transaction was seen in is kept, number
+and hash, and the worker ticks the job on after it is done until the finalized chain is past that
+block: a block that stands is let go, and one that was replaced takes its transaction back, which
+then goes out again. The provider is paid only once the blocks before the payment are final, and
+what a sale leaves on its key goes home only once the payment's own block is. Hosts serve
 the current head and nothing older, so nothing follows block history. `@getsome/withdraw` holds
 the program, the sizing, the redeem and the tick; `worker/src/withdraw-engine.js` drives it.
 
@@ -137,8 +148,10 @@ user was quoted a figure for it: USDT goes back through the PSM when it can serv
 stable pool otherwise, PAS through the pool. A sale that ends before the provider is paid, because
 the price moved past the figure, the provider closed or changed the order, or the hour ran out,
 sends everything on the key home the same way, wherever it is. A payment whose answer was lost
-holds the job until the chain shows it landed or outlived its mortality; only a key whose chain
-state contradicts the payment stops the job for a person.
+holds the job until the chain shows it landed or outlived its mortality, and an exact payment that
+shows landed at the best head is watched from there until the finalized chain shows it too. A sweep
+is not: a swap's refund can fill the key it emptied, so the key cannot settle it later. Only a key
+whose chain state contradicts the payment stops the job for a person.
 
 ### Rails as packages
 
@@ -167,12 +180,11 @@ session, the worker, and the history need no change.
 ### Ports and wirings
 
 Everything the engine touches outside its own code comes in through a small set of ports:
-`ChainPort` (balances, submit, sweep), `StorageAdapter`, `EntropyPort`, and the rail. Three
+`ChainPort` (balances, submit, sweep), `StorageAdapter`, `EntropyPort`, and the rail. Two
 packages wire them:
 
 - `@getsome/host` for running inside a Polkadot App host: storage, entropy, and chain
   access come from the host API.
-- `@getsome/browser` for a plain browser: local storage and a persisted random seed.
 - `@getsome/testing` fakes for the unit tests. The same fakes drive the mock world the app
   runs when no host is present, so the whole state machine can be exercised at
   `localhost:3000` without a chain.
@@ -202,9 +214,7 @@ brand/        the product icon used in the bulletin manifest
 | `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
 | `@getsome/meld`      | card and bank rail over the Meld adapter                         |
 | `@getsome/people`    | People chain port: CASH balances and the handoff submit          |
-| `@getsome/revive`    | Asset Hub chain port over polkadot-api, batch and sweep building |
 | `@getsome/host`      | port wiring for the Polkadot App host                            |
-| `@getsome/browser`   | port wiring for a plain browser                                  |
 | `@getsome/testing`   | fakes for tests and the mock world                               |
 
 Packages export TypeScript source directly (`exports` points at `src/index.ts`); there is no
@@ -252,8 +262,8 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | `VITE_ADAPTER_AUTH`             | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                             |
 | `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only                                   |
 | `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                 |
-| `VITE_TOP_UP_MINIMUM`           | the least a top up can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, where it has one, is shown when the source is picked |
-| `VITE_TOP_UP_MAXIMUM`           | the most a top up can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so                       |
+| `VITE_TOP_UP_MINIMUM`           | the least a top up or withdrawal can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, if it has one, shows when it is picked |
+| `VITE_TOP_UP_MAXIMUM`           | the most a top up or withdrawal can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so         |
 
 `VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
 key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit

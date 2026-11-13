@@ -269,6 +269,16 @@ describe("withdrawal: the worker", () => {
     );
     expect(direct.status).toEqual({ kind: "sent", at: at(3) });
     expect(direct.rail.stage).toBe("delivered");
+    // What the sale landed, as the worker reported it, stays with the sent record.
+    const landed = run(
+      prompted(),
+      worker(
+        at(3),
+        job({ phase: "done", landed: true, done: true, fundsSeenAt: seen, received: "9749856" }),
+      ),
+    );
+    expect(landed.witnesses.worker).toMatchObject({ known: true, received: "9749856" });
+    expect(direct.witnesses.worker).not.toHaveProperty("received");
 
     // The PAS is on the key's Asset Hub account; the worker opens the provider's channel next.
     const sending = run(

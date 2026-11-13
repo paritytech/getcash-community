@@ -67,9 +67,10 @@ import {
   fetchSupportedCountries,
   mergeCorridorMaps,
   mergeCountries,
-  methodFor,
+  methodsFor,
   type SupportedCorridor,
   type SupportedCountry,
+  type SupportedMethod,
 } from "~~/lib/supported";
 import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
 import { estimateSourceFromCash } from "~~/lib/demo-rates";
@@ -131,6 +132,9 @@ function meldTokenOf(token: TokenSpec): MeldRailToken {
 
 /** A hosted world built on a route, with the quote its rail answered. */
 type LiveQuote = { world: HostedCoinageWorld; quote: Quote };
+
+/** A Meld rail for one payment method. */
+type MeldMethodRail = { paymentMethodType: string; rail: ChainflipRail };
 
 /** A Meld quote on a route, with the region's corridor for that route's token and the country
  *  it was priced in. */
@@ -414,13 +418,11 @@ export const useSessionStore = defineStore("session", () => {
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
   /** The tokens the region dropdown's catalogs are read for. Hosted, a card or bank quote tries
-   *  the PSM's external and then the native, so a region counts when a provider delivers either
-   *  there; the external's catalog leads, as its route does. Off-host there is no PSM. */
-  const psmMeldAsset = isHosted() ? TOKENS[PSM_EXTERNAL].meldAsset : undefined;
-  const catalogDestinations: MeldAssetId[] =
-    psmMeldAsset === undefined
-      ? [DEFAULT_MELD_DESTINATION]
-      : [psmMeldAsset, DEFAULT_MELD_DESTINATION];
+   *  the PSM's external, the native and then USDC, so a region counts when a provider delivers
+   *  any of them there; the catalogs lead in the routes' order. Off-host there is no PSM. */
+  const catalogDestinations: MeldAssetId[] = isHosted()
+    ? [TOKENS[PSM_EXTERNAL].meldAsset, DEFAULT_MELD_DESTINATION, TOKENS.USDC.meldAsset]
+    : [DEFAULT_MELD_DESTINATION];
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
@@ -829,16 +831,16 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
-   * Builds the Meld rail for the current selection and the token the route delivers, or signals
-   * that the method is not routed for the region. The corridor read is that token's.
+   * Builds a Meld rail for each method of the chosen category the region can take right now, in
+   * the corridor's order, for the token the route delivers; or signals that none is routed. The
+   * corridor read is that token's.
    */
-  async function buildMeldRail(route: ConversionRoute): Promise<
+  async function buildMeldRails(route: ConversionRoute): Promise<
     | {
-        rail: ChainflipRail;
+        rails: [MeldMethodRail, ...MeldMethodRail[]];
         sourceId: SourceId;
         client: MeldClientLike;
         region: { country: string; fiat: string };
-        paymentMethodType: string;
         corridor: SupportedCorridor;
       }
     | { unavailable: true; corridor: SupportedCorridor }
@@ -852,32 +854,10 @@ export const useSessionStore = defineStore("session", () => {
     // static region map as a whole {country, fiat} tuple with a synthetic corridor. The caller
     // assigns `meldCorridor` after its epoch guard.
     const live = await fetchCorridor(token.meldAsset, country);
-    let region: { country: string; fiat: string };
-    let corridor: SupportedCorridor;
-    let paymentMethodType: string | null;
-    // The method's fiat limits, which seed the rail's rate probe and bound what it will quote.
-    let limits: { min?: string; max?: string } | undefined;
-    if (live !== null) {
-      region = { country, fiat: live.fiat };
-      corridor = live;
-      const liveMethod = methodFor(live, uiMethod);
-      // A method whose providers all fail the adapter's probes is not quoted until they answer.
-      paymentMethodType =
-        liveMethod === null || liveMethod.temporarilyUnavailable
-          ? null
-          : liveMethod.paymentMethodType;
-      if (liveMethod !== null && liveMethod.currency === live.fiat) {
-        limits = {
-          ...(liveMethod.min !== "" ? { min: liveMethod.min } : {}),
-          ...(liveMethod.max !== "" ? { max: liveMethod.max } : {}),
-        };
-      }
-    } else {
-      region = resolveMeldRegion(country);
-      corridor = staticCorridor(region);
-      paymentMethodType = meldPaymentMethod(uiMethod, region.country);
-    }
-    if (paymentMethodType === null) return { unavailable: true, corridor };
+    const region = live === null ? resolveMeldRegion(country) : { country, fiat: live.fiat };
+    const corridor = live ?? staticCorridor(region);
+    const [first, ...rest] = methodsFor(corridor, uiMethod);
+    if (first === undefined) return { unavailable: true, corridor };
     const meldBaseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
     // Land the widget on the adapter's frameable return page.
     const redirectUrl = meldBaseUrl ? `${meldBaseUrl}/meld/return` : undefined;
@@ -906,16 +886,31 @@ export const useSessionStore = defineStore("session", () => {
       cancel: (id) => baseClient.cancel(id),
     };
     meldStatusClient = meldClient;
-    const rail = createMeldRail({
-      client: meldClient,
-      country: region.country,
-      fiat: region.fiat,
-      method: meldMethod,
+    // A method's fiat limits seed the rail's rate probe and bound what it will quote.
+    const railFor = ({
       paymentMethodType,
-      token,
-      ...(limits === undefined ? {} : { limits }),
+      min,
+      max,
+      currency,
+    }: SupportedMethod): MeldMethodRail => ({
+      paymentMethodType,
+      rail: createMeldRail({
+        client: meldClient,
+        country: region.country,
+        fiat: region.fiat,
+        method: meldMethod,
+        paymentMethodType,
+        token,
+        ...(currency === region.fiat ? { limits: { min, max } } : {}),
+      }),
     });
-    return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
+    return {
+      rails: [railFor(first), ...rest.map(railFor)],
+      sourceId,
+      client: meldClient,
+      region,
+      corridor,
+    };
   }
 
   /**
@@ -1107,7 +1102,7 @@ export const useSessionStore = defineStore("session", () => {
         // The tier first: the rail is built for the asset the tier delivers.
         const route = await chooseQuoteRoute(amountBase.value);
         if (epoch !== quoteEpoch) return;
-        const built = await buildMeldRail(route);
+        const built = await buildMeldRails(route);
         // A newer quote may have started while the corridor probe was in flight; do not clobber
         // its state.
         if (epoch !== quoteEpoch) return;
@@ -1117,6 +1112,8 @@ export const useSessionStore = defineStore("session", () => {
           loading.value = false;
           return;
         }
+        // Off the host only the category's first available method is quoted.
+        const [{ rail, paymentMethodType }] = built.rails;
         // The country the quote is priced in; a re-open quotes the same region.
         meldRegionCountry = built.region.country;
         // The funding leg's fees, from the same public reads the crypto route prices with. They
@@ -1144,7 +1141,7 @@ export const useSessionStore = defineStore("session", () => {
         } else {
           const quotedBudget = await sizeMeldNativeBudget(
             built.client,
-            { ...built.region, paymentMethodType: built.paymentMethodType },
+            { ...built.region, paymentMethodType },
             amountBase.value + sizing.remoteFeeBuffer,
           );
           if (epoch !== quoteEpoch) return;
@@ -1162,7 +1159,7 @@ export const useSessionStore = defineStore("session", () => {
           recipient: DEV_RECIPIENT,
           amount: amountBase.value,
           sourceId: built.sourceId,
-          rail: built.rail,
+          rail,
           nativeBudget,
           fundingSizing: sizing,
           tradeN: nextMockTradeN(built.sourceId),
@@ -1181,9 +1178,10 @@ export const useSessionStore = defineStore("session", () => {
       }
       // Hosted world: the same rail over the real host seams. The provider delivers the route's
       // token to the burner and the funding leg converts it to CASH. Each route the chain ranks is
-      // asked in turn, on the region's corridor for its token, until a provider quotes it.
-      const { nextHostedTradeNumber, rankHostedRoutes } = await import("~~/lib/coinage-live");
-      const routes = await step("route selection", 10_000, rankHostedRoutes(amountBase.value));
+      // asked in turn, on the region's corridor for its token and each of the chosen category's
+      // methods there, until a provider quotes it.
+      const { nextHostedTradeNumber, rankMeldRoutes } = await import("~~/lib/coinage-live");
+      const routes = await step("route selection", 10_000, rankMeldRoutes(amountBase.value));
       if (epoch !== quoteEpoch) return;
       // Every route is tried on one trade number: a Meld world writes nothing to storage and its
       // quote opens no session, so a world let go leaves nothing behind.
@@ -1194,44 +1192,47 @@ export const useSessionStore = defineStore("session", () => {
       let failure: unknown;
       const outOfRange: MeldAmountOutOfRangeError[] = [];
       const pick = await pickRoute<MeldRouteQuote | null>(routes, async (route) => {
-        const built = await buildMeldRail(route);
+        const built = await buildMeldRails(route);
         if (epoch !== quoteEpoch) return { kind: "accepted", value: null };
         firstCorridor ??= built.corridor;
         if ("unavailable" in built) {
           return { kind: "refused", reason: "the method is not routed for this token" };
         }
-        tradeN ??= await step(
+        const trade = (tradeN ??= await step(
           "trade number",
           10_000,
           nextHostedTradeNumber(built.sourceId, (n) => requests.hasTrace(built.sourceId, n)),
-        );
-        const asked = await quoteLiveWorld(
-          epoch,
-          createLiveWorld(
+        ));
+        const quotedBy = await pickRoute(built.rails, async ({ rail }) => {
+          const asked = await quoteLiveWorld(
             epoch,
-            depositWindowFor(method.value),
-            route,
-            tradeN,
-            built.rail,
-            built.sourceId,
-          ),
-        );
-        if (asked === null) return { kind: "accepted", value: null };
-        if ("quote" in asked) {
-          const value = { ...asked, corridor: built.corridor, country: built.region.country };
-          return { kind: "accepted", value };
-        }
-        const { error } = asked;
-        const reason = error instanceof Error ? error.message : String(error);
-        // An adapter that does not answer is the same adapter on the next route. A quote out of
-        // time, or out of this token's limits, is this route's refusal.
-        if (isAdapterOutage(error)) {
-          failure = error;
-          return { kind: "outage", reason };
-        }
-        if (error instanceof MeldAmountOutOfRangeError) outOfRange.push(error);
-        failure ??= error;
-        return { kind: "refused", reason };
+            createLiveWorld(
+              epoch,
+              depositWindowFor(method.value),
+              route,
+              trade,
+              rail,
+              built.sourceId,
+            ),
+          );
+          if (asked === null) return { kind: "accepted", value: null };
+          if ("quote" in asked) {
+            const value = { ...asked, corridor: built.corridor, country: built.region.country };
+            return { kind: "accepted", value };
+          }
+          const { error } = asked;
+          const reason = error instanceof Error ? error.message : String(error);
+          // An adapter that does not answer is the same adapter on the next method and route. A
+          // quote out of time, or out of this method's limits, is this method's refusal.
+          if (isAdapterOutage(error)) {
+            failure = error;
+            return { kind: "outage", reason };
+          }
+          if (error instanceof MeldAmountOutOfRangeError) outOfRange.push(error);
+          failure ??= error;
+          return { kind: "refused", reason };
+        });
+        return quotedBy.kind === "picked" ? { kind: "accepted", value: quotedBy.value } : quotedBy;
       });
       if (epoch !== quoteEpoch) {
         if (pick.kind === "picked") pick.value?.world.dispose();

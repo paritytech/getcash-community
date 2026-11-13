@@ -11,7 +11,7 @@ import {
 import { LINE_LIMIT } from "../app/funding/timeline/model";
 import { delay, normal } from "../app/funding/timeline/route";
 import { requestRefOf } from "../app/utils/request-index";
-import { withdrawalJourneyRows } from "../app/withdraw/timeline/journey-rows";
+import { receivedText, withdrawalJourneyRows } from "../app/withdraw/timeline/journey-rows";
 import { withdrawalListProgress } from "../app/withdraw/timeline/list";
 import { withdrawalPhase } from "../app/withdraw/timeline/phases";
 import { WITHDRAWAL_TIMELINE } from "../app/withdraw/timeline/spec";
@@ -888,6 +888,48 @@ describe("withdrawal list progress", () => {
     expect(stopped.tone).toBe("failed");
     // The swap half of the conversion, filled to the limit when it stopped.
     expect(stopped.value).toBeCloseTo((LINE_LIMIT * 0.5) / 6, 5);
+  });
+});
+
+describe("what a withdrawal delivered", () => {
+  const sent = { kind: "sent", at: at(6) } as const;
+  /** A direct withdrawal done, the worker's report of what its sale landed in hand or not. */
+  const direct = (received?: string, overrides: Partial<WithdrawalRecord> = {}) =>
+    record({
+      status: sent,
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "done",
+          done: true,
+          fundsSeenAt: at(1),
+          lastTickAt: at(6),
+          at: at(6),
+          ...(received === undefined ? {} : { received }),
+        },
+      },
+      ...overrides,
+    });
+
+  it("is the exact figure the worker sent, in the destination's asset, for a direct withdrawal", () => {
+    // DOT through the pool, ten decimals.
+    expect(receivedText(direct("43151334329"))).toBe("4.3151 DOT");
+    // USDT out of the PSM, six decimals: 10 CASH left the balance, 9.749856 arrived.
+    const usdt = direct("9749856", {
+      destination: { ...record().destination, asset: "USDT" },
+      handoff: { ...record().handoff, tier: "psm", external: "USDT", feeRate: 5_000 },
+    });
+    expect(receivedText(usdt)).toBe("9.7498 USDT");
+  });
+
+  it("is the quote's figure, approximate, where a provider pays out its own", () => {
+    expect(receivedText(chainflip({ status: sent }))).toBe("≈ 24.44 USDC");
+    expect(receivedText(sale({ status: sent }))).toBe("≈ €24.20");
+  });
+
+  it("is unknown before the worker reported it, and the screen keeps what left the balance", () => {
+    expect(receivedText(direct())).toBeNull();
+    expect(receivedText(record({ status: sent }))).toBeNull();
   });
 });
 

@@ -569,6 +569,8 @@ type WithdrawJob = {
     waitingSince?: number | null;
     psmRefusals?: number;
     exit?: unknown;
+    /** What the destination received, base units of the landing asset, as a decimal string. */
+    received?: unknown;
   };
   leg?: { reading?: SwapStatusResult | null };
   txs?: WithdrawJobView["txs"];
@@ -625,6 +627,7 @@ async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
 function withdrawJobView(job: WithdrawJob, residueJob?: WorkerJob): WithdrawJobView {
   const reading = job.leg?.reading;
   const residue = job.residue;
+  const received = job.state?.received;
   return {
     phase: job.phase ?? "",
     // Jobs from before the rail leg carry no `landed`; for them the message was the whole job.
@@ -639,10 +642,15 @@ function withdrawJobView(job: WithdrawJob, residueJob?: WorkerJob): WithdrawJobV
     ...(isNumber(job.state?.psmRefusals) ? { psmRefusals: job.state.psmRefusals } : {}),
     ...(isString(job.tier) ? { tier: job.tier } : {}),
     ...(job.state?.exit === "psm" || job.state?.exit === "pool" ? { exit: job.state.exit } : {}),
+    ...(isBaseUnits(received) ? { received } : {}),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
     ...(residue == null ? {} : residueViewOf(residue, residueJob)),
   };
 }
+
+/** A whole number of base units, as the worker stores amounts. */
+const isBaseUnits = (value: unknown): value is string =>
+  typeof value === "string" && /^\d+$/.test(value);
 
 /** A sale's residue as the reducer reads it: an amount of planck, or the whole key. */
 function residueViewOf(

@@ -523,7 +523,6 @@ export function corridorOptions(
   if (corridors === null || corridors.size === 0) return null;
   return base.map((c): CountryOption => {
     const corridor = corridors.get(c.country) ?? null;
-    const method = corridor?.methods.find((m) => m.category === ui) ?? null;
     // A region names its currency whether or not this method is routed from it: the picker greys
     // the row, it does not leave it nameless.
     const named = {
@@ -531,12 +530,13 @@ export function corridorOptions(
       name: c.name,
       ...(corridor ? { fiat: corridor.fiat } : {}),
     };
-    if (method === null) return { ...named, disabled: true };
-    if (method.temporarilyUnavailable) return { ...named, temporarilyUnavailable: true };
+    if (!corridor?.methods.some((m) => m.category === ui)) return { ...named, disabled: true };
+    if (isMethodDown(corridor, ui)) return { ...named, temporarilyUnavailable: true };
     // A supported method with no bound or no currency stays selectable but shows no min.
-    if (method.min === "" || method.currency === "") return named;
-    const row: CountryOption = { ...named, min: method.min, fiat: method.currency };
-    return overFloor(method.min, floor, method.currency) ? { ...row, belowMinimum: true } : row;
+    const minimum = methodMinimum(corridor, ui);
+    if (minimum === null) return named;
+    const row: CountryOption = { ...named, min: minimum.amount, fiat: minimum.fiat };
+    return overFloor(minimum.amount, floor, minimum.fiat) ? { ...row, belowMinimum: true } : row;
   });
 }
 
@@ -602,13 +602,12 @@ export function regionGroups(
   return groups;
 }
 
-/** The first method of the given category in a corridor, or `null` when it offers none. */
-export function methodFor(
+/** The methods of the given category a corridor can take right now, in its order. */
+export function methodsFor(
   corridor: SupportedCorridor | null,
   ui: "card" | "bank",
-): SupportedMethod | null {
-  if (corridor === null) return null;
-  return corridor.methods.find((m) => m.category === ui) ?? null;
+): SupportedMethod[] {
+  return corridor?.methods.filter((m) => m.category === ui && !m.temporarilyUnavailable) ?? [];
 }
 
 /** The fiat methods no region offers right now. None while the catalog is unread: the picker's
@@ -618,25 +617,32 @@ export function unservedMethods(
 ): ("card" | "bank")[] {
   if (corridors === null || corridors.size === 0) return [];
   return (["card", "bank"] as const).filter(
-    (ui) =>
-      ![...corridors.values()].some((c) => {
-        const method = methodFor(c, ui);
-        return method !== null && !method.temporarilyUnavailable;
-      }),
+    (ui) => ![...corridors.values()].some((c) => methodsFor(c, ui).length > 0),
   );
 }
 
-/** The method's minimum in the corridor's fiat, or `null` when the corridor prices none. */
+/** The lowest minimum the category's available methods take, in the corridor's fiat, or `null`
+ *  when none prices one. */
 export function methodMinimum(
   corridor: SupportedCorridor | null,
   ui: "card" | "bank",
 ): { amount: string; fiat: string } | null {
-  const method = methodFor(corridor, ui);
-  if (method === null || method.min === "" || method.currency === "") return null;
-  return { amount: method.min, fiat: method.currency };
+  const [first, ...rest] = methodsFor(corridor, ui).filter(
+    (m) => m.min !== "" && m.currency !== "",
+  );
+  if (first === undefined) return null;
+  const lowest = rest
+    .filter((m) => m.currency === first.currency)
+    .reduce((min, m) => widerBound(min, m.min, -1), first.min);
+  return lowest === "" ? null : { amount: lowest, fiat: first.currency };
 }
 
-/** Whether the corridor routes the method but every provider behind it is failing right now. */
+/** Whether the corridor routes the category but every provider behind each of its methods is
+ *  failing right now. */
 export function isMethodDown(corridor: SupportedCorridor | null, ui: "card" | "bank"): boolean {
-  return methodFor(corridor, ui)?.temporarilyUnavailable === true;
+  return (
+    corridor !== null &&
+    corridor.methods.some((m) => m.category === ui) &&
+    methodsFor(corridor, ui).length === 0
+  );
 }

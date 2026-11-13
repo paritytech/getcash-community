@@ -1,9 +1,9 @@
 <script setup lang="ts">
 // The toolbar: a 44px glass back button, an optional centered title, and a 44px trailing slot. Both
-// ends are always reserved.
-import { ChevronLeft } from "lucide-vue-next";
+// ends are always reserved. A view that closes rather than goes back shows a cross instead.
+import { ChevronLeft, X } from "lucide-vue-next";
 
-defineProps<{ title?: string; back?: boolean }>();
+defineProps<{ title?: string; back?: boolean; close?: boolean }>();
 const emit = defineEmits<{ back: [] }>();
 </script>
 
@@ -14,10 +14,11 @@ const emit = defineEmits<{ back: [] }>();
         v-if="back"
         type="button"
         class="toolbar-glass flex size-11 items-center justify-center rounded-full"
-        aria-label="Back"
+        :aria-label="close ? 'Close' : 'Back'"
         @click="emit('back')"
       >
-        <ChevronLeft class="size-7 text-fg-primary" aria-hidden="true" />
+        <X v-if="close" class="size-7 text-fg-primary" aria-hidden="true" />
+        <ChevronLeft v-else class="size-7 text-fg-primary" aria-hidden="true" />
       </button>
     </div>
     <p v-if="title" class="min-w-0 flex-1 truncate text-center text-heading-l text-fg-primary">

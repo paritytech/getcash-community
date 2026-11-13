@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
   railFor: vi.fn(),
   payRail: vi.fn(),
+  /** What became of a sweep seen in a best block. */
+  paymentOutcome: vi.fn(),
   status: vi.fn(),
   channel: vi.fn(),
   /** What the key holds on Asset Hub, in whichever token the hand that pays reads. */
@@ -35,17 +37,19 @@ vi.mock("../worker/src/providers.js", () => ({
   PAY_TIMEOUT_MS: 300_000,
   railFor: mocks.railFor,
   payRail: mocks.payRail,
+  paymentOutcome: mocks.paymentOutcome,
 }));
 
 // Where a test lets the real hand pay, the chain it pays on is scripted: the key's holding and
 // a transfer that records what it was asked to sign.
 vi.mock("../worker/src/shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
+  const { bestBlockWatch } = await import("@getsome/testing");
   const transferAll = (pallet: string) => (args: unknown) => ({
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
+    signSubmitAndWatch: bestBlockWatch(async (_signer: unknown, options: unknown) => {
       mocks.submits.push({ pallet, args, options });
-      return { ok: true, txHash: "0x1", block: { number: 7 } };
-    },
+      return { ok: true, txHash: "0x1", block: { number: 7, hash: "0xblock-7" } };
+    }),
   });
   return {
     ...actual,
@@ -163,6 +167,8 @@ describe("the worker's rail leg", () => {
     });
     mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
     mocks.payRail.mockResolvedValue(undefined);
+    mocks.paymentOutcome.mockReset();
+    mocks.paymentOutcome.mockResolvedValue("pending");
     mocks.status.mockResolvedValue({ status: "swapping" });
     mocks.keyHolds = 0n;
     mocks.submits.length = 0;
@@ -193,6 +199,52 @@ describe("the worker's rail leg", () => {
     ]);
     expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
     expect(storedJob().txs).toEqual([{ call: "sweep", txHash: "0x1", block: 7, ok: true }]);
+  });
+
+  it("watches the sweep's block until it is final, and sweeps again when it was replaced", async () => {
+    const { payRail } = await vi.importActual<typeof import("../worker/src/providers.js")>(
+      "../worker/src/providers.js",
+    );
+    mocks.payRail.mockImplementation(payRail);
+    mocks.keyHolds = 20_000_000n;
+    const engine = await engineWith(
+      landedJob({ sale: { tier: "psm", external: "USDT", feeRate: 5_000 } }),
+    );
+    await engine.tickAllWithdraw();
+    // Paid at the best block, with that block kept.
+    const seen = { number: 7, hash: "0xblock-7" };
+    expect(storedJob().leg).toMatchObject({ paid: true, sweep: { attempts: 1, seen } });
+
+    // Not past it yet: the swap is followed, and nothing more is swept.
+    await engine.tickAllWithdraw();
+    // A sweep in a block too old to name stands: a refund could fill the key it emptied.
+    expect(mocks.paymentOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "s-1" }),
+      seen,
+      expect.any(Function),
+      { unknownStands: true },
+    );
+    // The sweep's effect: one was sent, and the key holds none of the token.
+    const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (key: object) => boolean;
+    expect(shows({ nonce: 0, free: 0n })).toBe(true);
+    expect(shows({ nonce: 0, free: 1n })).toBe(false);
+    expect(mocks.submits).toHaveLength(1);
+    expect(storedJob()).toMatchObject({ phase: "follow", leg: { paid: true, sweep: { seen } } });
+
+    // It shows nowhere: the token is still on the key, and it is swept again.
+    mocks.paymentOutcome.mockResolvedValue("gone");
+    await engine.tickAllWithdraw();
+    expect(mocks.submits).toHaveLength(2);
+    expect(storedJob().leg).toMatchObject({ paid: true, sweep: { attempts: 2, seen } });
+
+    // It stands: let go, and never asked about again.
+    mocks.paymentOutcome.mockResolvedValue("final");
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg).toMatchObject({ paid: true, sweep: { seen: null } });
+    const asked = mocks.paymentOutcome.mock.calls.length;
+    await engine.tickAllWithdraw();
+    expect(mocks.paymentOutcome).toHaveBeenCalledTimes(asked);
+    expect(mocks.submits).toHaveLength(2);
   });
 
   it("pays a channel that is open, and follows the swap after it", async () => {

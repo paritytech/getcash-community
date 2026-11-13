@@ -133,11 +133,18 @@ describe("the top-up config", () => {
     expect(one.amount).toMatchObject({ minimum: "6000", maximum: "6000", presets: ["6000"] });
   });
 
-  it("leaves the withdrawal bounds where they were", async () => {
+  it("holds a withdrawal to the same bounds and presets", async () => {
     const { withdrawalSelectorConfig } = await configWith("25", "250");
     expect(withdrawalSelectorConfig.amount).toMatchObject({
-      minimum: "10",
-      maximum: "2000",
+      minimum: "25",
+      maximum: "250",
+      presets: ["25", "125", "250"],
+    });
+    // Unset, the top up's defaults.
+    const { withdrawalSelectorConfig: unset } = await configWith("");
+    expect(unset.amount).toMatchObject({
+      minimum: "1",
+      maximum: "5000",
       presets: ["10", "50", "100"],
     });
   });
