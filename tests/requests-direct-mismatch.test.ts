@@ -165,6 +165,33 @@ describe("a Polkadot deposit", () => {
     }
   });
 
+  it("is not brought back by a balance short of the gate once its deposit was lost, only by the deposit", () => {
+    const job = { done: false, lastTickAt: 30, claim: null } as const;
+    const seen = reduce(record("dotusd-assethub"), reading(ASKED, 10, null));
+    const taken = reduce(seen, {
+      source: "worker",
+      at: 20,
+      job: { ...job, phase: "swap", fundsSeenAt: 15 },
+    });
+    const lost = reduce(taken, {
+      source: "worker",
+      at: 30,
+      job: {
+        ...job,
+        phase: "failed",
+        failure: "deposit-lost",
+        fundsSeenAt: null,
+        depositLeftAt: 25,
+      },
+    });
+    expect(lost.failure?.kind).toBe("deposit-lost");
+
+    const short = reduce(lost, reading(8_000_000n, 40));
+    expect(short.status.kind).toBe("failed");
+    expect(short.depositMismatch).toBeUndefined();
+    expect(reduce(lost, reading(ASKED, 40)).status.kind).toBe("deposit-seen");
+  });
+
   it("takes the accepted terms while still on the deposit, and drops the mismatch", () => {
     const short = reduce(record("dotusd-assethub"), reading(8_000_000n, 10, null));
     const terms: AcceptedDepositTerms = {

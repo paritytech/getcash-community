@@ -399,6 +399,51 @@ describe("top-up timeline, shared route frame", () => {
   });
 });
 
+describe("top-up timeline, a deposit a fork took", () => {
+  const LEFT = SENT + MINUTE;
+  const DROPPED =
+    "The network dropped your deposit and it hasn't come back yet. We'll keep watching and continue automatically.";
+
+  it("waits on Received with the deposit arriving again, and says it was dropped an hour on", () => {
+    const topUp = record({}, { depositLeftAt: LEFT });
+    const soon = openedTimeline(topUp, sentRoute, { now: LEFT + MINUTE, watchingSince: SENT });
+    expect(marks(soon.view)).toBe("●●●○○○○");
+    expect(soon.view.state).toBe("active");
+    expect(soon.message).toEqual(normal("Your money is arriving"));
+
+    const later = openedTimeline(topUp, sentRoute, { now: LEFT + HOUR + 1, watchingSince: SENT });
+    expect(marks(later.view)).toBe("●●●○○○○");
+    expect(later.view.state).toBe("delayed");
+    expect(later.message).toEqual(delay(DROPPED));
+  });
+
+  it("keeps a direct deposit's timeline open on Sent, as sent and awaited again", () => {
+    const direct: TopUpRecord = {
+      ...cryptoRecord(POLKADOT_DOT),
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "await-native",
+          done: false,
+          fundsSeenAt: null,
+          depositLeftAt: LEFT,
+          lastTickAt: LEFT,
+          at: LEFT,
+        },
+      },
+    };
+    const view = openedTimeline(direct, directRoute, { now: LEFT + MINUTE, watchingSince: SENT });
+    expect(marks(view.view)).toBe("●●●○○○○");
+    expect(view.message).toEqual(normal("Your money is arriving"));
+  });
+
+  it("does not say a deposit seen on the account again was dropped", () => {
+    const topUp = record({ observedAt: { "on-burner": LEFT + HOUR } }, { depositLeftAt: LEFT });
+    const view = openedTimeline(topUp, sentRoute, { now: LEFT + 2 * HOUR, watchingSince: SENT });
+    expect(view.message).toEqual(normal("We've spotted your deposit"));
+  });
+});
+
 describe("top-up timeline, Sent on the provider routes", () => {
   const EARLIER = SENT - 10 * SECOND;
   const NOW = SENT + 12 * SECOND;
@@ -1031,6 +1076,27 @@ describe("top-up timeline, failures", () => {
   const swap = (): TopUpRecord => ({ ...cryptoRecord(), observedAt: { receiving: SENT } });
 
   const failureOf = (topUp: TopUpRecord) => createTopUpTimelines()(topUp, NOW)?.failure;
+
+  it.each([
+    [
+      "Chainflip",
+      swap(),
+      "Your money didn't arrive. Chainflip sent it, but the network dropped the transfer and it hasn't come back.",
+    ],
+    [
+      "a card",
+      card(),
+      `Your money didn't arrive. ${PROVIDER} sent it, but the network dropped the transfer. Contact ${PROVIDER} with the reference below to get it back.`,
+    ],
+    [
+      "a direct deposit",
+      cryptoRecord(POLKADOT_DOT),
+      "Your transfer was dropped by the network, so the money is still in your wallet.",
+    ],
+  ])("ends a deposit that left the best chain and never came back, on %s", (_, topUp, text) => {
+    const lost = failed(topUp, { kind: "deposit-lost", message: "the deposit did not come back" });
+    expect(failureOf(lost)).toMatchObject({ text, action: CLOSE });
+  });
 
   type Row = [string, TopUpRecord, string, FailureAction, FailureDetails];
 

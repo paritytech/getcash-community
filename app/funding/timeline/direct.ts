@@ -23,6 +23,12 @@ function directFailure(record: TopUpRecord): PartFailure {
       action: { kind: "get-back", source, from: "deposit-account" },
     };
   }
+  if (record.failure?.kind === "deposit-lost") {
+    return {
+      text: "Your transfer was dropped by the network, so the money is still in your wallet.",
+      action: CLOSE,
+    };
+  }
   return { text: record.failure?.message ?? "", action: CLOSE };
 }
 

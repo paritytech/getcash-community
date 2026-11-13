@@ -293,6 +293,8 @@ export interface WorkerJobView {
   failure?: string;
   lastError?: string;
   fundsSeenAt: number | null;
+  /** When the deposit left the best chain after the worker took it, while it stays away. */
+  depositLeftAt?: number;
   lastTickAt: number | null;
   /** The time the worker really ran since the deposit was final, until it registered the claim:
    *  ticks apart by more than 30 s count as 30 s. */
@@ -435,6 +437,8 @@ export interface TopUpRecord {
           claimCredited?: string;
           psmRefusals?: number;
           fundsSeenAt: number | null;
+          /** When the deposit left the best chain, while the latest read has it away. */
+          depositLeftAt?: number;
           lastTickAt: number | null;
           /** The job's `workedMs` and its claim's, as the latest read gave them. */
           workedMs?: number;

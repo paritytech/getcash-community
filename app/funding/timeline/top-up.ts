@@ -3,6 +3,7 @@ import type { TimelineFailure } from "./failure";
 import { timelineView } from "./model";
 import { earlierFact } from "./observed";
 import {
+  depositLeftOf,
   depositOnBurner,
   polkadotFailure,
   polkadotMilestones,
@@ -62,10 +63,12 @@ function failedAt({ status }: TopUpRecord): number | undefined {
 }
 
 /** The provider's milestones, with Sent at the provider's report or the deposit on the burner,
- *  whichever came first: money on the burner shows the provider sent it. */
+ *  whichever came first: money on the burner shows the provider sent it. A deposit a fork took
+ *  back off the burner was sent all the same; a direct deposit has no other word for it. */
 function providerMilestones(record: TopUpRecord, route: TimelineRoute): ProviderMilestones {
   const milestones = route.milestones(record);
-  return { ...milestones, sent: earlierFact(milestones.sent, depositOnBurner(record)) };
+  const sent = earlierFact(milestones.sent, depositOnBurner(record)) ?? depositLeftOf(record);
+  return { ...milestones, sent };
 }
 
 /** The failure of a top-up whose `failed` milestone is red. */
@@ -89,6 +92,7 @@ export function topUpTimeline(
         : polkadotPhase(record, polkadotPhaseOf(index), {
             seenExpectedMs: route.seenExpectedMs,
             sentUnseenMs,
+            now,
           }),
     failedAt: failedAt(record),
     now,

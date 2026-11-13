@@ -35,6 +35,8 @@ const PARTS = {
 const LATE = {
   /** Phase 3: fresh reads this long in total after Sent without seeing the funds. */
   unseenMs: 5 * MINUTE,
+  /** Phase 3: the deposit left the best chain this long ago and is not back. */
+  leftMs: 60 * MINUTE,
   /** Phases 4 to 6: the worker's working time since it took the deposit, since the conversion,
    *  and since it registered the claim. */
   convertWorkedMs: 2 * MINUTE,
@@ -86,7 +88,24 @@ export function depositOnBurner(record: TopUpRecord): Fact | undefined {
   return record.depositInBlock === undefined ? undefined : {};
 }
 
+/** The deposit reached the account and a fork took it back: it was sent, and is awaited again
+ *  from when it left. */
+export function depositLeftOf(record: TopUpRecord): Fact | undefined {
+  const leftAt = workerOf(record)?.depositLeftAt;
+  return leftAt === undefined ? undefined : { at: leftAt };
+}
+
 const psmRefused = (record: TopUpRecord): boolean => (workerOf(record)?.psmRefusals ?? 0) > 0;
+
+/** The deposit left the best chain long enough ago to say so: a fork took it, and it has not come
+ *  back in the time a provider's transfer is normally sent again. */
+function leftLong(record: TopUpRecord, now: number): boolean {
+  const leftAt = workerOf(record)?.depositLeftAt;
+  return leftAt !== undefined && now - leftAt > LATE.leftMs;
+}
+
+const DEPOSIT_DROPPED =
+  "The network dropped your deposit and it hasn't come back yet. We'll keep watching and continue automatically.";
 
 /** The worker worked more than `limitMs` since `since`, both on its working-time clock. */
 function workedPast(record: TopUpRecord, since: number | undefined, limitMs: number): boolean {
@@ -101,12 +120,13 @@ export interface PolkadotPhaseContext {
   /** How long this session's reads were fresh, in total, while the funds the provider sent were
    *  not seen. */
   readonly sentUnseenMs: number;
+  readonly now: number;
 }
 
 export function polkadotPhase(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { seenExpectedMs, sentUnseenMs }: PolkadotPhaseContext,
+  { seenExpectedMs, sentUnseenMs, now }: PolkadotPhaseContext,
 ): PhaseInput {
   switch (index) {
     case 2: {
@@ -114,7 +134,7 @@ export function polkadotPhase(
       const seen = depositOnBurner(record) !== undefined;
       return {
         parts: [{ ...PARTS.seen, expectedMs: seenExpectedMs, completed: seen ? {} : undefined }],
-        delayed: !seen && sentUnseenMs > LATE.unseenMs,
+        delayed: !seen && (sentUnseenMs > LATE.unseenMs || leftLong(record, now)),
       };
     }
     case 3:
@@ -150,10 +170,13 @@ export const workerTickAt = (record: TopUpRecord): number | undefined =>
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { delayed }: TextState,
+  { delayed, now }: TextState,
 ): TimelineText {
   switch (index) {
     case 2:
+      if (depositOnBurner(record) === undefined && leftLong(record, now)) {
+        return { message: delay(DEPOSIT_DROPPED) };
+      }
       return {
         message: normal(
           depositOnBurner(record) === undefined

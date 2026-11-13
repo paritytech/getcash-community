@@ -93,6 +93,8 @@ export type FailureKind =
   | "refunded"
   | "refund-failed"
   | "expired"
+  /** The deposit reached the top-up's account, then left the best chain and did not come back. */
+  | "deposit-lost"
   /** The rail could not tell what happened. */
   | "unknown"
   | "stale";

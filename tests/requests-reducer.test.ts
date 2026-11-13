@@ -992,7 +992,8 @@ describe("request reducer: top-up timeline facts", () => {
         }),
         { depositInBlock: blocks(10, 8, 10, 13), converted },
       ],
-      // Lower finalized and best blocks and a later conversion move nothing back.
+      // Lower finalized and best blocks move nothing back. A conversion sent again after a fork
+      // replaces the first.
       [
         read(at(4), {
           ...claim(at(4), "detecting"),
@@ -1000,6 +1001,7 @@ describe("request reducer: top-up timeline facts", () => {
           conversion: { preparedAt: at(2), converted: { ...converted, txHash: "0xbb" } },
         }),
         {
+          converted: { ...converted, txHash: "0xbb" },
           claimRegisteredAt: at(4),
           observedAt: { "on-burner": at(1), "cash-on-people": at(4) },
         },
@@ -1010,5 +1012,170 @@ describe("request reducer: top-up timeline facts", () => {
       ],
       [worker(at(6), null), {}],
     ]);
+  });
+});
+
+describe("request reducer: a deposit a fork took", () => {
+  const SEEN_IN_BLOCK = { block: 105, finalizedAtSeen: 100, finalized: 100, best: 105 };
+  /** The worker took the deposit at +1, followed it into block 105 and converts it. */
+  const taken = () =>
+    reduce(
+      awaiting(),
+      worker(
+        at(2),
+        job({ phase: "swap", fundsSeenAt: at(1), lastTickAt: at(2), depositSeen: SEEN_IN_BLOCK }),
+      ),
+    );
+  /** The worker's word at `time` that the deposit it took left the best chain at `leftAt`. */
+  const left = (time: number, leftAt: number, overrides: Partial<WorkerJobView> = {}) =>
+    worker(time, job({ depositLeftAt: leftAt, lastTickAt: time, ...overrides }));
+
+  it("goes back to awaiting the deposit, its sightings dropped, when the worker says it left the best chain", () => {
+    const sighted = reduce(taken(), chain(at(2), FUNDS, "best", 105));
+    expect(sighted.status.kind).toBe("converting");
+    expect(sighted.observedAt?.["on-burner"]).toBeDefined();
+    expect(sighted.depositInBlock).toBeDefined();
+
+    const record = reduce(sighted, left(at(3), at(3)));
+    expect(record.status).toEqual({ kind: "awaiting-deposit" });
+    expect(record.observedAt?.["on-burner"]).toBeUndefined();
+    expect(record.depositInBlock).toBeUndefined();
+    expect(polkadotMilestones(record as TopUpRecord).received).toBeUndefined();
+    expect(record.witnesses.worker).toMatchObject({ fundsSeenAt: null, depositLeftAt: at(3) });
+
+    // Back in a best block: the worker takes it again.
+    const back = reduce(record, workerSwap(at(4)));
+    expect(back.status).toMatchObject({ kind: "converting", step: "swap" });
+    expect(back.witnesses.worker).not.toHaveProperty("depositLeftAt");
+  });
+
+  it("keeps a deposit the app read final on the account: no fork takes it", () => {
+    const final = reduce(taken(), chain(at(2), FUNDS, "finalized", 105));
+    const record = reduce(final, left(at(3), at(3)));
+    expect(record.status.kind).toBe("converting");
+    expect(record.observedAt?.["final-on-burner"]).toBe(at(2));
+  });
+
+  it("ends a lost deposit even when the provider counts it paid, and opens it again when the deposit lands", () => {
+    const paid = card();
+    expect(paid.status.kind).toBe("awaiting-deposit");
+    const lost = reduce(
+      reduce(paid, left(at(3), at(3))),
+      left(at(4), at(3), { phase: "failed", failure: "deposit-lost" }),
+    );
+    expect(lost.status).toEqual({ kind: "failed", at: at(4), recoverable: false });
+    expect(lost.failure).toMatchObject({ kind: "deposit-lost", step: "deposit" });
+
+    // It lands late: seen on the account, and a worker still reporting the loss does not end it
+    // again before the re-sent hand-off re-arms it.
+    const landed = reduce(lost, chain(at(5), FUNDS, "best"));
+    expect(landed.status.kind).toBe("deposit-seen");
+    expect(landed.failure).toBeUndefined();
+    const stale = reduce(landed, left(at(6), at(3), { phase: "failed", failure: "deposit-lost" }));
+    expect(stale.status.kind).toBe("deposit-seen");
+  });
+
+  it("lets no provider word bring back a deposit that left or was lost: only the account shows it back", () => {
+    const paid = reduce(card(), meld(at(1), { status: "receiving" }));
+    const gone = reduce(reduce(paid, workerSwap(at(1))), left(at(3), at(3)));
+    expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+    expect(reduce(gone, meld(at(4), { status: "receiving" })).status.kind).toBe("awaiting-deposit");
+
+    const lost = reduce(gone, left(at(5), at(3), { phase: "failed", failure: "deposit-lost" }));
+    expect(reduce(lost, meld(at(6), { status: "receiving" })).status.kind).toBe("failed");
+    // Nor once the worker's job is gone from its storage.
+    const unknown = reduce(lost, worker(at(6), null));
+    expect(reduce(unknown, meld(at(7), { status: "receiving" })).status.kind).toBe("failed");
+  });
+
+  it("goes back from the claim when the deposit left before the worker held a claim, and ends it as lost", () => {
+    const arrived = reduce(
+      taken(),
+      worker(at(4), job({ phase: "done", done: true, fundsSeenAt: at(1), lastTickAt: at(4) })),
+    );
+    expect(arrived.status.kind).toBe("claiming");
+
+    const gone = reduce(arrived, left(at(5), at(5)));
+    expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+    const lost = reduce(gone, left(at(6), at(5), { phase: "failed", failure: "deposit-lost" }));
+    expect(lost.failure).toMatchObject({ kind: "deposit-lost", step: "deposit" });
+  });
+
+  it("does not expire a request whose deposit left while the worker waits for it to come back", () => {
+    const deadline = awaitingDepositCryptoRecord.depositExpiresAt!;
+    const gone = reduce(reduce(taken(), left(at(3), at(3))), clock(deadline + 1));
+    expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+  });
+
+  it("takes Converted and the arrival back when the worker sends the conversion again in one tick", () => {
+    const first = { txHash: "0xabc", block: 106, at: at(3), workedMs: 60_000 };
+    const done = reduce(
+      taken(),
+      worker(
+        at(4),
+        job({
+          phase: "done",
+          done: true,
+          fundsSeenAt: at(1),
+          lastTickAt: at(4),
+          conversion: { preparedAt: at(2), converted: first },
+        }),
+      ),
+    );
+    expect(done.observedAt?.["cash-on-people"]).toBe(at(4));
+
+    const again = { txHash: "0xdef", block: 108, at: at(5), workedMs: 120_000 };
+    const resent = reduce(
+      done,
+      worker(
+        at(5),
+        job({
+          phase: "await-arrival",
+          fundsSeenAt: at(1),
+          lastTickAt: at(5),
+          conversion: { preparedAt: at(2), converted: again },
+        }),
+      ),
+    );
+    expect(resent.converted).toEqual(again);
+    expect(resent.observedAt?.["cash-on-people"]).toBeUndefined();
+    expect(resent.status.kind).toBe("claiming");
+  });
+
+  it("takes Converted and the arrival back when the worker takes the conversion back, and keeps the claim's status", () => {
+    const converted = { txHash: "0xabc", block: 106, at: at(3), workedMs: 60_000 };
+    const done = reduce(
+      taken(),
+      worker(
+        at(4),
+        job({
+          phase: "done",
+          done: true,
+          fundsSeenAt: at(1),
+          lastTickAt: at(4),
+          conversion: { preparedAt: at(2), converted },
+        }),
+      ),
+    );
+    expect(done.status.kind).toBe("claiming");
+    expect(done.converted).toEqual(converted);
+    expect(done.observedAt?.["cash-on-people"]).toBe(at(4));
+
+    // A fork discarded the conversion's block: the worker sends it again.
+    const replaced = reduce(
+      done,
+      worker(
+        at(5),
+        job({
+          phase: "swap",
+          fundsSeenAt: at(1),
+          lastTickAt: at(5),
+          conversion: { preparedAt: at(2) },
+        }),
+      ),
+    );
+    expect(replaced.converted).toBeUndefined();
+    expect(replaced.observedAt?.["cash-on-people"]).toBeUndefined();
+    expect(replaced.status.kind).toBe("claiming");
   });
 });

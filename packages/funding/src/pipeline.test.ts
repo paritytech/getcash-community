@@ -19,6 +19,7 @@ import {
   FundingTrappedError,
   isConverted,
   sentAmountOf,
+  DEPOSIT_GONE_AFTER_MS,
   MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   psmDepositNeeded,
@@ -1435,6 +1436,43 @@ describe("tickOnce", () => {
     expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
   });
 
+  it("takes the deposit as gone when a fork takes its block before a program went out, and as back when it returns", async () => {
+    // Seen, but the program is refused before it goes out.
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    expect(state.fundsSeenAt).toBe(2_000);
+
+    // A fork takes the block the deposit was in: the burner is empty, and nothing went out.
+    world.state.nativeAh = 0n;
+    const gone = await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(gone.steps).toEqual(["await-native"]);
+    expect(state).toMatchObject({ fundsSeenAt: null, depositLeftAt: 5_000 });
+
+    // Still gone later: the time it first left stands.
+    await drive(world, 1, state, POOL, undefined, { now: () => 9_000 });
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // Back in a best block: seen again, and no longer gone.
+    world.state.nativeAh = ASK + KEEP;
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    expect(state).toMatchObject({ fundsSeenAt: 2_000, depositLeftAt: null });
+    expect(world.state.txs).toEqual([]);
+  });
+
+  it("does not take a deposit left short as gone: only an empty burner is a deposit that left", async () => {
+    const world = scriptedWorld({ rejectSubmits: 1 });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/dispatch rejected/);
+    // The rejection took its fee and the pool moved: what is left is short of the program.
+    world.state.priceBps = 10_300n;
+    const short = await drive(world, 2, state);
+    expect(short.steps).toEqual(["await-native", "await-native"]);
+    expect(state).toMatchObject({ fundsSeenAt: 2_000, depositLeftAt: null });
+  });
+
   it("names the failed instruction on a rejection, keeps the deposit native, and retries with fresh estimates", async () => {
     // The runtime refuses the send. The program rolls back whole and the account is only the
     // dispatch fee lighter, so a deposit asked with headroom still clears the gate next tick.
@@ -2367,6 +2405,67 @@ describe("the submit, and the arrival on People", () => {
     const again = await drive(world, 3, state);
     expect(again.steps).toEqual(["swap", "done"]);
     expect(again.txs).toEqual(["swap", "swap"]);
+  });
+
+  it("takes the deposit as gone once the program's block was replaced and the burner stays empty with nothing on People, and as back when it returns", async () => {
+    const world = funded({ quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const deposit = world.state.nativeAh;
+    world.state.unfinalCredit = deposit;
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "done"]);
+
+    // The fork took the deposit with the program. Found replaced, the run first waits for the
+    // program's CASH on People, as a program put back into a later block would show it.
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const at = (now: number) => ({ now: () => now });
+    const found = await drive(world, 1, state, POOL, undefined, at(100_000));
+    expect(found.steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ replacedAt: 100_000, depositLeftAt: null });
+    expect(state.fundsSeenAt).not.toBeNull();
+
+    // Still nothing on People and the burner still empty a minute on: the deposit is gone, and
+    // the program never ran.
+    const gone = await drive(world, 1, state, POOL, undefined, at(100_000 + DEPOSIT_GONE_AFTER_MS));
+    expect(gone.steps).toEqual(["await-native"]);
+    expect(state).toMatchObject({
+      fundsSeenAt: null,
+      depositLeftAt: 100_000 + DEPOSIT_GONE_AFTER_MS,
+      replacedAt: null,
+      xcmSubmitted: false,
+      nonceAtSubmit: null,
+      inclusionBlock: null,
+    });
+    expect(gone.txs).toEqual(["swap"]);
+
+    // The transfer is back: seen again, no longer gone, and converted.
+    world.state.nativeAh = deposit;
+    world.state.unfinalCredit = deposit;
+    const back = await drive(world, 3, state);
+    expect(back.steps).toEqual(["swap", "done"]);
+    expect(back.txs).toEqual(["swap", "swap"]);
+    expect(state.depositLeftAt).toBeNull();
+  });
+
+  it("leaves a replaced program to the host once a claim is registered, however long People shows nothing", async () => {
+    const world = funded({ quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    world.state.unfinalCredit = world.state.nativeAh;
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "done"]);
+
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const claimed = (now: number) => ({ now: () => now, claimRegistered: true });
+    await drive(world, 1, state, POOL, undefined, claimed(100_000));
+    await drive(world, 1, state, POOL, undefined, claimed(100_000 + DEPOSIT_GONE_AFTER_MS));
+    expect(state).toMatchObject({ depositLeftAt: null, replacedAt: null });
+    expect(state.fundsSeenAt).not.toBeNull();
   });
 
   it("does not take a conversion as run on an arrival a fork took with it, and converts the deposit once it is back", async () => {
