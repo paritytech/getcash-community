@@ -39,40 +39,10 @@ describe("lib/supported", () => {
     vi.unstubAllEnvs();
   });
 
-  it("methodFor returns the first method of the chosen category, or null", async () => {
-    const { methodFor } = await import("../lib/supported");
-    const corridor: SupportedCorridor = {
-      country: "US",
-      fiat: "USD",
-      methods: [
-        {
-          paymentMethodType: "CREDIT_DEBIT_CARD",
-          category: "card",
-          min: "5",
-          max: "3000",
-          currency: "USD",
-          providers: ["TRANSAK"],
-        },
-        {
-          paymentMethodType: "ACH",
-          category: "bank",
-          min: "10",
-          max: "1000",
-          currency: "USD",
-          providers: ["GUARDARIAN"],
-        },
-      ],
-    };
-    expect(methodFor(corridor, "card")?.paymentMethodType).toBe("CREDIT_DEBIT_CARD");
-    expect(methodFor(corridor, "bank")?.paymentMethodType).toBe("ACH");
-    expect(methodFor({ country: "X", fiat: "Y", methods: [] }, "card")).toBeNull();
-    expect(methodFor(null, "card")).toBeNull();
-  });
-
-  it("isMethodDown says whether the corridor's method has every provider failing", async () => {
-    const { isMethodDown } = await import("../lib/supported");
-    const method = (category: "card" | "bank", down = false) => ({
-      paymentMethodType: category,
+  it("methodsFor lists the category's methods the corridor can take now, in its order", async () => {
+    const { methodsFor } = await import("../lib/supported");
+    const method = (paymentMethodType: string, category: "card" | "bank", down = false) => ({
+      paymentMethodType,
       category,
       min: "5",
       max: "3000",
@@ -80,14 +50,50 @@ describe("lib/supported", () => {
       providers: [],
       ...(down ? { temporarilyUnavailable: true as const } : {}),
     });
-    const corridor = {
+    const corridor: SupportedCorridor = {
       country: "DE",
       fiat: "EUR",
-      methods: [method("card"), method("bank", true)],
+      methods: [
+        method("SEPA_INSTANT", "bank", true),
+        method("CREDIT_DEBIT_CARD", "card"),
+        method("SEPA", "bank"),
+        method("IDEAL", "bank"),
+      ],
     };
-    expect(isMethodDown(corridor, "bank")).toBe(true);
-    expect(isMethodDown(corridor, "card")).toBe(false);
-    expect(isMethodDown(null, "card")).toBe(false);
+    expect(methodsFor(corridor, "bank").map((m) => m.paymentMethodType)).toEqual(["SEPA", "IDEAL"]);
+    expect(methodsFor(corridor, "card").map((m) => m.paymentMethodType)).toEqual([
+      "CREDIT_DEBIT_CARD",
+    ]);
+    expect(methodsFor(null, "card")).toEqual([]);
+  });
+
+  it("isMethodDown and methodMinimum judge the whole category, not its first method", async () => {
+    const { isMethodDown, methodMinimum } = await import("../lib/supported");
+    const bank = (min: string, down = false) => ({
+      paymentMethodType: `BANK_${min}`,
+      category: "bank" as const,
+      min,
+      max: "3000",
+      currency: "EUR",
+      providers: [],
+      ...(down ? { temporarilyUnavailable: true as const } : {}),
+    });
+    const corridor = (...methods: ReturnType<typeof bank>[]) => ({
+      country: "DE",
+      fiat: "EUR",
+      methods,
+    });
+
+    const firstDown = corridor(bank("1", true), bank("20"), bank("10"));
+    expect(isMethodDown(firstDown, "bank")).toBe(false);
+    expect(methodMinimum(firstDown, "bank")).toEqual({ amount: "10", fiat: "EUR" });
+
+    const allDown = corridor(bank("1", true), bank("20", true));
+    expect(isMethodDown(allDown, "bank")).toBe(true);
+    expect(methodMinimum(allDown, "bank")).toBeNull();
+
+    expect(isMethodDown(firstDown, "card")).toBe(false);
+    expect(isMethodDown(null, "bank")).toBe(false);
   });
 
   it("asks for a destination under the code the adapter's table names it by", async () => {

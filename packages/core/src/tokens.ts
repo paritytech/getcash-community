@@ -126,5 +126,9 @@ export const TOKENS = {
     decimals: 6,
     assetHubId: 1337,
     location: assetHubLocal(1337),
+    meldAsset: "usdc@assethub",
+    get meldCurrencyCode(): string {
+      return meldCodeOf("usdc@assethub");
+    },
   },
 } satisfies TokenTable;
