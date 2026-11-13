@@ -65,6 +65,8 @@ async function main() {
   const factoryAddress = await factory.getAddress();
   const implementationAddress = await factory.IMPLEMENTATION();
   const impl = await ethers.getContractAt("SaleVaultProxy", implementationAddress);
+  const quarantineAddress = await factory.QUARANTINE();
+  const quarantine = await ethers.getContractAt("QuarantineTreasury", quarantineAddress);
 
   const checks: [string, unknown, unknown][] = [
     ["VAULT", await factory.VAULT(), ethers.getAddress(net.vault)],
@@ -72,6 +74,10 @@ async function main() {
     ["TREASURY", await factory.TREASURY(), config.treasury],
     ["GUARDIAN", await factory.GUARDIAN(), guardian],
     ["PAUSER", await factory.PAUSER(), pauser],
+    // Recovers quarantined USDC, the deployer for now, a guardian TODO in the contract
+    ["RECOVERER", await factory.RECOVERER(), deployer.address],
+    ["quarantine USDC", await quarantine.USDC(), ethers.getAddress(net.usdc)],
+    ["quarantine FACTORY", await quarantine.FACTORY(), factoryAddress],
     ["retired", await factory.retired(), false],
     ["returnsPaused", await factory.returnsPaused(), false],
     ["pausedAt", await factory.pausedAt(), 0n],
@@ -106,6 +112,7 @@ async function main() {
   console.info(`chainId ${net.chainId}`);
   console.info(`SaleVaultProxyFactory ${factoryAddress}`);
   console.info(`SaleVaultProxy implementation ${implementationAddress}`);
+  console.info(`QuarantineTreasury ${quarantineAddress}`);
   console.info(
     `\nAdapter sale_vault_proxy fields, add rpc_url and the keeper_key of ${pauser} yourself:`,
   );
@@ -118,6 +125,7 @@ async function main() {
   const targets: [string, unknown[]][] = [
     [factoryAddress, [config]],
     [implementationAddress, [factoryAddress, config]],
+    [quarantineAddress, [ethers.getAddress(net.usdc), factoryAddress]],
   ];
   for (const [address, constructorArguments] of targets) {
     try {

@@ -247,9 +247,13 @@ describe("SaleVaultProxyFactory", () => {
           .withArgs(await s.usdc.getAddress(), 100n, reason("claimer"));
       }
       expect(await s.factory.totalPending()).to.equal(0n);
-      expect(await s.usdc.balanceOf(await s.factory.getAddress())).to.equal(600n);
-      await s.factory.skim();
-      expect(await s.usdc.balanceOf(s.treasury.address)).to.equal(600n);
+      // The six bad USDC deliveries sit in the quarantine treasury, apart from the dust a skim moves
+      expect(await s.factory.quarantineCount()).to.equal(6n);
+      expect(await s.factory.totalQuarantined()).to.equal(0n);
+      expect(await s.quarantine.total()).to.equal(600n);
+      expect(await s.usdc.balanceOf(await s.quarantine.getAddress())).to.equal(600n);
+      expect(await s.usdc.balanceOf(await s.factory.getAddress())).to.equal(0n);
+      await expect(s.factory.skim()).to.be.revertedWithCustomError(s.factory, "NothingToSkim");
     });
 
     it("deploys a fresh home's proxy and the proxy pays the recipient", async () => {
@@ -748,6 +752,142 @@ describe("SaleVaultProxyFactory", () => {
       expect(await ethers.provider.getBalance(s.treasury.address)).to.equal(
         before + ethers.parseEther("1"),
       );
+    });
+  });
+
+  describe("quarantine", () => {
+    const badMsg = "0xdeadbeef";
+
+    it("pushes a bad message's USDC to the treasury under a rising id, never skimmable", async () => {
+      const s = await loadFixture(deploySystem);
+      const tag = ethers.keccak256(badMsg);
+      await expect(deliver(s, badMsg, 100n))
+        .to.emit(s.factory, "Quarantined")
+        .withArgs(0n, 100n, reason("message"), ethers.ZeroHash, tag);
+      expect(await s.factory.quarantineCount()).to.equal(1n);
+      // Money and record live in the treasury, the factory fallback stays empty
+      expect(await s.factory.totalQuarantined()).to.equal(0n);
+      expect(await s.quarantine.total()).to.equal(100n);
+      expect(await s.usdc.balanceOf(await s.quarantine.getAddress())).to.equal(100n);
+      const held = await s.quarantine.held(0n);
+      expect(held.amount).to.equal(100n);
+      expect(held.reason).to.equal(reason("message"));
+      expect(held.ref).to.equal(ethers.ZeroHash);
+      expect(held.tag).to.equal(tag);
+      await expect(s.factory.skim()).to.be.revertedWithCustomError(s.factory, "NothingToSkim");
+    });
+
+    it("tags a bad home or claimer with the sale's ref so the recoverer can place it", async () => {
+      const s = await loadFixture(deploySystem);
+      const zeroHome = encodeMessage(refOf("z"), s.recipient.address, 100n, ethers.ZeroHash);
+      await expect(deliver(s, zeroHome, 100n))
+        .to.emit(s.factory, "Quarantined")
+        .withArgs(0n, 100n, reason("home"), refOf("z"), ethers.keccak256(zeroHome));
+      expect((await s.quarantine.held(0n)).ref).to.equal(refOf("z"));
+      const zeroClaimer = encodeMessage(
+        refOf("c"),
+        s.recipient.address,
+        100n,
+        homeOf("c"),
+        FAR_DEADLINE,
+        ethers.ZeroAddress,
+      );
+      await expect(deliver(s, zeroClaimer, 100n))
+        .to.emit(s.factory, "Quarantined")
+        .withArgs(1n, 100n, reason("claimer"), refOf("c"), ethers.keccak256(zeroClaimer));
+      const byClaimer = await s.quarantine.held(1n);
+      expect(byClaimer.ref).to.equal(refOf("c"));
+      expect(byClaimer.reason).to.equal(reason("claimer"));
+    });
+
+    it("skims only free dust and leaves the quarantine whole and recoverable", async () => {
+      const s = await loadFixture(deploySystem);
+      await deliver(s, badMsg, 100n);
+      // Loose USDC with no sale, the dust the quarantine must never mix with
+      await s.usdc.mint(await s.factory.getAddress(), 70n);
+      await expect(s.factory.skim())
+        .to.emit(s.factory, "Skimmed")
+        .withArgs(await s.usdc.getAddress(), s.treasury.address, 70n);
+      expect(await s.quarantine.total()).to.equal(100n);
+      expect((await s.quarantine.held(0n)).amount).to.equal(100n);
+      await s.factory.connect(s.deployer).recoverQuarantined(0n, s.recipient.address);
+      expect(await s.usdc.balanceOf(s.recipient.address)).to.equal(100n);
+    });
+
+    it("gives each bad delivery its own id, never merging them", async () => {
+      const s = await loadFixture(deploySystem);
+      await deliver(s, badMsg, 100n);
+      await deliver(s, badMsg, 40n);
+      expect(await s.factory.quarantineCount()).to.equal(2n);
+      expect((await s.quarantine.held(0n)).amount).to.equal(100n);
+      expect((await s.quarantine.held(1n)).amount).to.equal(40n);
+      expect(await s.quarantine.total()).to.equal(140n);
+    });
+
+    it("lets only the deployer recover one by id to a chosen address, keeping the record", async () => {
+      const s = await loadFixture(deploySystem);
+      await deliver(s, badMsg, 100n);
+      await expect(
+        s.factory.connect(s.stranger).recoverQuarantined(0n, s.recipient.address),
+      ).to.be.revertedWithCustomError(s.factory, "NotRecoverer");
+      // Even the guardian cannot recover, only the deployer can for now
+      await expect(
+        s.factory.connect(s.guardian).recoverQuarantined(0n, s.recipient.address),
+      ).to.be.revertedWithCustomError(s.factory, "NotRecoverer");
+      await expect(
+        s.factory.connect(s.deployer).recoverQuarantined(0n, ethers.ZeroAddress),
+      ).to.be.revertedWithCustomError(s.factory, "ZeroAddress");
+      await expect(s.factory.connect(s.deployer).recoverQuarantined(0n, s.recipient.address))
+        .to.emit(s.factory, "QuarantineRecovered")
+        .withArgs(0n, s.recipient.address, 100n);
+      expect(await s.usdc.balanceOf(s.recipient.address)).to.equal(100n);
+      expect(await s.quarantine.total()).to.equal(0n);
+      const held = await s.quarantine.held(0n);
+      expect(held.amount).to.equal(0n);
+      // The reason and tag stay as a record after recovery
+      expect(held.reason).to.equal(reason("message"));
+      expect(held.tag).to.equal(ethers.keccak256(badMsg));
+      await expect(
+        s.factory.connect(s.deployer).recoverQuarantined(0n, s.recipient.address),
+      ).to.be.revertedWithCustomError(s.factory, "NothingToRecover");
+    });
+
+    it("holds a bad delivery in the factory when the treasury push fails, recoverable there", async () => {
+      const s = await loadFixture(deploySystem);
+      // Block the treasury so the factory's push reverts and the funds stay in the factory
+      await s.usdc.setBlocked(await s.quarantine.getAddress(), true);
+      await expect(deliver(s, badMsg, 100n))
+        .to.emit(s.factory, "Quarantined")
+        .withArgs(0n, 100n, reason("message"), ethers.ZeroHash, ethers.keccak256(badMsg));
+      // The push failed, so the factory holds it in its fallback, not the treasury
+      expect(await s.factory.totalQuarantined()).to.equal(100n);
+      expect((await s.factory.quarantined(0n)).amount).to.equal(100n);
+      expect(await s.quarantine.total()).to.equal(0n);
+      expect(await s.usdc.balanceOf(await s.factory.getAddress())).to.equal(100n);
+      // A skim still cannot take it
+      await expect(s.factory.skim()).to.be.revertedWithCustomError(s.factory, "NothingToSkim");
+      // The recoverer gets it out, now from the factory fallback
+      await s.usdc.setBlocked(await s.quarantine.getAddress(), false);
+      await expect(s.factory.connect(s.deployer).recoverQuarantined(0n, s.recipient.address))
+        .to.emit(s.factory, "QuarantineRecovered")
+        .withArgs(0n, s.recipient.address, 100n);
+      expect(await s.usdc.balanceOf(s.recipient.address)).to.equal(100n);
+      expect(await s.factory.totalQuarantined()).to.equal(0n);
+    });
+
+    it("never quarantines a well-formed delivery", async () => {
+      const s = await loadFixture(deploySystem);
+      const msg = encodeMessage(refOf("ok"), s.recipient.address, 50_000_000n, homeOf("ok"));
+      await deliver(s, msg, 50_300_000n);
+      expect(await s.quarantine.total()).to.equal(0n);
+      expect(await s.factory.quarantineCount()).to.equal(0n);
+    });
+
+    it("reverts recovering an id that was never quarantined", async () => {
+      const s = await loadFixture(deploySystem);
+      await expect(
+        s.factory.connect(s.deployer).recoverQuarantined(7n, s.recipient.address),
+      ).to.be.revertedWithCustomError(s.factory, "NothingToRecover");
     });
   });
 
