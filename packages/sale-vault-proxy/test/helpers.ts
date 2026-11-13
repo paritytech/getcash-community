@@ -157,9 +157,11 @@ export async function deploySystem(overrides: Partial<SaleVaultProxyNetwork> = {
     "SaleVaultProxy",
     await factory.IMPLEMENTATION(),
   );
+  const quarantine = await ethers.getContractAt("QuarantineTreasury", await factory.QUARANTINE());
   return {
     factory,
     implementation,
+    quarantine,
     usdc,
     vault,
     net,

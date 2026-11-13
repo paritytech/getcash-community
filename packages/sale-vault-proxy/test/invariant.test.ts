@@ -151,7 +151,16 @@ describe("invariants (property)", () => {
           const paidTerms = new Map<string, number>();
           // Every deferred entry this run, so deliver and expire mostly hit a real one
           const deferred = new Map<string, Terms>();
-          const known = [factory, vault, s.treasury.address, ...proxies, ...PAYEES, ...CLAIMERS];
+          const quarantine = await s.factory.QUARANTINE();
+          const known = [
+            factory,
+            vault,
+            quarantine,
+            s.treasury.address,
+            ...proxies,
+            ...PAYEES,
+            ...CLAIMERS,
+          ];
 
           for (const o of ops) {
             const i = o.home * 2 + o.claimer;
@@ -259,7 +268,10 @@ describe("invariants (property)", () => {
             for (const [h, cl] of pairs) sum += await s.factory.pending(h, cl);
             for (const t of deferred.values()) sum += await s.factory.pendingDelivery(...t);
             expect(await s.factory.totalPending()).to.equal(sum);
-            expect((await s.usdc.balanceOf(factory)) >= sum).to.equal(true);
+            // The factory's USDC always covers its pending book and its quarantine reserve
+            expect(
+              (await s.usdc.balanceOf(factory)) >= sum + (await s.factory.totalQuarantined()),
+            ).to.equal(true);
             // While returns are paused every proxy balance has a release time
             if (await s.factory.returnsPaused()) {
               for (const address of proxies) {

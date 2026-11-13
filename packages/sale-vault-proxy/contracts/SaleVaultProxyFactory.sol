@@ -10,6 +10,7 @@ import {IChainflipVault} from "./interfaces/IChainflipVault.sol";
 import {ISaleVaultProxy} from "./interfaces/ISaleVaultProxy.sol";
 import {CfParameters} from "./libraries/CfParameters.sol";
 import {MAX_BACKOFF_SHIFT, SaleVaultProxy} from "./SaleVaultProxy.sol";
+import {QuarantineTreasury} from "./QuarantineTreasury.sol";
 
 /// @title SaleVaultProxyFactory, the CCM target that deploys and funds one SaleVaultProxy per home and claimer
 contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
@@ -42,11 +43,19 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         uint256 staleDelay;
     }
 
+    /// A delivery no sale could claim, held in the factory only when the treasury push fails.
+    struct Quarantine {
+        uint256 amount; // USDC held, 0 once recovered
+        bytes32 reason; // why unattributable: "message", "home" or "claimer"
+        bytes32 ref; // the sale's fundingRequestId when the message decoded, else 0
+        bytes32 tag; // keccak256(message), the delivery's fingerprint for off-chain match
+    }
+
     /// The Chainflip Vault, the only address allowed to call `cfReceive`.
     IChainflipVault public immutable VAULT;
     /// The only token a sale is paid in.
     IERC20 public immutable USDC;
-    /// Where unattributable deliveries, foreign tokens and native ETH end up.
+    /// Where foreign tokens, native ETH and skimmed USDC end up.
     address public immutable TREASURY;
     /// The only caller of retire and unpauseReturns.
     address public immutable GUARDIAN;
@@ -54,6 +63,11 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
     address public immutable PAUSER;
     /// The SaleVaultProxy every proxy delegates to.
     address public immutable IMPLEMENTATION;
+    /// Holds quarantined USDC apart from skimmed dust, deployed and funded by this factory.
+    QuarantineTreasury public immutable QUARANTINE;
+    /// Recovers quarantined USDC, the deployer for now.
+    // TODO(guardian): gate recovery on GUARDIAN once the guardian key is provisioned, then drop RECOVERER
+    address public immutable RECOVERER;
 
     /// Least gas left at the check for a delivery to deploy and pay, measured on real USDC in the fork test.
     uint256 public constant DELIVERY_GAS = 225_000;
@@ -83,6 +97,12 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
     mapping(bytes32 => uint256) private _pending;
     // USDC of deliveries cut short of gas, by keccak256(home, claimer, ref, recipient, committed, deadline)
     mapping(bytes32 => uint256) private _deferred;
+    /// A failed treasury push's USDC, by rising id, held here and never skimmed, the rare fallback.
+    mapping(uint256 => Quarantine) public quarantined;
+    /// Count of quarantined deliveries ever booked, the next entry's id, shared with the treasury.
+    uint256 public quarantineCount;
+    /// Sum of every amount still held in the fallback, never skimmed, zero while every push succeeds.
+    uint256 public totalQuarantined;
 
     event ProxyDeployed(bytes32 indexed home, address indexed claimer, address indexed proxy);
     event Delivered(
@@ -128,6 +148,8 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
     );
     event PendingFlushed(bytes32 indexed home, address indexed claimer, address indexed to, uint256 amount);
     event Unattributed(address indexed token, uint256 amount, bytes32 reason);
+    event Quarantined(uint256 indexed id, uint256 amount, bytes32 reason, bytes32 ref, bytes32 tag);
+    event QuarantineRecovered(uint256 indexed id, address indexed to, uint256 amount);
     event Skimmed(address indexed token, address indexed to, uint256 amount);
     event Retired();
     event ReturnsPaused(address by);
@@ -135,6 +157,7 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
 
     error NotVault();
     error NotGuardian();
+    error NotRecoverer();
     error AlreadyRetired();
     error NotPauser();
     error AlreadyPaused();
@@ -145,6 +168,7 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
     error NothingPending();
     error NotEnoughGas();
     error NothingToSkim();
+    error NothingToRecover();
     error CannotSkimUSDC();
     error TransferFailed();
     error DeployFailed();
@@ -185,6 +209,10 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         GUARDIAN = c.guardian;
         PAUSER = c.pauser;
         IMPLEMENTATION = _newImplementation(c);
+        QUARANTINE = new QuarantineTreasury(USDC, address(this));
+        // Lets the treasury pull a bad delivery's USDC on each quarantine push
+        USDC.forceApprove(address(QUARANTINE), type(uint256).max);
+        RECOVERER = msg.sender;
     }
 
     /// The proxy address for a home and claimer, deployed or not, a zero claimer is refused.
@@ -241,13 +269,14 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         // The only allowed revert
         if (msg.sender != address(VAULT)) revert NotVault();
 
+        // A foreign token is nobody's sale, so it waits for skimToken to the treasury, not quarantine
         if (token != address(USDC)) {
             emit Unattributed(token, amount, "token");
             return;
         }
         // Six words: ref, recipient, committed, home, deadline, claimer
         if (message.length != 192) {
-            emit Unattributed(token, amount, "message");
+            _quarantine(message, amount, "message", bytes32(0));
             return;
         }
         bytes32 ref = bytes32(message[0:32]);
@@ -258,12 +287,12 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         uint256 deadline = uint256(bytes32(message[128:160]));
         uint256 claimerWord = uint256(bytes32(message[160:192]));
         if (home == bytes32(0)) {
-            emit Unattributed(token, amount, "home");
+            _quarantine(message, amount, "home", ref);
             return;
         }
         // The claimer is part of the proxy address, so it is never masked
         if (claimerWord == 0 || claimerWord > type(uint160).max) {
-            emit Unattributed(token, amount, "claimer");
+            _quarantine(message, amount, "claimer", ref);
             return;
         }
         address claimer = address(uint160(claimerWord));
@@ -345,9 +374,9 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         emit PendingFlushed(home, claimer, to, amount);
     }
 
-    /// @notice Send USDC not owed to any home to the treasury.
+    /// @notice Send USDC owed to no home and held in no quarantine to the treasury.
     function skim() external nonReentrant {
-        uint256 free = USDC.balanceOf(address(this)) - totalPending;
+        uint256 free = USDC.balanceOf(address(this)) - totalPending - totalQuarantined;
         if (free == 0) revert NothingToSkim();
         USDC.safeTransfer(TREASURY, free);
         emit Skimmed(address(USDC), TREASURY, free);
@@ -367,6 +396,27 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         (bool ok, ) = TREASURY.call{value: amount}("");
         if (!ok) revert TransferFailed();
         emit Skimmed(address(0), TREASURY, amount);
+    }
+
+    /// @notice Send a quarantined delivery's USDC where the recoverer decides, from the treasury or the fallback.
+    // TODO(guardian): gate on GUARDIAN once the guardian key is provisioned, the deployer holds this for now
+    function recoverQuarantined(uint256 id, address to) external nonReentrant {
+        if (msg.sender != RECOVERER) revert NotRecoverer();
+        if (to == address(0)) revert ZeroAddress();
+        // A failed push left this id in the factory's fallback, pay it from here
+        uint256 local = quarantined[id].amount;
+        if (local != 0) {
+            // Keeps the reason, ref and tag as a record, only the amount clears
+            quarantined[id].amount = 0;
+            totalQuarantined -= local;
+            USDC.safeTransfer(to, local);
+            emit QuarantineRecovered(id, to, local);
+            return;
+        }
+        // The usual case, the USDC sits in the quarantine treasury
+        uint256 moved = QUARANTINE.recover(id, to);
+        if (moved == 0) revert NothingToRecover();
+        emit QuarantineRecovered(id, to, moved);
     }
 
     // Creates the implementation every proxy delegates to, virtual only so a test can swap it
@@ -444,6 +494,27 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
             totalPending += amount;
         }
         emit DeliveryPending(home, claimer, ref, amount, reason);
+    }
+
+    // Pushes a bad delivery's USDC to the quarantine treasury under a rising id, so cfReceive cannot revert
+    function _quarantine(bytes calldata message, uint256 amount, bytes32 reason, bytes32 ref) private {
+        uint256 id = quarantineCount;
+        unchecked {
+            quarantineCount = id + 1;
+        }
+        bytes32 tag = keccak256(message);
+        // The same try/catch a delivery uses, so a failed push holds the funds here instead of stranding them
+        // solhint-disable-next-line no-empty-blocks
+        try QUARANTINE.quarantine(id, amount, reason, ref, tag) {
+            // The USDC and its record now sit in the quarantine treasury
+        } catch {
+            quarantined[id] = Quarantine({amount: amount, reason: reason, ref: ref, tag: tag});
+            unchecked {
+                totalQuarantined += amount;
+            }
+        }
+        emit Unattributed(address(USDC), amount, reason);
+        emit Quarantined(id, amount, reason, ref, tag);
     }
 
     // A pending credit's key, so a credit only ever reaches its own claimer
