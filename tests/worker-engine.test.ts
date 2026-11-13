@@ -113,6 +113,7 @@ vi.mock("polkadot-api", async (importOriginal) => ({
 const SEED = new Uint8Array(32).fill(9);
 const BURNER = deriveKeypair(SEED);
 const SETTLE = 20_000_000n;
+const HOUR = 3_600_000;
 
 const HANDOFF = {
   sessionId: "s-1",
@@ -703,6 +704,121 @@ describe("worker funding engine", () => {
     };
     expect(storedJob().conversion).toEqual(conversion);
     expect((await sessionStatus(engine)).conversion).toEqual(conversion);
+  });
+
+  it("takes back the deposit's sighting, the conversion and the run's clock when the deposit left the best chain", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    // The deposit in a best block, and the conversion of it in the next.
+    mocks.tip = { best: 105, finalized: 100 };
+    mocks.readDeposit.mockResolvedValue(5n);
+    const preparedAt = Date.now();
+    mocks.tickOnce.mockImplementationOnce(async (input, state) => {
+      state.fundsSeenAt = Date.now();
+      input.onConversion({ type: "prepared" });
+      input.onConversion({ type: "converted", txHash: SWAP_TX, block: 106 });
+      state.xcmSubmitted = true;
+      return outcome("await-arrival");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().depositSeen).toMatchObject({ block: 105 });
+    expect(storedJob().conversion.converted).toMatchObject({ block: 106 });
+
+    // A fork took the deposit with the conversion: the pipeline waits for the deposit again.
+    vi.advanceTimersByTime(20_000);
+    mocks.tip = { best: 107, finalized: 101 };
+    mocks.readDeposit.mockResolvedValue(0n);
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.xcmSubmitted = false;
+      state.fundsSeenAt = null;
+      state.depositLeftAt = Date.now();
+      return outcome("await-native");
+    });
+    await engine.tickAllFunding();
+    const leftAt = preparedAt + 20_000;
+    expect(storedJob()).toMatchObject({
+      phase: "await-native",
+      done: false,
+      conversion: { preparedAt },
+      state: { depositLeftAt: leftAt, fundsSeenAt: null, workedMs: 0 },
+    });
+    expect(storedJob().depositSeen).toBeUndefined();
+    expect(storedJob().conversion.converted).toBeUndefined();
+    expect((await sessionStatus(engine)).depositLeftAt).toBe(leftAt);
+  });
+
+  it("waits a day for a deposit that left the best chain from when it left, past the deposit window, then fails it as lost", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      return outcome("swap");
+    });
+    await engine.tickAllFunding();
+
+    // Late in the deposit window, the deposit leaves the best chain.
+    vi.advanceTimersByTime(23 * HOUR);
+    const leftAt = Date.now();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = null;
+      state.depositLeftAt = leftAt;
+      return outcome("await-native");
+    });
+    await engine.tickAllFunding();
+    mocks.tickOnce.mockResolvedValue(outcome("await-native"));
+
+    // Past the deposit window it is still waited for: it did arrive within it.
+    vi.advanceTimersByTime(2 * HOUR);
+    await engine.tickAllFunding();
+    expect(storedJob().phase).toBe("await-native");
+
+    // A day after it left, it is lost.
+    vi.advanceTimersByTime(22 * HOUR + 1);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "deposit-lost" });
+
+    // A late landing re-opens it through the hand-off: the deposit is waited for a day afresh,
+    // and the page still reads when it left.
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    expect(storedJob().state.depositLeftAt).toBe(leftAt);
+    vi.advanceTimersByTime(23 * HOUR);
+    await engine.tickAllFunding();
+    expect(storedJob().phase).toBe("await-native");
+    vi.advanceTimersByTime(HOUR + 1);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "deposit-lost" });
+  });
+
+  it("takes the conversion back with the done when the tick that found its block discarded fails", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    mocks.tickOnce.mockImplementationOnce(async (input, state) => {
+      state.fundsSeenAt = Date.now();
+      input.onConversion({ type: "prepared" });
+      input.onConversion({ type: "converted", txHash: SWAP_TX, block: 42 });
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().conversion.converted).toMatchObject({ block: 42 });
+
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.xcmSubmitted = false;
+      throw new Error("People read failed");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().done).toBe(false);
+    expect(storedJob().conversion.converted).toBeUndefined();
+    expect(storedJob().conversion.preparedAt).toBeDefined();
   });
 
   it("reads People at the block the tick asks for, and sizes every claim attempt at the best block", async () => {

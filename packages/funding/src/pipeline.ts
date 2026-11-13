@@ -41,9 +41,12 @@
 //
 // THE SUBMIT WAITS FOR INCLUSION; THE ARRIVAL IS READ AT PEOPLE'S BEST BLOCK. The submit
 // resolves once the program is in a best block with its outcome, so a conversion holds the tick
-// for one inclusion at most. The deposit is read at Asset Hub's finalized block. The run is done,
-// and the claim registered, as soon as People's best block holds the target. A shortfall ends
-// the run, so it is confirmed at People's finalized block. A submit whose answer was lost is
+// for one inclusion at most. The deposit is read at Asset Hub's best block, whoever sent it. A
+// conversion built on it sits in a later block of the same chain, so a fork that takes the
+// deposit takes the conversion too, and the deposit is read again before anything goes out; a
+// transfer a fork drops lands again, from the transaction pool or the sender's own retry. The run
+// is done, and the claim registered, as soon as People's best block holds the target. A shortfall
+// ends the run, so it is confirmed at People's finalized block. A submit whose answer was lost is
 // settled from the chain: the nonce unmoved means nothing landed and the same nonce may go out
 // again. A best block can be replaced, so the block the program landed in is kept, with its
 // hash, through done, until the chain is final past it: the finalized chain holding another
@@ -230,6 +233,11 @@ export class FundingTrappedError extends Error {
 
 /** Paid rejections in a row with the same answer before the run is held. */
 export const MAX_PROGRAM_REJECTIONS = 3;
+
+/** How long after the program's block was found replaced an empty burner, with nothing on
+ *  People, is taken as the deposit gone with it. A program the chain put back into a later block
+ *  shows its CASH on People well within this. */
+export const DEPOSIT_GONE_AFTER_MS = 60_000;
 
 /** Terminal: the chain would not take the conversion. The run stops and the deposit stays on the
  *  burner, recoverable through its secret; it is not sent through the pool instead.
@@ -488,6 +496,14 @@ export interface TickState {
   peopleAtXcm: bigint;
   /** When the first tick saw funds (ms); null while the deposit is still awaited. */
   fundsSeenAt: number | null;
+  /** When the deposit left the best chain after it was seen (ms): a fork took its block, with
+   *  the conversion's when one went out. The run waits for it again; null once it is back, and
+   *  while it never left. */
+  depositLeftAt: number | null;
+  /** When the program's block was first found replaced, while the burner has stayed empty and
+   *  nothing has shown on People since (ms). Past DEPOSIT_GONE_AFTER_MS the deposit is taken as
+   *  gone with it. Null otherwise. */
+  replacedAt: number | null;
   /** The burner's nonce at the latest block before the last submit, kept until the chain's final
    *  word on it: with `xcmSubmitted` unset the answer is owed and a tick settles from the chain
    *  what became of the submit; set, the conversion's block going final lets it go. */
@@ -495,8 +511,8 @@ export interface TickState {
   /** The block the program was seen in and its hash, kept until the chain is final past it: the
    *  finalized chain holding that hash at that height makes the conversion final, another hash
    *  means the block was replaced. A lost answer settled as landed names the latest block with
-   *  no hash; once the chain is final past it, the burner's finalized nonce and deposit say
-   *  whether the program ran. Null once settled. */
+   *  no hash; once the chain is final past it, the burner's finalized nonce, or else People's
+   *  finalized block, says whether the program ran. Null once settled. */
   inclusionBlock: number | null;
   inclusionHash: string | null;
   /** The target was seen on People in a best block. The run stays done on it while the
@@ -522,6 +538,8 @@ export const freshTickState = (): TickState => ({
   xcmSubmitted: false,
   peopleAtXcm: 0n,
   fundsSeenAt: null,
+  depositLeftAt: null,
+  replacedAt: null,
   nonceAtSubmit: null,
   inclusionBlock: null,
   inclusionHash: null,
@@ -693,6 +711,12 @@ export function includedInBlock(watch: Watch, timeoutMs: number, what: string): 
   });
 }
 
+/** The deposit is gone from the best chain: the run waits for it as before it came. */
+function markDepositLeft(state: TickState, now: number): void {
+  state.fundsSeenAt = null;
+  state.depositLeftAt = now;
+}
+
 /** The program is in a block. The latch holds until finality settles it, and the rejection
  *  count starts over. */
 function markLanded(state: TickState, block: number, hash: string | null): void {
@@ -853,11 +877,18 @@ async function settleLostSubmit(
 }
 
 /** A lost answer settled as landed knows no block hash, only that the program is in the latest
- *  block or an earlier one. Once the finalized chain is past that block, the burner there shows
- *  whether it ran: its nonce moved, or its deposit gone with the reaped account. Neither, and the
+ *  block or an earlier one. Once the finalized chain is past that block, it shows whether the
+ *  program ran: the burner's nonce moved there. A burner the program reaped starts its nonce
+ *  over, and its empty account says nothing, since the deposit was taken at the best block and a
+ *  fork can take it with the program; so People says it, from its finalized block. Otherwise the
  *  block was replaced: the latch is released, and a later tick finds the program again in a best
- *  block or sends it again. Read after the block number, so they see at least that block. */
-async function convertedAtFinalized(input: TickOnceInput, nonceAtSubmit: number): Promise<boolean> {
+ *  block, or sends it again once the deposit is back. Read after the block number, so they see at
+ *  least that block. */
+async function convertedAtFinalized(
+  input: TickOnceInput,
+  nonceAtSubmit: number,
+  ranOnPeople: () => Promise<boolean>,
+): Promise<boolean> {
   const { api, route, address } = input;
   const [nonce, deposit] = await bounded(
     Promise.all([
@@ -867,7 +898,9 @@ async function convertedAtFinalized(input: TickOnceInput, nonceAtSubmit: number)
     input.tickTimeoutMs,
     "nonce and deposit reads (finalized)",
   );
-  return nonce > nonceAtSubmit || deposit === 0n;
+  if (nonce > nonceAtSubmit) return true;
+  if (deposit !== 0n) return false;
+  return ranOnPeople();
 }
 
 /** The program is in a best block the chain may yet replace, so the finalized chain has the last
@@ -882,6 +915,7 @@ async function settleInclusion(
   nonceAtSubmit: number,
   inclusionBlock: number,
   inclusionHash: string | null,
+  ranOnPeople: () => Promise<boolean>,
 ): Promise<void> {
   const { api } = input;
   const finalizedBlock = await bounded(
@@ -894,7 +928,7 @@ async function settleInclusion(
   if (finalizedBlock <= inclusionBlock) return;
   const final =
     inclusionHash === null
-      ? await convertedAtFinalized(input, nonceAtSubmit)
+      ? await convertedAtFinalized(input, nonceAtSubmit, ranOnPeople)
       : (await bounded(
           api.query.System.BlockHash.getValue(inclusionBlock, { at: "finalized" }),
           input.tickTimeoutMs,
@@ -902,10 +936,12 @@ async function settleInclusion(
         )) === inclusionHash;
   if (final) {
     state.nonceAtSubmit = null;
+    state.replacedAt = null;
   } else {
     // People drops the arrival with the block.
     state.xcmSubmitted = false;
     state.arrived = false;
+    state.replacedAt ??= input.now();
   }
   state.inclusionBlock = null;
   state.inclusionHash = null;
@@ -922,13 +958,37 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
   const [depositAh, peopleHeld] = await bounded(
     Promise.all([
-      readDeposit(api, route, address, "finalized"),
+      readDeposit(api, route, address, "best"),
       input.readUnderlyingOnPeople(address, "best"),
     ]),
     input.tickTimeoutMs,
     "tick balance reads",
   );
 
+  // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
+  // it there. Asked only of a burner the program would have reaped, since a fork can take the
+  // deposit, the program and the arrival People saw at its best block all together. A claim the
+  // host made final since leaves nothing there, and ends the run on its own.
+  const ranOnPeople = async (): Promise<boolean> => {
+    const held = await bounded(
+      input.readUnderlyingOnPeople(address, "finalized"),
+      input.tickTimeoutMs,
+      "People read (finalized)",
+    );
+    if (held > state.peopleAtXcm) return true;
+    if (state.sentToPeople === null) return false;
+    const trap = await bounded(
+      findTrap(
+        input.peopleApi,
+        input.beneficiaryHex,
+        state.sentToPeople,
+        trapScanSpan(state.peopleFeeCash),
+      ),
+      input.tickTimeoutMs,
+      "trap read",
+    );
+    return trap !== null;
+  };
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(
       input,
@@ -936,7 +996,28 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       state.nonceAtSubmit,
       state.inclusionBlock,
       state.inclusionHash,
+      ranOnPeople,
     );
+  }
+  // The program's block was replaced. An empty burner then means either that the chain put the
+  // program back into a later block, which reaps the burner too, or that the fork took the
+  // deposit with it. Only People tells them apart, so the run waits for its CASH there: a burner
+  // still empty with nothing on People a while later is a deposit gone and a program that never
+  // ran. Its submit is settled as such, and the run waits for the deposit as before it came.
+  // A claim registered with the host is left to the host: it may take the CASH off People as it
+  // lands, so an empty People proves nothing there.
+  if (state.replacedAt !== null) {
+    if (depositAh > 0n || peopleHeld > state.peopleAtXcm || input.claimRegistered) {
+      state.replacedAt = null;
+    } else if (input.now() - state.replacedAt >= DEPOSIT_GONE_AFTER_MS && !(await ranOnPeople())) {
+      state.xcmSubmitted = false;
+      state.arrived = false;
+      state.nonceAtSubmit = null;
+      state.inclusionBlock = null;
+      state.inclusionHash = null;
+      state.replacedAt = null;
+      markDepositLeft(state, input.now());
+    }
   }
 
   const balances: FundingBalances = { depositAh, underlyingPeople: peopleHeld };
@@ -1119,8 +1200,25 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   } else if (state.arrived && state.xcmSubmitted) {
     effective = "done";
   }
-  // Funds seen: from here the conversion is on the clock.
-  if (state.fundsSeenAt === null && effective !== "await-native") state.fundsSeenAt = input.now();
+  // The deposit left the best chain before any program went out for it: a fork took the block it
+  // was seen in. Only an empty burner says so; a paid rejection leaves the deposit short, not gone.
+  if (
+    state.fundsSeenAt !== null &&
+    effective === "await-native" &&
+    depositAh === 0n &&
+    !state.xcmSubmitted &&
+    state.nonceAtSubmit === null
+  ) {
+    markDepositLeft(state, input.now());
+  }
+  // Any money on the account again, short of the gate or not, ends the wait for the deposit that
+  // left: the run waits on its deposit window as for any deposit.
+  if (depositAh > 0n) state.depositLeftAt = null;
+  // Funds seen: from here the conversion is on the clock, and a deposit that left is back.
+  if (effective !== "await-native") {
+    state.fundsSeenAt ??= input.now();
+    state.depositLeftAt = null;
+  }
 
   // The pre-send record stays until the conversion is final: a later tick settles it, and sends
   // again if the chain discards the block.

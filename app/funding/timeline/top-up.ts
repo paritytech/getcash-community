@@ -1,8 +1,10 @@
-import type { TopUpRecord } from "../requests/model";
+import { isDirectDeposit, type TopUpRecord } from "../requests/model";
+import { directDepositDropped } from "../requests/views";
 import type { TimelineFailure } from "./failure";
 import { timelineView } from "./model";
 import { earlierFact } from "./observed";
 import {
+  depositLeftOf,
   depositOnBurner,
   polkadotFailure,
   polkadotMilestones,
@@ -61,11 +63,26 @@ function failedAt({ status }: TopUpRecord): number | undefined {
   return status.kind === "failed" || status.kind === "expired" ? status.at : undefined;
 }
 
+/** A direct deposit a fork took, still within the time its transfer can land again. */
+const inResendWait = (record: TopUpRecord, now: number): boolean =>
+  record.status.kind === "awaiting-deposit" && !directDepositDropped(record, now);
+
 /** The provider's milestones, with Sent at the provider's report or the deposit on the burner,
- *  whichever came first: money on the burner shows the provider sent it. */
-function providerMilestones(record: TopUpRecord, route: TimelineRoute): ProviderMilestones {
+ *  whichever came first: money on the burner shows the provider sent it. A deposit a fork took
+ *  back off the burner was sent all the same; a direct deposit has no other word for it, until it
+ *  is asked for again, when the timeline closes on the deposit screen, or ends as one never
+ *  sent. */
+function providerMilestones(
+  record: TopUpRecord,
+  route: TimelineRoute,
+  now: number,
+): ProviderMilestones {
   const milestones = route.milestones(record);
-  return { ...milestones, sent: earlierFact(milestones.sent, depositOnBurner(record)) };
+  // A direct deposit counts as sent only while the dropped transfer can still land.
+  const sentStill = !isDirectDeposit(record) || inResendWait(record, now);
+  const left = sentStill ? depositLeftOf(record) : undefined;
+  const sent = earlierFact(milestones.sent, depositOnBurner(record)) ?? left;
+  return { ...milestones, sent };
 }
 
 /** The failure of a top-up whose `failed` milestone is red. */
@@ -82,13 +99,14 @@ export function topUpTimeline(
   { now, watchingSince, locale, previous, sentUnseenMs = 0 }: TopUpTimelineOptions,
 ): TopUpTimeline | undefined {
   const view = timelineView(TOP_UP_TIMELINE, {
-    reached: { ...providerMilestones(record, route), ...polkadotMilestones(record) },
+    reached: { ...providerMilestones(record, route, now), ...polkadotMilestones(record) },
     phase: (index) =>
       isProviderPhase(index)
         ? route.phase(record, index)
         : polkadotPhase(record, polkadotPhaseOf(index), {
             seenExpectedMs: route.seenExpectedMs,
             sentUnseenMs,
+            now,
           }),
     failedAt: failedAt(record),
     now,

@@ -22,6 +22,7 @@ import {
   type TopUpRecord,
   type WithdrawalRecord,
   type WithdrawalStatus,
+  type WorkerJobView,
 } from "../funding/requests/model";
 import { applyTopUp } from "../funding/requests/transitions/top-up";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
@@ -922,6 +923,51 @@ function worker(request: PreviewRequest, step: number, phase: string, done = fal
     at,
     job: { phase, done, fundsSeenAt: at, lastTickAt: at, claim: null },
   };
+}
+
+/** The worker's word at `at` that the deposit it took left the best chain at `leftAt`. */
+function depositLeft(at: number, leftAt: number, over: Partial<WorkerJobView> = {}): Observation {
+  return {
+    source: "worker",
+    at,
+    job: {
+      phase: "await-native",
+      done: false,
+      fundsSeenAt: null,
+      depositLeftAt: leftAt,
+      lastTickAt: at,
+      claim: null,
+      ...over,
+    },
+  };
+}
+
+/** A swap that sent its deposit, which the worker took two minutes before a fork took it back,
+ *  `leftMinutesAgo` minutes ago. Under Chainflip's own source when `chainflip`, the preview's
+ *  direct one otherwise. Returns when it left. */
+async function depositDropped(
+  s: Session,
+  f: Flow,
+  index: number,
+  { leftMinutesAgo = 0, chainflip = false }: { leftMinutesAgo?: number; chainflip?: boolean } = {},
+) {
+  base(s, f);
+  const r = await previewRequest(s, {
+    ...BITCOIN_SWAP,
+    ...(chainflip ? { sourceId: "btc" } : {}),
+    index,
+    startedMinutesAgo: leftMinutesAgo + 5,
+  });
+  const leftAt = Date.now() - leftMinutesAgo * 60_000 - 30_000;
+  const takenAt = leftAt - 2 * 60_000;
+  await r.observe({ source: "core", at: takenAt - 1_000, state: swapping("complete") });
+  await r.observe({
+    source: "worker",
+    at: takenAt,
+    job: { phase: "swap", done: false, fundsSeenAt: takenAt, lastTickAt: takenAt, claim: null },
+  });
+  await r.observe(depositLeft(leftAt, leftAt));
+  return { r, leftAt };
 }
 
 /** How far a running preview top-up has got. Named for the rail's own step, because that is what
@@ -2482,6 +2528,39 @@ export const SCENES: Scene[] = [
     name: "top-up / crypto / pipeline: arrival wait",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "await-arrival");
+    },
+  },
+  {
+    // A fork took the deposit after the worker took it: Received goes back, and the timeline
+    // waits for the deposit to land again.
+    name: "top-up / crypto / pipeline: deposit dropped",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i);
+    },
+  },
+  {
+    // The buyer's own transfer is past the time it could land again: the deposit screen asks for
+    // it once more.
+    name: "top-up / crypto / journey: transfer dropped, asked again",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i, { leftMinutesAgo: 11 });
+    },
+  },
+  {
+    // An hour on, Chainflip's payout is still not back: the line turns amber and says so.
+    name: "top-up / crypto / pipeline: deposit dropped, an hour on",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i, { leftMinutesAgo: 61, chainflip: true });
+    },
+  },
+  {
+    // A day on it never came back: the top-up ends.
+    name: "top-up / crypto / journey: deposit lost",
+    apply: async (s, f, i) => {
+      const { r, leftAt } = await depositDropped(s, f, i, { chainflip: true });
+      await r.observe(
+        depositLeft(leftAt + 1_000, leftAt, { phase: "failed", failure: "deposit-lost" }),
+      );
     },
   },
   {

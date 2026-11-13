@@ -40,13 +40,16 @@ const isNative = (loc: unknown) =>
   (loc as { parents: number; interior: { type: string } }).parents === 1 &&
   (loc as { interior: { type: string } }).interior.type === "Here";
 
-/** Asset Hub as the sizing reads it: fixed-rate quotes, one min_balance, flat fees. */
+/** Asset Hub as the sizing reads it: fixed-rate quotes, one min_balance, flat fees. With
+ *  `bestOnly`, the balances are in a best block the chain has not finalized. */
 function scriptedAssetHub(balances: {
   native?: bigint;
   usdt?: bigint;
   usdc?: bigint;
   cash?: bigint;
+  bestOnly?: boolean;
 }) {
+  const visible = (options?: { at?: string }) => !balances.bestOnly || options?.at === "best";
   const tx = (args: unknown) => ({
     decodedCall: { type: "call", value: args },
     getEstimatedFees: async () => DISPATCH_NATIVE,
@@ -56,18 +59,24 @@ function scriptedAssetHub(balances: {
       Assets: {
         Asset: { getValue: async () => ({ min_balance: MIN_BALANCE }) },
         Account: {
-          getValue: async (id: number) => {
+          getValue: async (id: number, _who: string, options?: { at?: string }) => {
             const held =
               id === TOKENS.USDT.assetHubId
                 ? balances.usdt
                 : id === TOKENS.USDC.assetHubId
                   ? balances.usdc
                   : balances.cash;
-            return held === undefined ? undefined : { balance: held };
+            return held === undefined || !visible(options) ? undefined : { balance: held };
           },
         },
       },
-      System: { Account: { getValue: async () => ({ data: { free: balances.native ?? 0n } }) } },
+      System: {
+        Account: {
+          getValue: async (_who: string, options?: { at?: string }) => ({
+            data: { free: visible(options) ? (balances.native ?? 0n) : 0n },
+          }),
+        },
+      },
     },
     apis: {
       AssetConversionApi: {
@@ -210,6 +219,17 @@ describe("recoveryCandidates and findRecoveryDeposit", () => {
         candidates,
       ),
     ).toEqual({ route: { tier: "pool" }, token: "PAS", held: 50n });
+  });
+
+  it("takes a deposit a best block holds, before Asset Hub finalizes it, as the pipeline's gate does", async () => {
+    const candidates = recoveryCandidates(minimums, ROUTES);
+    expect(
+      await findRecoveryDeposit(
+        scriptedAssetHub({ usdc: 80_000n, bestOnly: true }),
+        "5Burner",
+        candidates,
+      ),
+    ).toEqual({ route: USDC_ROUTE, token: "USDC", held: 80_000n });
   });
 
   it("skips a deposit the chain would not take while its balance stands, and takes a new one", async () => {

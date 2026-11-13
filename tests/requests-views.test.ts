@@ -19,6 +19,8 @@ import { reduce } from "../app/funding/requests/reducer";
 import {
   claimingOf,
   creditedAmountOf,
+  DIRECT_RESEND_AFTER_MS,
+  directDepositDropped,
   meldAwaitingBuyerOf,
   meldHandedOffOf,
   meldStageOf,
@@ -93,6 +95,72 @@ describe("request views", () => {
     ).toBe(late + TOMBSTONE_GRACE_MS);
   });
 
+  it("rowStateOf opens the journey, not the deposit, for a top-up whose deposit a fork took, until a direct one is asked for again", () => {
+    const job = { done: false, lastTickAt: AT, claim: null };
+    const leftAt = AT + 30_000;
+    const taken = (record: RequestRecord) =>
+      reduce(
+        reduce(record, {
+          source: "worker",
+          at: AT,
+          job: { ...job, phase: "swap", fundsSeenAt: AT },
+        }),
+        {
+          source: "worker",
+          at: AT + 60_000,
+          job: { ...job, phase: "await-native", fundsSeenAt: null, depositLeftAt: leftAt },
+        },
+      );
+    const later = leftAt + DIRECT_RESEND_AFTER_MS;
+    const gone = taken(card());
+    expect(gone.status.kind).toBe("awaiting-deposit");
+    expect(rowStateOf(gone, "Your money is arriving", later)).toEqual({
+      kind: "finishing",
+      status: "Your money is arriving",
+    });
+    expect(rowStateOf(card(), "Waiting", AT)).toEqual({
+      kind: "awaiting-transfer",
+      status: "Waiting",
+    });
+    // A direct deposit waits on the journey too, then is awaited as any deposit is.
+    const direct = taken(crypto());
+    expect(rowStateOf(direct, "On its way", later - 1).kind).toBe("finishing");
+    expect(rowStateOf(direct, "Waiting for your deposit", later).kind).toBe("awaiting-transfer");
+  });
+
+  it("directDepositDropped asks for a direct deposit again once the dropped transfer can no longer land", () => {
+    const job = { done: false, lastTickAt: AT, claim: null };
+    const leftAt = AT + 30_000;
+    const takenThenLeft = (record: RequestRecord) =>
+      reduce(
+        reduce(record, {
+          source: "worker",
+          at: AT,
+          job: { ...job, phase: "swap", fundsSeenAt: AT },
+        }),
+        {
+          source: "worker",
+          at: AT + 60_000,
+          job: { ...job, phase: "await-native", fundsSeenAt: null, depositLeftAt: leftAt },
+        },
+      );
+    const direct = takenThenLeft(crypto());
+    expect(directDepositDropped(direct, leftAt + DIRECT_RESEND_AFTER_MS - 1)).toBe(false);
+    expect(directDepositDropped(direct, leftAt + DIRECT_RESEND_AFTER_MS)).toBe(true);
+    // A provider sends its transfer again; only the buyer's own needs asking for.
+    const provider = takenThenLeft(card());
+    expect(directDepositDropped(provider, leftAt + DIRECT_RESEND_AFTER_MS)).toBe(false);
+    // Seen on the account again: nothing to ask for.
+    const back = reduce(direct, {
+      source: "chain",
+      at: leftAt + DIRECT_RESEND_AFTER_MS,
+      burnerNative: "250000000000",
+      finality: "best",
+      via: "probe",
+    });
+    expect(directDepositDropped(back, leftAt + DIRECT_RESEND_AFTER_MS + 1)).toBe(false);
+  });
+
   it("rowStateOf words a running row with its label and an ended one from the record", () => {
     const chainFunds: Observation = {
       source: "chain",
@@ -109,11 +177,14 @@ describe("request views", () => {
 
     const funded = reduce(crypto(), chainFunds);
     expect(funded.status.kind).toBe("deposit-seen");
-    expect(rowStateOf(funded, "On its way")).toEqual({ kind: "finishing", status: "On its way" });
+    expect(rowStateOf(funded, "On its way", AT)).toEqual({
+      kind: "finishing",
+      status: "On its way",
+    });
 
     const converting = reduce(funded, workerSwap);
     expect(converting.status.kind).toBe("converting");
-    expect(rowStateOf(converting, "Adding to your balance")).toEqual({
+    expect(rowStateOf(converting, "Adding to your balance", AT)).toEqual({
       kind: "finishing",
       status: "Adding to your balance",
     });
@@ -124,14 +195,14 @@ describe("request views", () => {
       settledAt: AT,
       claimed: "25250000",
     };
-    expect(rowStateOf(settled, "")).toEqual({
+    expect(rowStateOf(settled, "", AT)).toEqual({
       kind: "settled",
       at: AT,
       creditedAmount: "25.25",
     });
 
     const failed = at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall });
-    expect(rowStateOf(failed, "")).toEqual({
+    expect(rowStateOf(failed, "", AT)).toEqual({
       kind: "failed",
       at: AT,
       reason: shortfall.message,
@@ -151,15 +222,15 @@ describe("request views", () => {
     };
 
     // Until the host's word the claim is in flight.
-    expect(rowStateOf(claiming, "").kind).toBe("finishing");
+    expect(rowStateOf(claiming, "", AT).kind).toBe("finishing");
     expect(phaseLike(claiming)).toBe("working");
     expect(claimingOf(claiming)).toBe(true);
 
     // From it, every view reads as the settled record's: the row and its section, the phase and
     // the claim spinner.
-    const row = rowStateOf(credited, "");
+    const row = rowStateOf(credited, "", AT);
     expect(row).toEqual({ kind: "settled", at: CREDITED_AT, creditedAmount: "25.25" });
-    expect(row).toEqual(rowStateOf(settled, ""));
+    expect(row).toEqual(rowStateOf(settled, "", AT));
     expect(phaseLike(credited)).toBe("done");
     expect(claimingOf(credited)).toBe(false);
     const sections = projectFundingTopUps(
@@ -182,7 +253,7 @@ describe("request views", () => {
       failure: mintFailure,
       failureReason: mintFailure.message,
     };
-    expect(rowStateOf(failed, "")).toEqual({
+    expect(rowStateOf(failed, "", AT)).toEqual({
       kind: "failed",
       at: failedAt,
       reason: mintFailure.message,
@@ -348,6 +419,6 @@ describe("request views", () => {
     }
 
     // A journey opened from history reads it off the list row.
-    expect(rowStateOf(partial, "")).toMatchObject({ kind: "failed", creditedAmount: "30" });
+    expect(rowStateOf(partial, "", AT)).toMatchObject({ kind: "failed", creditedAmount: "30" });
   });
 });

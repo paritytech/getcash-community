@@ -2,19 +2,11 @@
 // 6, their texts, and the failures past the provider's part.
 
 import { cashAmount } from "../../utils/cash";
-import type { DepositInBlock, TopUpRecord } from "../requests/model";
+import type { TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
 import { earlierFact, factAt } from "./observed";
-import { stepLine } from "./progress";
-import {
-  delay,
-  normal,
-  withDetail,
-  type ProviderPhaseIndex,
-  type TextState,
-  type TimelineText,
-} from "./route";
+import { delay, normal, type ProviderPhaseIndex, type TextState, type TimelineText } from "./route";
 import type {
   Fact,
   MilestoneIndex,
@@ -31,8 +23,6 @@ const MINUTE = 60 * SECOND;
 const PARTS = {
   /** Its `T` is the route's. */
   seen: { weight: 1 },
-  /** Fills from the finalized block; time moves it only until the worker follows the deposit. */
-  final: { weight: 1, expectedMs: 5 * MINUTE },
   prepare: { weight: 1, expectedMs: 6 * SECOND },
   include: { weight: 2, expectedMs: 12 * SECOND },
   move: { weight: 1, expectedMs: 90 * SECOND },
@@ -43,11 +33,11 @@ const PARTS = {
 
 /** The evidence past which a shared phase is late. Initial values: measure them. */
 const LATE = {
-  /** Phase 3: the best block this far past the deposit's block while it is not final. */
-  unfinalizedBlocks: 20,
   /** Phase 3: fresh reads this long in total after Sent without seeing the funds. */
   unseenMs: 5 * MINUTE,
-  /** Phases 4 to 6: the worker's working time since the deposit was final, since the conversion,
+  /** Phase 3: the deposit left the best chain this long ago and is not back. */
+  leftMs: 60 * MINUTE,
+  /** Phases 4 to 6: the worker's working time since it took the deposit, since the conversion,
    *  and since it registered the claim. */
   convertWorkedMs: 2 * MINUTE,
   moveWorkedMs: 5 * MINUTE,
@@ -76,8 +66,8 @@ function workerOf(record: TopUpRecord) {
 const settledAt = ({ status, settledAt }: TopUpRecord): number | undefined =>
   status.kind === "settled" ? (settledAt ?? status.at) : undefined;
 
-/** Received is the deposit final on Asset Hub, as the worker or the app's own read saw it first.
- *  Added is the Host's claim in a block. */
+/** Received is the deposit as the worker took it, at Asset Hub's best block, or the app's own
+ *  read of it final, whichever came first. Added is the Host's claim in a block. */
 export function polkadotMilestones(record: TopUpRecord): PolkadotMilestones {
   return {
     received: earlierFact(
@@ -98,18 +88,24 @@ export function depositOnBurner(record: TopUpRecord): Fact | undefined {
   return record.depositInBlock === undefined ? undefined : {};
 }
 
-/** The deposit's block is well behind the best block and still not final. */
-const finalityStalled = ({ block, finalized, best }: DepositInBlock): boolean =>
-  best - block >= LATE.unfinalizedBlocks && finalized < block;
-
-/** How far finality moved from where it stood when the deposit was seen to the deposit's block. */
-function finality({ block, finalizedAtSeen, finalized }: DepositInBlock): number {
-  // A block that was already final when the deposit was seen leaves nothing to wait for.
-  if (block <= finalizedAtSeen) return 1;
-  return (finalized - finalizedAtSeen) / (block - finalizedAtSeen);
+/** The deposit reached the account and a fork took it back: it was sent, and is awaited again
+ *  from when it left. */
+export function depositLeftOf(record: TopUpRecord): Fact | undefined {
+  const leftAt = workerOf(record)?.depositLeftAt;
+  return leftAt === undefined ? undefined : { at: leftAt };
 }
 
 const psmRefused = (record: TopUpRecord): boolean => (workerOf(record)?.psmRefusals ?? 0) > 0;
+
+/** The deposit left the best chain long enough ago to say so: a fork took it, and it has not come
+ *  back in the time a provider's transfer is normally sent again. */
+function leftLong(record: TopUpRecord, now: number): boolean {
+  const leftAt = workerOf(record)?.depositLeftAt;
+  return leftAt !== undefined && now - leftAt > LATE.leftMs;
+}
+
+const DEPOSIT_DROPPED =
+  "The network dropped your deposit and it hasn't come back yet. We'll keep watching and continue automatically.";
 
 /** The worker worked more than `limitMs` since `since`, both on its working-time clock. */
 function workedPast(record: TopUpRecord, since: number | undefined, limitMs: number): boolean {
@@ -124,25 +120,21 @@ export interface PolkadotPhaseContext {
   /** How long this session's reads were fresh, in total, while the funds the provider sent were
    *  not seen. */
   readonly sentUnseenMs: number;
+  readonly now: number;
 }
 
 export function polkadotPhase(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { seenExpectedMs, sentUnseenMs }: PolkadotPhaseContext,
+  { seenExpectedMs, sentUnseenMs, now }: PolkadotPhaseContext,
 ): PhaseInput {
   switch (index) {
     case 2: {
-      const inBlock = record.depositInBlock;
+      // Nothing waits for the deposit to be final: the worker takes it at the best block.
       const seen = depositOnBurner(record) !== undefined;
       return {
-        parts: [
-          { ...PARTS.seen, expectedMs: seenExpectedMs, completed: seen ? {} : undefined },
-          { ...PARTS.final, fraction: inBlock === undefined ? undefined : finality(inBlock) },
-        ],
-        delayed: seen
-          ? inBlock !== undefined && finalityStalled(inBlock)
-          : sentUnseenMs > LATE.unseenMs,
+        parts: [{ ...PARTS.seen, expectedMs: seenExpectedMs, completed: seen ? {} : undefined }],
+        delayed: !seen && (sentUnseenMs > LATE.unseenMs || leftLong(record, now)),
       };
     }
     case 3:
@@ -151,7 +143,7 @@ export function polkadotPhase(
           { ...PARTS.prepare, completed: factAt(record.conversionPreparedAt) },
           PARTS.include,
         ],
-        // The worker's working time starts when the deposit is final.
+        // The worker's working time starts when it takes the deposit.
         delayed: psmRefused(record) || workedPast(record, 0, LATE.convertWorkedMs),
       };
     case 4:
@@ -175,27 +167,23 @@ export function polkadotPhase(
 export const workerTickAt = (record: TopUpRecord): number | undefined =>
   workerOf(record)?.lastTickAt ?? undefined;
 
-/** The finalized chain's progress to the deposit's block, as the worker counts it: absent until
- *  the worker follows the deposit, or when its block was already final. */
-function confirmationLine(inBlock: DepositInBlock | undefined): string | undefined {
-  if (inBlock === undefined || inBlock.block <= inBlock.finalizedAtSeen) return undefined;
-  return stepLine(
-    "Confirmation",
-    Math.max(inBlock.finalized - inBlock.finalizedAtSeen, 0),
-    inBlock.block - inBlock.finalizedAtSeen,
-  );
-}
-
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { delayed }: TextState,
+  { delayed, now }: TextState,
 ): TimelineText {
   switch (index) {
     case 2:
-      return depositOnBurner(record) === undefined
-        ? { message: normal("Your money is arriving") }
-        : withDetail(normal("We've spotted your deposit"), confirmationLine(record.depositInBlock));
+      if (depositOnBurner(record) === undefined && leftLong(record, now)) {
+        return { message: delay(DEPOSIT_DROPPED) };
+      }
+      return {
+        message: normal(
+          depositOnBurner(record) === undefined
+            ? "Your money is arriving"
+            : "We've spotted your deposit",
+        ),
+      };
     case 3:
       return {
         message: psmRefused(record)

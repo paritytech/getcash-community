@@ -530,9 +530,13 @@ async function deliveryFeeOf(
   return extractFungibleAmount(df.value);
 }
 
+/** A dry run as the burner reads the best block, where its deposit is taken: the runtime's
+ *  default, the finalized block, may not hold it yet. */
+const AT_BEST = { at: "best" } as const;
+
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
- *  origin that already holds what the call withdraws. Returns null when the dry-run cannot
- *  produce it. */
+ *  origin that already holds what the call withdraws at the best block. Returns null when the
+ *  dry-run cannot produce it. */
 export async function realForwardedProgram(
   api: AssetHubApi,
   call: AssetHubCall,
@@ -540,7 +544,12 @@ export async function realForwardedProgram(
   from: string,
 ): Promise<unknown | null> {
   try {
-    const dr = await api.apis.DryRunApi.dry_run_call(signedOrigin(from) as never, call as never, 5);
+    const dr = await api.apis.DryRunApi.dry_run_call(
+      signedOrigin(from) as never,
+      call as never,
+      5,
+      AT_BEST,
+    );
     return dr.success ? forwardedTo(dr.value, peopleParaId) : null;
   } catch {
     // A runtime without the dry-run API, or one that rejects this call shape.
@@ -605,7 +614,7 @@ export async function dryRunFundingProgram(args: {
    *  Utility.batch_all, so the mint runs too and a program that completes but misbehaves is
    *  caught here, the one outcome batch_all does not revert. */
   call?: AssetHubCall;
-  /** The burner: it signs the call and holds what it withdraws. */
+  /** The burner: it signs the call and holds what it withdraws, at the best block. */
   from: string;
   beneficiaryHex: string;
   peopleParaId: number;
@@ -618,6 +627,7 @@ export async function dryRunFundingProgram(args: {
     signedOrigin(args.from) as never,
     call as never,
     5,
+    AT_BEST,
   );
   if (!dr.success) {
     throw new Error(`not submitted: Asset Hub would not dry-run the call (${dr.value.type})`);

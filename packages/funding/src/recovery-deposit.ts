@@ -194,11 +194,10 @@ export function recoveryCandidates(
 }
 
 /** The deposit on the burner's Asset Hub account, if one was made: the first token held at or
- *  above what counts for it, with its route. Read at the finalized block, as the pipeline's gate
- *  reads it, so a deposit found is one the gate takes on the next tick rather than one it holds
- *  until finality. A token whose conversion the chain would not take is passed in `held` with
- *  the balance it had then, and is skipped until the balance grows past it: the same deposit is
- *  not paid for again, a new one is taken up. */
+ *  above what counts for it, with its route. Read at the best block, as the pipeline's gate reads
+ *  it, so a deposit found is one the gate takes on the next tick. A token whose conversion the
+ *  chain would not take is passed in `held` with the balance it had then, and is skipped until
+ *  the balance grows past it: the same deposit is not paid for again, a new one is taken up. */
 export async function findRecoveryDeposit(
   api: AssetHubApi,
   address: string,
@@ -207,7 +206,7 @@ export async function findRecoveryDeposit(
 ): Promise<{ route: ConversionRoute; token: RecoveryToken; held: bigint } | null> {
   for (const { route, minimum } of candidates) {
     const token = recoveryTokenOf(route);
-    const balance = await readDeposit(api, route, address, "finalized");
+    const balance = await readDeposit(api, route, address, "best");
     if (balance < minimum) continue;
     const before = held[token];
     if (before !== undefined && balance <= before) continue;

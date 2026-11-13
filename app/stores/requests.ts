@@ -36,6 +36,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   conversionRouteOf,
+  depositGone,
   effectiveSourceId,
   handoffSaleOf,
   isDirectDeposit,
@@ -234,6 +235,22 @@ const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "sent",
 ]);
 
+/** A top-up that ended with its deposit gone has it on its account again: failed as lost, or, a
+ *  direct one, expired. */
+function lostDepositBack(previous: RequestRecord, next: RequestRecord): next is TopUpRecord {
+  return (
+    isTopUp(previous) &&
+    isTopUp(next) &&
+    endedGone(previous) &&
+    next.failure === undefined &&
+    next.status.kind === "deposit-seen"
+  );
+}
+
+/** Ended while its deposit was gone: the worker gave the job up, and the deposit may still land. */
+const endedGone = (record: TopUpRecord): boolean =>
+  (record.status.kind === "failed" || record.status.kind === "expired") && depositGone(record);
+
 /** A critical change is written to the host before `observe` resolves: the money's first
  *  sighting (a worker step can carry a record from rank 0 straight to converting), a terminal or
  *  side-exit kind, a failure; for a top-up the buyer's submit; for a withdrawal the prompt's
@@ -346,10 +363,11 @@ const followsWorker = (record: RequestRecord): boolean =>
   isWorkerDriven(record) || record.status.kind === "failed" || record.status.kind === "expired";
 
 /** Why the worker must be handed the request again, or null when it has the job in hand: it has
- *  no job for it (`unknown`), or it retired the job after the money was paid (`expired`): a job
+ *  no job for it (`unknown`), it retired the job after the money was paid (`expired`): a job
  *  that expired, or a withdrawal's job cancelled while the host's sheet was still up and then
- *  approved, whose CASH reached the key after all. */
-function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
+ *  approved, whose CASH reached the key after all; or it gave up a deposit as lost that is back
+ *  on the account since (`returned`). */
+function lostHandoff(record: RequestRecord): "unknown" | "expired" | "returned" | null {
   const { worker } = record.witnesses;
   if (worker === undefined || !isWorkerDriven(record)) return null;
   // A sale the purse has not been asked for has nothing for the worker yet: no CASH will come.
@@ -358,6 +376,7 @@ function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
   if (isWithdrawal(record) && worker.failure === "cancelled" && rankOf(record) >= 1) {
     return "expired";
   }
+  if (isTopUp(record) && worker.failure === "deposit-lost") return "returned";
   if (worker.failure !== "expired") return null;
   const paid = isTopUp(record) ? buyerPaid(record) : paymentTaken(record);
   return paid ? "expired" : null;
@@ -370,7 +389,12 @@ type WorkerJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null; psmRefusals?: number; workedMs?: number };
+  state?: {
+    fundsSeenAt?: number | null;
+    depositLeftAt?: number | null;
+    psmRefusals?: number;
+    workedMs?: number;
+  };
   claim?: {
     phase?: string;
     amount?: string;
@@ -524,12 +548,14 @@ function jobView(job: WorkerJob): WorkerJobView {
   const recovery = recoveryOf(job);
   const refusals = job.state?.psmRefusals;
   const workedMs = job.state?.workedMs;
+  const leftAt = job.state?.depositLeftAt;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
+    ...(isNumber(leftAt) ? { depositLeftAt: leftAt } : {}),
     lastTickAt: job.lastTickAt ?? null,
     ...(isNumber(workedMs) ? { workedMs } : {}),
     claim:
@@ -1217,7 +1243,26 @@ export const useRequestsStore = defineStore("requests", () => {
       }
       const next = { ...reduced, rev: entry.record.rev + 1 };
       await commit(key, next, isCritical(entry.record, next));
+      if (lostDepositBack(entry.record, next)) void resumeLostDeposit(ref, next);
     });
+  }
+
+  /** A top-up whose deposit was lost sees it on its account again: the worker gave the job up, so
+   *  the hand-off is sent again, hosted, and the worker re-arms it to convert the deposit. */
+  async function resumeLostDeposit(ref: RequestRef, record: TopUpRecord): Promise<void> {
+    if (!isHosted() || record.handoff === undefined) return;
+    const key = requestRefKey(ref);
+    try {
+      const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
+      const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
+      await sendHandoff(getStorageWorkerManager(), sessionId, record.handoff);
+      patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
+    } catch (e) {
+      const handoffError = messageOf(e);
+      devLog("requests", `${key} could not re-arm the worker: ${handoffError}`, undefined, "warn");
+      patchEntry(key, (current) => ({ ...current, handoffError }));
+    }
+    syncJobPoll();
   }
 
   /** Notes on a top-up's record something no observation carries: the core slot it expects is
@@ -1511,14 +1556,16 @@ export const useRequestsStore = defineStore("requests", () => {
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
-  /** The request on screen awaits its deposit, or has it seen but not yet final on the burner. */
+  /** The request on screen awaits its deposit, has it seen but not yet final on the burner, or
+   *  lost it to a fork: it may still land. */
   function foregroundFollowsDeposit(): boolean {
     const record = foregroundRecord.value;
     if (record === null) return false;
     const { kind } = record.status;
     return (
       kind === "awaiting-deposit" ||
-      (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined)
+      (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined) ||
+      endedGone(record)
     );
   }
   /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
@@ -2838,12 +2885,12 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** Reconcile step 6: the worker is handed every open request it lost, off screen only. The
    *  pass waits for the worker's heartbeat once, up to `WORKER_READY_MS`, and skips every send
-   *  when it never comes. A job it has no record of gets the request's stored hand-off as it is;
-   *  a job it expired after the buyer paid gets it with a fresh deadline, because the worker
-   *  keeps the hand-off's own; a legacy record without a hand-off builds one hosted world to
-   *  obtain it, stores it and lets the world go. Nothing here observes the record: the worker's
-   *  answer arrives with the next job read. A failure is noted on the entry and the next
-   *  reconcile tries again. */
+   *  when it never comes. A job it has no record of, or one that gave up a deposit now back,
+   *  gets the request's stored hand-off as it is; a job it expired after the buyer paid gets it
+   *  with a fresh deadline, because the worker keeps the hand-off's own; a legacy record without
+   *  a hand-off builds one hosted world to obtain it, stores it and lets the world go. Nothing
+   *  here observes the record: the worker's answer arrives with the next job read. A failure is
+   *  noted on the entry and the next reconcile tries again. */
   async function handOffLostRequests(now: number): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;

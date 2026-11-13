@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { migrateRecord } from "../app/funding/requests/migrate";
+import { DIRECT_RESEND_AFTER_MS } from "../app/funding/requests/views";
 import type { ChainflipFacts, RequestFailure, TopUpRecord } from "../app/funding/requests/model";
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
 import { directRoute } from "../app/funding/timeline/direct";
@@ -32,6 +33,7 @@ const RECEIVED = SENT + MINUTE;
 const CONVERTED = RECEIVED + 20 * SECOND;
 const MOVED = CONVERTED + MINUTE;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 const SEEN_T = 30 * SECOND;
 /** The worker's working time when it saw the conversion. */
 const CONVERTED_WORKED = 20 * SECOND;
@@ -115,14 +117,14 @@ describe("top-up timeline, shared route frame", () => {
       "the provider sent the funds",
       record(),
       SENT + 12 * SECOND,
-      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { marks: "●●●○○○○", state: "active", line: timeFill(12 * SECOND, SEEN_T) },
       { message: normal("Your money is arriving") },
     ],
     [
       "the funds not seen an hour after Sent, with no evidence of a delay",
       record({}, { lastTickAt: SENT + HOUR }),
       SENT + HOUR,
-      { marks: "●●●○○○○", state: "active", line: 0.5 },
+      { marks: "●●●○○○○", state: "active", line: timeFill(HOUR, SEEN_T) },
       { message: normal("Your money is arriving") },
     ],
     [
@@ -132,11 +134,7 @@ describe("top-up timeline, shared route frame", () => {
         observedAt: { "on-burner": SENT },
       }),
       SENT + 12 * SECOND,
-      {
-        marks: "●●●○○○○",
-        state: "active",
-        line: 0.5 + 0.5 * timeFill(12 * SECOND, 5 * MINUTE),
-      },
+      { marks: "●●●○○○○", state: "active", line: 1 },
       { message: normal("We've spotted your deposit") },
     ],
     [
@@ -146,22 +144,23 @@ describe("top-up timeline, shared route frame", () => {
         status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "core" },
       }),
       SENT + 12 * SECOND,
-      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { marks: "●●●○○○○", state: "active", line: timeFill(12 * SECOND, SEEN_T) },
       { message: normal("Your money is arriving") },
     ],
     [
-      "the deposit is in a block that is half way to final",
+      // The worker takes it at the best block, so nothing waits for the block to be final.
+      "the worker follows the deposit into a block that is not final",
       record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 129 } }),
       SENT + 3 * MINUTE,
-      { marks: "●●●○○○○", state: "active", line: 0.75 },
-      { message: normal("We've spotted your deposit"), detail: "Confirmation 6 of 10" },
+      { marks: "●●●○○○○", state: "active", line: 1 },
+      { message: normal("We've spotted your deposit") },
     ],
     [
-      "the best block 20 blocks past the deposit's block, which is not final",
+      "the deposit's block 20 blocks behind the best one and not final, which is no delay",
       record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 130 } }),
       SENT + 3 * MINUTE,
-      { marks: "●●●○○○○", state: "delayed", line: 0.75 },
-      { message: normal("We've spotted your deposit"), detail: "Confirmation 6 of 10" },
+      { marks: "●●●○○○○", state: "active", line: 1 },
+      { message: normal("We've spotted your deposit") },
     ],
     [
       "the deposit's block was final when seen",
@@ -171,28 +170,28 @@ describe("top-up timeline, shared route frame", () => {
       { message: normal("We've spotted your deposit") },
     ],
     [
-      "the deposit is final on Asset Hub",
+      "the worker took the deposit",
       record({}, received),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
       { message: normal("Converting your money to CASH") },
     ],
     [
-      "the worker worked 2 minutes since the deposit was final",
+      "the worker worked 2 minutes since it took the deposit",
       record({}, { ...received, workedMs: 2 * MINUTE }),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
       { message: normal("Converting your money to CASH") },
     ],
     [
-      "the worker worked over 2 minutes since the deposit was final",
+      "the worker worked over 2 minutes since it took the deposit",
       record({}, { ...received, workedMs: 2 * MINUTE + 1 }),
       RECEIVED,
       { marks: "●●●●○○○", state: "delayed", line: 0 },
       { message: normal("Converting your money to CASH") },
     ],
     [
-      "the deposit final an hour ago, with little worker time",
+      "the deposit taken an hour ago, with little worker time",
       record({}, { ...received, workedMs: 30 * SECOND, lastTickAt: RECEIVED + HOUR }),
       RECEIVED + HOUR,
       { marks: "●●●●○○○", state: "active", line: 1 / 3 },
@@ -402,6 +401,79 @@ describe("top-up timeline, shared route frame", () => {
   });
 });
 
+describe("top-up timeline, a deposit a fork took", () => {
+  const LEFT = SENT + MINUTE;
+  const DROPPED =
+    "The network dropped your deposit and it hasn't come back yet. We'll keep watching and continue automatically.";
+
+  it("waits on Received with the deposit arriving again, and says it was dropped an hour on", () => {
+    const topUp = record({}, { depositLeftAt: LEFT });
+    const soon = openedTimeline(topUp, sentRoute, { now: LEFT + MINUTE, watchingSince: SENT });
+    expect(marks(soon.view)).toBe("●●●○○○○");
+    expect(soon.view.state).toBe("active");
+    expect(soon.message).toEqual(normal("Your money is arriving"));
+
+    const later = openedTimeline(topUp, sentRoute, { now: LEFT + HOUR + 1, watchingSince: SENT });
+    expect(marks(later.view)).toBe("●●●○○○○");
+    expect(later.view.state).toBe("delayed");
+    expect(later.message).toEqual(delay(DROPPED));
+  });
+
+  it("keeps a direct deposit's timeline open on Sent, as sent and awaited again", () => {
+    const direct: TopUpRecord = {
+      ...cryptoRecord(POLKADOT_DOT),
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "await-native",
+          done: false,
+          fundsSeenAt: null,
+          depositLeftAt: LEFT,
+          lastTickAt: LEFT,
+          at: LEFT,
+        },
+      },
+    };
+    const view = openedTimeline(direct, directRoute, { now: LEFT + MINUTE, watchingSince: SENT });
+    expect(marks(view.view)).toBe("●●●○○○○");
+    expect(view.message).toEqual(normal("Your money is arriving"));
+    // Asked for again, it is awaited as any deposit is: the timeline closes on the deposit screen.
+    const again = { now: LEFT + DIRECT_RESEND_AFTER_MS, watchingSince: SENT };
+    expect(topUpTimeline(direct, directRoute, again)).toBeUndefined();
+  });
+
+  it("ends a direct deposit that expired after its transfer was dropped as one never sent", () => {
+    const expiredDirect: TopUpRecord = {
+      ...cryptoRecord(POLKADOT_DOT),
+      status: { kind: "expired", at: LEFT + DAY },
+      failure: { kind: "expired", step: "deposit", message: "expired", recoverable: false },
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "failed",
+          done: false,
+          fundsSeenAt: null,
+          depositLeftAt: LEFT,
+          lastTickAt: LEFT + DAY,
+          at: LEFT + DAY,
+          failure: "deposit-lost",
+        },
+      },
+    };
+    const view = openedTimeline(expiredDirect, directRoute, {
+      now: LEFT + DAY + MINUTE,
+      watchingSince: SENT,
+    });
+    expect(marks(view.view)).toBe("✕○○○○○○");
+  });
+
+  it("does not say a deposit seen on the account again was dropped", () => {
+    const topUp = record({ observedAt: { "on-burner": LEFT + HOUR } }, { depositLeftAt: LEFT });
+    const view = openedTimeline(topUp, sentRoute, { now: LEFT + 2 * HOUR, watchingSince: SENT });
+    expect(view.message).toEqual(normal("We've spotted your deposit"));
+  });
+});
+
 describe("top-up timeline, Sent on the provider routes", () => {
   const EARLIER = SENT - 10 * SECOND;
   const NOW = SENT + 12 * SECOND;
@@ -432,10 +504,8 @@ describe("top-up timeline, Sent on the provider routes", () => {
     const timeline = openedTimeline(topUp, route, { now: NOW, watchingSince: NOW });
 
     expect(marks(timeline.view)).toBe("●●●○○○○");
-    expectCurrentLine(
-      timeline.view,
-      seen ? 0.5 + 0.5 * timeFill(NOW - sentAt, 5 * MINUTE) : 0.5 * timeFill(NOW - sentAt, SEEN_T),
-    );
+    // Seen on the burner, the phase is full: nothing waits for the deposit to be final.
+    expectCurrentLine(timeline.view, seen ? 1 : timeFill(NOW - sentAt, SEEN_T));
     expect({ message: timeline.message, awaiting: timeline.awaitingSentFunds }).toEqual(
       seen
         ? { message: normal("We've spotted your deposit"), awaiting: undefined }
@@ -688,7 +758,7 @@ describe("top-up timeline, Chainflip route", () => {
       "a completed swap whose funds are not seen",
       swapRecord(742, { ...swapping, complete: at(730) }, counted),
       742,
-      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { marks: "●●●○○○○", state: "active", line: timeFill(12 * SECOND, SEEN_T) },
       { message: normal("Your money is arriving") },
     ],
   ] satisfies [
@@ -789,7 +859,7 @@ describe("top-up timeline, Meld routes", () => {
         observedAt: { receiving: START, sending: START + MINUTE, complete: START + 3 * MINUTE },
       }),
       START + 3 * MINUTE + 12 * SECOND,
-      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { marks: "●●●○○○○", state: "active", line: timeFill(12 * SECOND, SEEN_T) },
       { message: normal("Your money is arriving") },
     ],
     [
@@ -1037,6 +1107,22 @@ describe("top-up timeline, failures", () => {
 
   const failureOf = (topUp: TopUpRecord) => createTopUpTimelines()(topUp, NOW)?.failure;
 
+  it.each([
+    [
+      "Chainflip",
+      swap(),
+      "Your money didn't arrive. Chainflip sent it, but the network dropped the transfer and it hasn't come back.",
+    ],
+    [
+      "a card",
+      card(),
+      `Your money didn't arrive. ${PROVIDER} sent it, but the network dropped the transfer. Contact ${PROVIDER} with the reference below to get it back.`,
+    ],
+  ])("ends a deposit that left the best chain and never came back, on %s", (_, topUp, text) => {
+    const lost = failed(topUp, { kind: "deposit-lost", message: "the deposit did not come back" });
+    expect(failureOf(lost)).toMatchObject({ text, action: CLOSE });
+  });
+
   type Row = [string, TopUpRecord, string, FailureAction, FailureDetails];
 
   const cardRows: Row[] = [
@@ -1190,6 +1276,22 @@ describe("top-up timeline, failures", () => {
     ...cryptoRecord(POLKADOT_DOT),
     observedAt: { "on-burner": SENT },
   });
+  /** A direct deposit the worker took and then saw leave the best chain: it never stayed. */
+  const droppedDirect = (): TopUpRecord => ({
+    ...cryptoRecord(POLKADOT_DOT),
+    witnesses: {
+      worker: {
+        known: true,
+        phase: "failed",
+        done: false,
+        fundsSeenAt: null,
+        depositLeftAt: SENT,
+        lastTickAt: SENT,
+        at: SENT,
+        failure: "deposit-lost",
+      },
+    },
+  });
   const directRows: Row[] = [
     [
       "a direct deposit that expired short",
@@ -1213,6 +1315,23 @@ describe("top-up timeline, failures", () => {
       failed(direct(), { kind: "unknown", message: "The deposit could not be read" }),
       "The deposit could not be read",
       CLOSE,
+      {},
+    ],
+    [
+      "a direct deposit that expired after the network dropped its transfer",
+      expired(droppedDirect()),
+      CRYPTO_EXPIRED_TEXT,
+      CLOSE,
+      {},
+    ],
+    [
+      "a direct deposit that expired short after its transfer was dropped",
+      expired({
+        ...droppedDirect(),
+        depositMismatch: { kind: "short", asset: "DOT", amount: "1000000", at: SENT },
+      }),
+      CRYPTO_EXPIRED_TEXT,
+      { kind: "get-back", source: "DOT", from: "deposit-account" },
       {},
     ],
   ];
@@ -1444,15 +1563,14 @@ describe("top-up timeline, detail line", () => {
     },
   );
 
-  it("counts the confirmations once the worker follows the spotted deposit", () => {
+  it("counts no confirmations once the worker follows the spotted deposit: it takes it at the best block", () => {
     const spotted = record(
       { depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 120 } },
       { lastTickAt: SENT + 10 * SECOND },
     );
-    expect(openedTimeline(spotted, sentRoute, at(SENT + 12 * SECOND))).toMatchObject({
-      message: normal("We've spotted your deposit"),
-      detail: "Confirmation 6 of 10",
-    });
+    const timeline = openedTimeline(spotted, sentRoute, at(SENT + 12 * SECOND));
+    expect(timeline.message).toEqual(normal("We've spotted your deposit"));
+    expect(timeline.detail).toBeUndefined();
   });
 
   it("shows a count from the first evaluation and holds it while it does not move", () => {

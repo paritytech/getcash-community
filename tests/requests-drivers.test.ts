@@ -80,6 +80,8 @@ const { worker, manager, worlds, createWorld, LEGACY_HANDOFF } = vi.hoisted(() =
     disposed: 0,
     /** The session each built world carries; null builds one with no flow slot. */
     session: null as object | null,
+    /** The burners the deposit watch subscribed to. */
+    watched: [] as string[],
   };
   const createWorld = async (args: { amount: bigint; tradeN?: number; sourceId?: string }) => {
     worlds.builds.push(args);
@@ -95,11 +97,20 @@ const { worker, manager, worlds, createWorld, LEGACY_HANDOFF } = vi.hoisted(() =
 });
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({ getStorageWorkerManager: () => manager }));
-vi.mock("../lib/coinage-live", () => ({
-  chooseHostedRoute: async () => ({ tier: "pool" }),
-  createHostedCoinageWorld: createWorld,
-  ensureChainSubmitGrant: async () => {},
-}));
+vi.mock("../lib/coinage-live", () => {
+  /** Records the burner the deposit watch subscribed to, by source and trade number. */
+  const watchBurner = async (sourceId: string, tradeN: number) => {
+    worlds.watched.push(`${sourceId}:${tradeN}`);
+    return () => {};
+  };
+  return {
+    chooseHostedRoute: async () => ({ tier: "pool" }),
+    createHostedCoinageWorld: createWorld,
+    ensureChainSubmitGrant: async () => {},
+    watchTradeBurner: watchBurner,
+    watchDirectTradeBurner: watchBurner,
+  };
+});
 
 const MINUTE = 60_000;
 const NOT_RUNNING = "the funding worker is not running on this host; the purchase cannot start";
@@ -269,6 +280,90 @@ describe("requests store: the hand-off step", () => {
     setMirrorStorage(null);
   });
 
+  /** The worker's word, kept on the record, that it gave the deposit up as lost. */
+  const LOST_WORKER = {
+    known: true,
+    phase: "failed",
+    done: false,
+    fundsSeenAt: null,
+    depositLeftAt: FIXTURE_NOW - 24 * 60 * MINUTE,
+    lastTickAt: FIXTURE_NOW - MINUTE,
+    at: FIXTURE_NOW - MINUTE,
+    failure: "deposit-lost",
+  } as const;
+  /** A top-up that ended with its deposit gone: a direct one expires, a provider's fails as lost. */
+  function endedLost(record: RequestRecord): RequestRecord {
+    const at = FIXTURE_NOW - MINUTE;
+    const witnesses = { ...record.witnesses, worker: LOST_WORKER };
+    return record.ref.sourceId === "dot-assethub"
+      ? {
+          ...record,
+          witnesses,
+          status: { kind: "expired", at },
+          failure: { kind: "expired", step: "deposit", message: "expired", recoverable: false },
+        }
+      : {
+          ...record,
+          witnesses,
+          status: { kind: "failed", at, recoverable: false },
+          failure: { kind: "deposit-lost", step: "deposit", message: "lost", recoverable: false },
+        };
+  }
+
+  it.each([
+    ["a direct deposit", AWAITING_REF, "dot-assethub:3", AWAITING_HANDOFF],
+    ["a card payment", SUBMITTED_REF, "meld-card:2", CARD_HANDOFF],
+  ] as const)(
+    "re-sends the stored hand-off when %s that ended with its deposit gone lands late, and not before",
+    async (_, ref, sessionId, handoff) => {
+      const requests = useRequestsStore();
+      const base = ref === AWAITING_REF ? awaitingDepositCryptoRecord : submittedCardRecord;
+      await requests.create(ref, endedLost({ ...migrated(base), handoff }));
+      // An empty read changes nothing and sends nothing.
+      await requests.observe(ref, {
+        source: "chain",
+        at: FIXTURE_NOW,
+        burnerNative: "0",
+        finality: "best",
+        via: "probe",
+      });
+      expect(worker.calls).toEqual([]);
+
+      await requests.observe(ref, {
+        source: "chain",
+        at: FIXTURE_NOW + MINUTE,
+        burnerNative: "250000000000",
+        finality: "best",
+        via: "probe",
+      });
+      await until(() => worker.calls.length > 0);
+      expect(requests.get(ref)?.status.kind).toBe("deposit-seen");
+      expect(worker.calls).toEqual([startFunding(sessionId, handoff)]);
+    },
+  );
+
+  it("keeps watching the account of a top-up on screen that ended with its deposit gone, and not one that failed otherwise", async () => {
+    const requests = useRequestsStore();
+    worlds.watched.length = 0;
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      status: { kind: "failed", at: FIXTURE_NOW - MINUTE, recoverable: false },
+      failure: { kind: "mint", step: "deposit", message: "failed", recoverable: false },
+    });
+    requests.setForeground(AWAITING_REF);
+    await until(() => worlds.watched.length > 0);
+    expect(worlds.watched).toEqual([]);
+
+    requests.leave();
+    await requests.create(FUNDED_REF, {
+      ...endedLost(migrated(awaitingDepositCryptoRecord)),
+      ref: FUNDED_REF,
+    });
+    requests.setForeground(FUNDED_REF);
+    await until(() => worlds.watched.length > 0);
+    expect(worlds.watched).toEqual(["dot-assethub:4"]);
+  });
+
   it("re-sends the stored payload for a job the worker does not know", async () => {
     const requests = useRequestsStore();
     // Two open requests off screen, each with the hand-off it started with, and the one on
@@ -346,6 +441,39 @@ describe("requests store: the hand-off step", () => {
       handoff: CARD_HANDOFF,
       witnesses: { worker: { known: true, phase: "failed", failure: "expired" } },
     });
+  });
+
+  it("re-sends the stored hand-off for a job that gave up a deposit as lost once it is back, and not before", async () => {
+    const requests = useRequestsStore();
+    const leftAt = FIXTURE_NOW - 2 * MINUTE;
+    const lostJob: WorkerJobRecord = {
+      ...AWAITING_JOB,
+      phase: "failed",
+      failure: "deposit-lost",
+      lastTickAt: FIXTURE_NOW - MINUTE,
+      state: { ...AWAITING_JOB.state, fundsSeenAt: null, depositLeftAt: leftAt },
+    };
+    // Still lost, a direct deposit that expired for it: nothing to hand over.
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+      status: { kind: "expired", at: leftAt },
+      failure: { kind: "expired", step: "deposit", message: "expired", recoverable: false },
+    });
+    // Back on the account, and the send when it landed never reached the worker.
+    await requests.create(FUNDED_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      ref: FUNDED_REF,
+      handoff: FUNDED_HANDOFF,
+      status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
+      observedAt: { "on-burner": FIXTURE_NOW },
+    });
+    await writeJobs({ "dot-assethub:3": lostJob, "dot-assethub:4": lostJob });
+
+    await requests.reconcile("boot");
+
+    expect(worker.calls).toEqual([startFunding("dot-assethub:4", FUNDED_HANDOFF)]);
+    expect(requests.get(FUNDED_REF)?.status.kind).toBe("deposit-seen");
   });
 
   it("builds one world for a legacy record, persists the payload, disposes the world", async () => {

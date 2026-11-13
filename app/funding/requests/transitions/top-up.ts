@@ -9,6 +9,7 @@ import {
   FUNDING_HELD_REASON,
   PROVISIONAL_REVERT_MS,
   buyerPaid,
+  depositGone,
   directDepositGate,
   paymentWatchUntil,
   isConvertingStep,
@@ -140,6 +141,8 @@ function moneySeen(
   assurance: Assurance,
   via: DepositSeenVia,
 ): TopUpRecord {
+  // The provider's word that the buyer paid says nothing new about a deposit that left.
+  if (!seenOnBurner(via) && depositGone(record)) return record;
   const { status } = record;
   if (status.kind === "deposit-seen") {
     if (status.assurance !== "provisional" || assurance !== "finalized") return record;
@@ -152,6 +155,21 @@ function moneySeen(
     funded: earliest(record.funded, at),
   };
   return seenOnBurner(via) ? burnerSighted(seen, at) : seen;
+}
+
+/** The deposit left the best chain at `leftAt`, after the worker took it: its sightings go, and a
+ *  request waits for it again, from the claim too, which the worker says only while it holds no
+ *  claim. Not one the app read final on the account, which no fork takes, nor one seen on the
+ *  account since it left, which is the deposit back. */
+function depositLeft(record: TopUpRecord, leftAt: number): TopUpRecord {
+  if (record.observedAt?.["final-on-burner"] !== undefined) return record;
+  const sightedAt = record.observedAt?.["on-burner"];
+  if (sightedAt !== undefined && sightedAt > leftAt) return record;
+  const { depositInBlock: _taken, ...rest } = burnerSightingRetracted(record);
+  const { kind } = record.status;
+  return kind === "deposit-seen" || kind === "converting" || kind === "claiming"
+    ? { ...rest, status: { kind: "awaiting-deposit" } }
+    : rest;
 }
 
 function failed(record: TopUpRecord, at: number, failure: RequestFailure): TopUpRecord {
@@ -287,6 +305,10 @@ function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): T
     case "done":
       return next.status.kind === "settled" ? next : settled(next, at);
     case "failed": {
+      // Core's window says nothing of a deposit that left with a fork: the worker waits for it
+      // from when it left, and ends the request itself.
+      const windowClosed = state.failure.kind === "stale" || state.failure.kind === "expired";
+      if (windowClosed && depositGone(record)) return next;
       const refundLike =
         state.failure.kind === "refunded" || state.failure.kind === "refund-failed";
       const refunded = refundLike ? true : next.refunded;
@@ -329,6 +351,7 @@ function workerWitness(job: WorkerJobView, at: number): Witnesses["worker"] {
     phase: job.phase,
     done: job.done,
     fundsSeenAt: job.fundsSeenAt,
+    ...(job.depositLeftAt === undefined ? {} : { depositLeftAt: job.depositLeftAt }),
     lastTickAt: job.lastTickAt,
     at,
     ...(job.workedMs === undefined ? {} : { workedMs: job.workedMs }),
@@ -350,7 +373,9 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     job,
     at,
   );
-  // A job that saw funds is a money observation whatever its phase says (3.2, rule 3).
+  // A job that saw funds is a money observation whatever its phase says. It stands as final: the
+  // worker acts on it, at the best block, and says so when a fork takes it away again.
+  if (job.depositLeftAt !== undefined) next = depositLeft(next, job.depositLeftAt);
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
   // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
   // only a retry after a failure drops it.
@@ -405,6 +430,23 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     }
     if (job.failure === "expired" && rank === 0 && !buyerPaid(next)) {
       return expired(next, at);
+    }
+    // The deposit came, left the best chain and did not come back: the request ends however the
+    // provider counts it paid. Not once the deposit was seen on the account again since, which
+    // the hand-off the app then sends re-arms the job for. A direct deposit is the buyer's own
+    // transfer, which nothing sends again: its request was asking for a new one, and expires.
+    if (
+      job.failure === "deposit-lost" &&
+      rank === 0 &&
+      next.observedAt?.["on-burner"] === undefined
+    ) {
+      if (isDirectDeposit(next)) return expired(next, at);
+      return failed(next, at, {
+        kind: "deposit-lost",
+        step: "deposit",
+        message: job.lastError ?? "the deposit did not come back",
+        recoverable: false,
+      });
     }
     return next;
   }
@@ -522,9 +564,12 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
   if (isDirectDeposit(next) && next.deposit !== undefined) {
     if (next.status.kind === "awaiting-deposit") return applyDirectReading(next, observation);
     // An ended one is not brought back by a balance short of the gate: the worker would not
-    // convert it, and the journey offers the way to take it back.
+    // convert it, and the journey offers the way to take it back. One whose deposit a fork took
+    // records what the buyer sent since, which its ending offers back only when it is there.
     const ended = next.status.kind === "expired" || next.status.kind === "cancelled";
-    if (ended && BigInt(burnerNative) < directDepositGate(next)) return next;
+    if (ended && BigInt(burnerNative) < directDepositGate(next)) {
+      return depositGone(next) ? applyDirectReading(next, observation) : next;
+    }
   }
   if (BigInt(burnerNative) > 0n) {
     if (next.status.kind === "settled") {
@@ -583,10 +628,11 @@ function applyClock(record: TopUpRecord, at: number): TopUpRecord {
   const next = witnessed(record, { clock: { at } });
   const { status, deadline } = next;
   const expirable =
-    status.kind === "awaiting-deposit" ||
-    (status.kind === "deposit-seen" &&
-      status.assurance === "provisional" &&
-      status.via === "chain");
+    (status.kind === "awaiting-deposit" ||
+      (status.kind === "deposit-seen" &&
+        status.assurance === "provisional" &&
+        status.via === "chain")) &&
+    !depositGone(next);
   /**
    * The bank transfer's clock is the payment watch, not its pay page.
    *

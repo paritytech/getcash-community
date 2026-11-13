@@ -282,7 +282,7 @@ describe("the views", () => {
     const record = trapped();
     expect(phaseLike(record)).toBe("swapping");
     expect(fundingStepOf(record)).toBe("await-arrival");
-    expect(rowStateOf(record, "Needs a step from you")).toEqual({
+    expect(rowStateOf(record, "Needs a step from you", at(10))).toEqual({
       kind: "finishing",
       status: "Needs a step from you",
     });
