@@ -333,7 +333,12 @@ async function confirm() {
   try {
     // The sale is frozen next, so it is decided again on the chain as it stands: the PSM may have
     // filled up since the summary. Nothing starts on a sale the summary did not show.
-    const fresh = await estimate(picked, base, true);
+    const [fresh, landingHex] = await Promise.all([
+      estimate(picked, base, true),
+      landingAccountHex(picked, address.value, async (h160) =>
+        (await import("~~/lib/withdraw-live")).readH160Account(h160),
+      ),
+    ]);
     if (leftSummary(picked) || sale.value !== shown) return;
     // Under the minimum on every sale: the summary gives way to the out-of-range screen.
     if (fresh.kind === "too-small") {
@@ -353,7 +358,7 @@ async function confirm() {
       destinationId: picked.id,
       amount: base,
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
-      landingHex: landingAccountHex(picked, address.value),
+      landingHex,
       rail: picked.rail,
       sale: shown,
       ...(expectedLanding.value === null ? {} : { expectedLanding: expectedLanding.value }),

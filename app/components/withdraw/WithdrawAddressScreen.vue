@@ -3,7 +3,7 @@
 // pasted or scanned from a QR code, checked against the destination's own rule. An address another
 // network would take gets the wrong-network error; anything else invalid is just incorrect. A
 // scanned code made for another network or token says so. Valid turns the disabled Next into
-// Continue with the design's wrong-network warning.
+// Continue with a warning.
 import { computed, ref } from "vue";
 import { CircleAlert, Clipboard, Scan } from "lucide-vue-next";
 import {
@@ -153,7 +153,8 @@ function scanned(text: string) {
     <template #actions>
       <div class="flex flex-col gap-4">
         <p v-if="valid" class="text-center text-body-s text-fg-secondary">
-          Funds sent to the wrong network can't be recovered.
+          Send to a wallet you control. Funds sent to the wrong network, or to an invalid address,
+          may be lost.
         </p>
         <PillButton class="w-full" :disabled="!valid" @click="emit('next', trimmed)">
           {{ valid ? "Continue" : "Next" }}

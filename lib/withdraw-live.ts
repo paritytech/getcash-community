@@ -863,6 +863,13 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   }
 }
 
+/** The account Asset Hub maps an H160 to, asked of its runtime at the best block. */
+export async function readH160Account(h160: `0x${string}`): Promise<string> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  return api.apis.ReviveApi.account_id(h160, { at: "best" });
+}
+
 /** The key's balance on Asset Hub in the token `sale` lands: what a provider refunded, when the
  *  swap could not fill, and what a fresh channel is quoted for. */
 export async function readWithdrawKeyBalanceOnAssetHub(
