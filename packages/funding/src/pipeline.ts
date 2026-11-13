@@ -1211,6 +1211,9 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   ) {
     markDepositLeft(state, input.now());
   }
+  // Any money on the account again, short of the gate or not, ends the wait for the deposit that
+  // left: the run waits on its deposit window as for any deposit.
+  if (depositAh > 0n) state.depositLeftAt = null;
   // Funds seen: from here the conversion is on the clock, and a deposit that left is back.
   if (effective !== "await-native") {
     state.fundsSeenAt ??= input.now();

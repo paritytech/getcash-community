@@ -24,7 +24,9 @@ background inside the host. Once a deposit has landed, the surface hands the job
 worker. The worker takes the deposit at Asset Hub's best block, whoever sent it: a fork that
 drops the deposit drops the conversion built on it too, and a dropped transfer lands again. While
 it is gone the worker waits for it again and the surface shows it arriving again, warning after an
-hour; a deposit gone for a day is given up as lost. It
+hour; a deposit gone for a day is given up as lost. A deposit the buyer sent from their own wallet
+has no provider to send it again: ten minutes after it left, once the dropped transfer can no
+longer land, the surface shows the deposit screen again and asks the buyer to resend it. It
 converts the deposit to CASH and sends it to the People chain in one transaction on Asset
 Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, as
 soon as that CASH shows at People's best block, claims it through the host's top-up call, while it

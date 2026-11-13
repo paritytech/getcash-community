@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { migrateRecord } from "../app/funding/requests/migrate";
+import { DIRECT_RESEND_AFTER_MS } from "../app/funding/requests/views";
 import type { ChainflipFacts, RequestFailure, TopUpRecord } from "../app/funding/requests/model";
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
 import { directRoute } from "../app/funding/timeline/direct";
@@ -32,6 +33,7 @@ const RECEIVED = SENT + MINUTE;
 const CONVERTED = RECEIVED + 20 * SECOND;
 const MOVED = CONVERTED + MINUTE;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 const SEEN_T = 30 * SECOND;
 /** The worker's working time when it saw the conversion. */
 const CONVERTED_WORKED = 20 * SECOND;
@@ -435,6 +437,34 @@ describe("top-up timeline, a deposit a fork took", () => {
     const view = openedTimeline(direct, directRoute, { now: LEFT + MINUTE, watchingSince: SENT });
     expect(marks(view.view)).toBe("●●●○○○○");
     expect(view.message).toEqual(normal("Your money is arriving"));
+    // Asked for again, it is awaited as any deposit is: the timeline closes on the deposit screen.
+    const again = { now: LEFT + DIRECT_RESEND_AFTER_MS, watchingSince: SENT };
+    expect(topUpTimeline(direct, directRoute, again)).toBeUndefined();
+  });
+
+  it("ends a direct deposit that expired after its transfer was dropped as one never sent", () => {
+    const expiredDirect: TopUpRecord = {
+      ...cryptoRecord(POLKADOT_DOT),
+      status: { kind: "expired", at: LEFT + DAY },
+      failure: { kind: "expired", step: "deposit", message: "expired", recoverable: false },
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "failed",
+          done: false,
+          fundsSeenAt: null,
+          depositLeftAt: LEFT,
+          lastTickAt: LEFT + DAY,
+          at: LEFT + DAY,
+          failure: "deposit-lost",
+        },
+      },
+    };
+    const view = openedTimeline(expiredDirect, directRoute, {
+      now: LEFT + DAY + MINUTE,
+      watchingSince: SENT,
+    });
+    expect(marks(view.view)).toBe("✕○○○○○○");
   });
 
   it("does not say a deposit seen on the account again was dropped", () => {
@@ -1088,11 +1118,6 @@ describe("top-up timeline, failures", () => {
       card(),
       `Your money didn't arrive. ${PROVIDER} sent it, but the network dropped the transfer. Contact ${PROVIDER} with the reference below to get it back.`,
     ],
-    [
-      "a direct deposit",
-      cryptoRecord(POLKADOT_DOT),
-      "Your transfer was dropped by the network, so the money is still in your wallet.",
-    ],
   ])("ends a deposit that left the best chain and never came back, on %s", (_, topUp, text) => {
     const lost = failed(topUp, { kind: "deposit-lost", message: "the deposit did not come back" });
     expect(failureOf(lost)).toMatchObject({ text, action: CLOSE });
@@ -1251,6 +1276,22 @@ describe("top-up timeline, failures", () => {
     ...cryptoRecord(POLKADOT_DOT),
     observedAt: { "on-burner": SENT },
   });
+  /** A direct deposit the worker took and then saw leave the best chain: it never stayed. */
+  const droppedDirect = (): TopUpRecord => ({
+    ...cryptoRecord(POLKADOT_DOT),
+    witnesses: {
+      worker: {
+        known: true,
+        phase: "failed",
+        done: false,
+        fundsSeenAt: null,
+        depositLeftAt: SENT,
+        lastTickAt: SENT,
+        at: SENT,
+        failure: "deposit-lost",
+      },
+    },
+  });
   const directRows: Row[] = [
     [
       "a direct deposit that expired short",
@@ -1274,6 +1315,23 @@ describe("top-up timeline, failures", () => {
       failed(direct(), { kind: "unknown", message: "The deposit could not be read" }),
       "The deposit could not be read",
       CLOSE,
+      {},
+    ],
+    [
+      "a direct deposit that expired after the network dropped its transfer",
+      expired(droppedDirect()),
+      CRYPTO_EXPIRED_TEXT,
+      CLOSE,
+      {},
+    ],
+    [
+      "a direct deposit that expired short after its transfer was dropped",
+      expired({
+        ...droppedDirect(),
+        depositMismatch: { kind: "short", asset: "DOT", amount: "1000000", at: SENT },
+      }),
+      CRYPTO_EXPIRED_TEXT,
+      { kind: "get-back", source: "DOT", from: "deposit-account" },
       {},
     ],
   ];

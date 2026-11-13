@@ -280,57 +280,85 @@ describe("requests store: the hand-off step", () => {
     setMirrorStorage(null);
   });
 
-  it("re-sends the stored hand-off when a lost deposit lands on the account late, and not otherwise", async () => {
-    const requests = useRequestsStore();
-    const lost: RequestRecord = {
-      ...migrated(awaitingDepositCryptoRecord),
-      handoff: AWAITING_HANDOFF,
-      status: { kind: "failed", at: FIXTURE_NOW - MINUTE, recoverable: false },
-      failure: {
-        kind: "deposit-lost",
-        step: "deposit",
-        message: "the deposit did not come back",
-        recoverable: false,
-      },
-    };
-    await requests.create(AWAITING_REF, lost);
-    // An empty read changes nothing and sends nothing.
-    await requests.observe(AWAITING_REF, {
-      source: "chain",
-      at: FIXTURE_NOW,
-      burnerNative: "0",
-      finality: "best",
-      via: "probe",
-    });
-    expect(worker.calls).toEqual([]);
+  /** The worker's word, kept on the record, that it gave the deposit up as lost. */
+  const LOST_WORKER = {
+    known: true,
+    phase: "failed",
+    done: false,
+    fundsSeenAt: null,
+    depositLeftAt: FIXTURE_NOW - 24 * 60 * MINUTE,
+    lastTickAt: FIXTURE_NOW - MINUTE,
+    at: FIXTURE_NOW - MINUTE,
+    failure: "deposit-lost",
+  } as const;
+  /** A top-up that ended with its deposit gone: a direct one expires, a provider's fails as lost. */
+  function endedLost(record: RequestRecord): RequestRecord {
+    const at = FIXTURE_NOW - MINUTE;
+    const witnesses = { ...record.witnesses, worker: LOST_WORKER };
+    return record.ref.sourceId === "dot-assethub"
+      ? {
+          ...record,
+          witnesses,
+          status: { kind: "expired", at },
+          failure: { kind: "expired", step: "deposit", message: "expired", recoverable: false },
+        }
+      : {
+          ...record,
+          witnesses,
+          status: { kind: "failed", at, recoverable: false },
+          failure: { kind: "deposit-lost", step: "deposit", message: "lost", recoverable: false },
+        };
+  }
 
-    await requests.observe(AWAITING_REF, {
-      source: "chain",
-      at: FIXTURE_NOW + MINUTE,
-      burnerNative: "250000000000",
-      finality: "best",
-      via: "probe",
-    });
-    await until(() => worker.calls.length > 0);
-    expect(requests.get(AWAITING_REF)?.status.kind).toBe("deposit-seen");
-    expect(worker.calls).toEqual([startFunding("dot-assethub:3", AWAITING_HANDOFF)]);
-  });
+  it.each([
+    ["a direct deposit", AWAITING_REF, "dot-assethub:3", AWAITING_HANDOFF],
+    ["a card payment", SUBMITTED_REF, "meld-card:2", CARD_HANDOFF],
+  ] as const)(
+    "re-sends the stored hand-off when %s that ended with its deposit gone lands late, and not before",
+    async (_, ref, sessionId, handoff) => {
+      const requests = useRequestsStore();
+      const base = ref === AWAITING_REF ? awaitingDepositCryptoRecord : submittedCardRecord;
+      await requests.create(ref, endedLost({ ...migrated(base), handoff }));
+      // An empty read changes nothing and sends nothing.
+      await requests.observe(ref, {
+        source: "chain",
+        at: FIXTURE_NOW,
+        burnerNative: "0",
+        finality: "best",
+        via: "probe",
+      });
+      expect(worker.calls).toEqual([]);
 
-  it("keeps watching the account of a top-up on screen whose deposit was lost, and not one that failed otherwise", async () => {
+      await requests.observe(ref, {
+        source: "chain",
+        at: FIXTURE_NOW + MINUTE,
+        burnerNative: "250000000000",
+        finality: "best",
+        via: "probe",
+      });
+      await until(() => worker.calls.length > 0);
+      expect(requests.get(ref)?.status.kind).toBe("deposit-seen");
+      expect(worker.calls).toEqual([startFunding(sessionId, handoff)]);
+    },
+  );
+
+  it("keeps watching the account of a top-up on screen that ended with its deposit gone, and not one that failed otherwise", async () => {
     const requests = useRequestsStore();
-    const failedAs = (kind: "deposit-lost" | "mint"): RequestRecord => ({
-      ...migrated(awaitingDepositCryptoRecord),
-      status: { kind: "failed", at: FIXTURE_NOW - MINUTE, recoverable: false },
-      failure: { kind, step: "deposit", message: "failed", recoverable: false },
-    });
     worlds.watched.length = 0;
-    await requests.create(AWAITING_REF, failedAs("mint"));
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      status: { kind: "failed", at: FIXTURE_NOW - MINUTE, recoverable: false },
+      failure: { kind: "mint", step: "deposit", message: "failed", recoverable: false },
+    });
     requests.setForeground(AWAITING_REF);
     await until(() => worlds.watched.length > 0);
     expect(worlds.watched).toEqual([]);
 
     requests.leave();
-    await requests.create(FUNDED_REF, { ...failedAs("deposit-lost"), ref: FUNDED_REF });
+    await requests.create(FUNDED_REF, {
+      ...endedLost(migrated(awaitingDepositCryptoRecord)),
+      ref: FUNDED_REF,
+    });
     requests.setForeground(FUNDED_REF);
     await until(() => worlds.watched.length > 0);
     expect(worlds.watched).toEqual(["dot-assethub:4"]);

@@ -9,6 +9,7 @@ import {
   FUNDING_HELD_REASON,
   PROVISIONAL_REVERT_MS,
   buyerPaid,
+  depositGone,
   directDepositGate,
   paymentWatchUntil,
   isConvertingStep,
@@ -118,16 +119,6 @@ function without(record: TopUpRecord, fields: readonly ClearedField[]): TopUpRec
 const earliest = (funded: number | undefined, at: number): number =>
   funded === undefined ? at : Math.min(funded, at);
 
-/** The deposit reached the account and left the best chain, and the worker has not seen it back:
- *  the provider's word that the buyer paid says nothing new, and the worker owns the wait. */
-const depositGone = (record: TopUpRecord): boolean => {
-  const worker = record.witnesses.worker;
-  return (
-    record.failure?.kind === "deposit-lost" ||
-    (worker?.known === true && worker.depositLeftAt !== undefined)
-  );
-};
-
 /** The leg a record leaves when it fails at `rank`; `rankOf` reads it back. Core's own step
  *  speaks about the core flow's legs and cannot stand in for it. */
 const stepLeft = (rank: number): FailureStep =>
@@ -150,6 +141,7 @@ function moneySeen(
   assurance: Assurance,
   via: DepositSeenVia,
 ): TopUpRecord {
+  // The provider's word that the buyer paid says nothing new about a deposit that left.
   if (!seenOnBurner(via) && depositGone(record)) return record;
   const { status } = record;
   if (status.kind === "deposit-seen") {
@@ -313,6 +305,10 @@ function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): T
     case "done":
       return next.status.kind === "settled" ? next : settled(next, at);
     case "failed": {
+      // Core's window says nothing of a deposit that left with a fork: the worker waits for it
+      // from when it left, and ends the request itself.
+      const windowClosed = state.failure.kind === "stale" || state.failure.kind === "expired";
+      if (windowClosed && depositGone(record)) return next;
       const refundLike =
         state.failure.kind === "refunded" || state.failure.kind === "refund-failed";
       const refunded = refundLike ? true : next.refunded;
@@ -437,12 +433,14 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     }
     // The deposit came, left the best chain and did not come back: the request ends however the
     // provider counts it paid. Not once the deposit was seen on the account again since, which
-    // the hand-off the app then sends re-arms the job for.
+    // the hand-off the app then sends re-arms the job for. A direct deposit is the buyer's own
+    // transfer, which nothing sends again: its request was asking for a new one, and expires.
     if (
       job.failure === "deposit-lost" &&
       rank === 0 &&
       next.observedAt?.["on-burner"] === undefined
     ) {
+      if (isDirectDeposit(next)) return expired(next, at);
       return failed(next, at, {
         kind: "deposit-lost",
         step: "deposit",
@@ -565,12 +563,9 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
   };
   if (isDirectDeposit(next) && next.deposit !== undefined) {
     if (next.status.kind === "awaiting-deposit") return applyDirectReading(next, observation);
-    // A balance short of the gate brings back neither an ended one, whose journey offers the way
-    // to take it back, nor one whose deposit was lost: the worker would convert neither.
-    const ended =
-      next.status.kind === "expired" ||
-      next.status.kind === "cancelled" ||
-      next.failure?.kind === "deposit-lost";
+    // An ended one is not brought back by a balance short of the gate: the worker would not
+    // convert it, and the journey offers the way to take it back.
+    const ended = next.status.kind === "expired" || next.status.kind === "cancelled";
     if (ended && BigInt(burnerNative) < directDepositGate(next)) return next;
   }
   if (BigInt(burnerNative) > 0n) {

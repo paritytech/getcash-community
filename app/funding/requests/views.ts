@@ -7,6 +7,8 @@ import { fmtCashToCents } from "../../utils/cash";
 import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
+  depositGone,
+  isDirectDeposit,
   isFinished,
   paymentWatchUntil,
   rankOf,
@@ -101,9 +103,9 @@ export const fundsSeenOf = (record: TopUpRecord): boolean =>
 export const expiredFailure = (kind?: FailureKind): boolean =>
   kind === "expired" || kind === "stale";
 
-/** The list row's state, a running one worded by `label`. A cancelled record is never listed; it
- *  reads as failed so the type has a value. */
-export function rowStateOf(record: TopUpRecord, label: string): FundingTopUpState {
+/** The list row's state at `now`, a running one worded by `label`. A cancelled record is never
+ *  listed; it reads as failed so the type has a value. */
+export function rowStateOf(record: TopUpRecord, label: string, now: number): FundingTopUpState {
   const { status } = record;
   switch (status.kind) {
     case "settled":
@@ -137,7 +139,11 @@ export function rowStateOf(record: TopUpRecord, label: string): FundingTopUpStat
     case "cancelled":
       return { kind: "failed", at: status.at, reason: "Cancelled" };
     case "awaiting-deposit":
-      return { kind: "awaiting-transfer", status: label };
+      // A deposit a fork took was sent: the journey waits for it, not the screen that asks for it.
+      // A direct one asked for again is awaited as any deposit is.
+      return depositGone(record) && !directDepositDropped(record, now)
+        ? { kind: "finishing", status: label }
+        : { kind: "awaiting-transfer", status: label };
     case "claiming":
       if (record.creditedAt !== undefined) {
         return {
@@ -189,6 +195,23 @@ export function meldAwaitingBuyerOf(record: TopUpRecord, now: number): boolean {
     status.kind === "deposit-seen" &&
     status.assurance === "provisional" &&
     (status.via === "rail" || status.via === "core")
+  );
+}
+
+/** How long a direct deposit a fork dropped is waited for before the buyer is asked to send it
+ *  again: past the lifetime most wallets sign a transfer with, so the first can no longer land. */
+export const DIRECT_RESEND_AFTER_MS = 10 * 60_000;
+
+/** A direct deposit the network dropped long enough ago that only a new transfer brings it: the
+ *  journey shows where to send it again. */
+export function directDepositDropped(record: TopUpRecord, now: number): boolean {
+  const worker = record.witnesses.worker;
+  const leftAt = worker?.known === true ? worker.depositLeftAt : undefined;
+  return (
+    isDirectDeposit(record) &&
+    record.status.kind === "awaiting-deposit" &&
+    leftAt !== undefined &&
+    now - leftAt >= DIRECT_RESEND_AFTER_MS
   );
 }
 

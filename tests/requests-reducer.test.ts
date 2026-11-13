@@ -1088,7 +1088,7 @@ describe("request reducer: a deposit a fork took", () => {
     expect(reduce(unknown, meld(at(7), { status: "receiving" })).status.kind).toBe("failed");
   });
 
-  it("goes back from the claim when the deposit left before the worker held a claim, and ends it as lost", () => {
+  it("goes back from the claim when the deposit left before the worker held a claim, and expires a direct one that never comes back", () => {
     const arrived = reduce(
       taken(),
       worker(at(4), job({ phase: "done", done: true, fundsSeenAt: at(1), lastTickAt: at(4) })),
@@ -1097,14 +1097,28 @@ describe("request reducer: a deposit a fork took", () => {
 
     const gone = reduce(arrived, left(at(5), at(5)));
     expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+    // Nothing sends the buyer's own transfer again: the request that asked for a new one expires.
     const lost = reduce(gone, left(at(6), at(5), { phase: "failed", failure: "deposit-lost" }));
-    expect(lost.failure).toMatchObject({ kind: "deposit-lost", step: "deposit" });
+    expect(lost.status).toEqual({ kind: "expired", at: at(6) });
   });
 
   it("does not expire a request whose deposit left while the worker waits for it to come back", () => {
     const deadline = awaitingDepositCryptoRecord.depositExpiresAt!;
     const gone = reduce(reduce(taken(), left(at(3), at(3))), clock(deadline + 1));
     expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+    // Nor does core's own window on a reopen, which knows nothing of the fork.
+    const stale: Observation = {
+      source: "core",
+      at: deadline + 2,
+      state: {
+        phase: "failed",
+        sourceId: "dot-assethub",
+        failure: { kind: "stale", message: "stale", recoverable: false },
+      } as PaymentState,
+    };
+    const reopened = reduce(gone, stale);
+    expect(reopened.status).toEqual({ kind: "awaiting-deposit" });
+    expect(reopened.failure).toBeUndefined();
   });
 
   it("takes Converted and the arrival back when the worker sends the conversion again in one tick", () => {

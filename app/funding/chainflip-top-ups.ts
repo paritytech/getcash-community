@@ -75,7 +75,7 @@ export function projectChainflipTopUps(
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
         request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
-        state: rowStateOf(record, listHeadline("crypto", timeline).text),
+        state: rowStateOf(record, listHeadline("crypto", timeline).text, now),
       },
     ];
   });

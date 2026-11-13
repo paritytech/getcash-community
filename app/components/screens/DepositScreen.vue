@@ -10,7 +10,10 @@ import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { depositQrValue } from "../../funding/deposit-qr";
-import { effectiveSourceId } from "../../funding/requests/model";
+import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
+import { depositGone, effectiveSourceId } from "../../funding/requests/model";
+import { directDepositDropped } from "../../funding/requests/views";
+import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import DepositMismatchSheet from "../funding/DepositMismatchSheet.vue";
 import RecoverDepositScreen from "./RecoverDepositScreen.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
@@ -47,6 +50,21 @@ function recoverFromSheet() {
   if (flow.previewMismatch) flow.previewMismatch = null;
   else flow.recoveringDeposit = true;
 }
+
+/** The clock the line below waits on; it runs only while a deposit is gone. */
+const now = useFundingProgressClock(() => {
+  const record = requests.foregroundRecord;
+  return record !== null && depositGone(record) ? TIMELINE_CADENCE_MS : null;
+});
+/** A direct deposit asked for again: the network dropped the buyer's transfer, which no one sends
+ *  again, so the line above the QR says why the screen is back. Not before the dropped transfer
+ *  could still land, which a second one would pay twice. */
+const notice = computed(() => {
+  const record = requests.foregroundRecord;
+  return record !== null && directDepositDropped(record, now.value)
+    ? "The network dropped your transfer, so the money is still in your wallet. Send it again to continue."
+    : null;
+});
 
 // The record keeps the amount as a decimal string; the estimate takes the bigint core gave it.
 const deposit = computed(() => {
@@ -166,6 +184,9 @@ function copy(target: "amount" | "address") {
   <RecoverDepositScreen v-else-if="flow.recoveringDeposit" @back="flow.recoveringDeposit = false" />
 
   <ScreenFrame v-else>
+    <p v-if="notice" role="status" class="shrink-0 pb-4 text-center text-body-m text-fg-secondary">
+      {{ notice }}
+    </p>
     <!-- The one flexible block on the screen. Short webviews shrink the QR to a scannable
          floor. The basis carries the card's 288px plus this block's own 16px bottom gap. -->
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">

@@ -4,12 +4,15 @@
 // from a package's handoff or from a top-up opened from the list.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { RecoveryToken } from "@getsome/funding";
+import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { usePurseBalance } from "../../composables/usePurseBalance";
 import { useScreen } from "../../composables/useScreen";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import { recoveryChoices } from "../../funding/recovery-deposit";
-import { burnerAddressOf } from "../../funding/requests/model";
+import { burnerAddressOf, depositGone, isDirectDeposit } from "../../funding/requests/model";
+import { directDepositDropped } from "../../funding/requests/views";
+import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import {
   awaitingAnswer,
   recoveryFee,
@@ -25,6 +28,7 @@ import { fmtCash } from "../../utils/cash";
 import { isDemoBuild } from "../../utils/demo";
 import { requestRefKey } from "../../utils/request-index";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
+import DepositScreen from "../screens/DepositScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import ScreenShell from "../ui/ScreenShell.vue";
 import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
@@ -178,6 +182,9 @@ useScreen(() => {
     return "top-up.recover-trapped";
   }
   if (showingFees.value) return "fees";
+  if (depositAgain.value) {
+    return flow.recoveringDeposit ? "top-up.recover-deposit" : "top-up.deposit";
+  }
   return "top-up.journey";
 });
 /** The host's word on the fee's payment. */
@@ -340,6 +347,27 @@ watch(
   },
 );
 
+/** The clock that turns a dropped direct deposit back into the deposit screen; it runs only while
+ *  a deposit is gone. */
+const now = useFundingProgressClock(() => {
+  const record = requests.foregroundRecord;
+  return record !== null && depositGone(record) ? TIMELINE_CADENCE_MS : null;
+});
+/** The network dropped the buyer's own transfer long enough ago that it will not land: the journey
+ *  asks for it again where it was first asked. It stays there once something the buyer sent since
+ *  is on the account short of the deposit, which ends the wait for the one that left. */
+const depositAgain = computed(() => {
+  const record = requests.foregroundRecord;
+  if (record === null || !isDirectDeposit(record)) return false;
+  if (record.status.kind !== "awaiting-deposit") return false;
+  return directDepositDropped(record, now.value) || !depositGone(record);
+});
+// The deposit's way back closes with the deposit screen: the rest of a short deposit landed, or
+// the request ended.
+watch(depositAgain, (again) => {
+  if (!again) flow.recoveringDeposit = false;
+});
+
 /** The toolbar's title: the drill-ins name themselves, the live journey carries none. */
 const shellTitle = computed(() => {
   if (showingFees.value) return "Fees";
@@ -350,6 +378,7 @@ const shellTitle = computed(() => {
 
 function goBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
+  else if (flow.recoveringDeposit) flow.recoveringDeposit = false;
   else if (showingRefund.value) showingRefund.value = false;
   else if (showingRecovery.value) showingRecovery.value = false;
   else if (recoveryScreen.value !== null) recoveryScreen.value = null;
@@ -384,8 +413,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   active = false;
-  // The confirmation belongs to this screen; leaving must not carry it to the next one.
+  // The confirmation and the deposit's way back belong to this screen; leaving must not carry them
+  // to the next one.
   flow.confirmingCancel = false;
+  flow.recoveringDeposit = false;
   if (!readOnly) session.reset();
 });
 </script>
@@ -418,7 +449,7 @@ onUnmounted(() => {
 
     <CancelTopUpScreen
       v-else-if="flow.confirmingCancel"
-      kind="transfer"
+      :kind="requests.foregroundRecord?.route === 'crypto' ? 'deposit' : 'transfer'"
       @confirm="cancelTopUp"
       @keep="flow.confirmingCancel = false"
     />
@@ -455,6 +486,7 @@ onUnmounted(() => {
       :cash-amount="cashAmount"
       @back="showingFees = false"
     />
+    <DepositScreen v-else-if="depositAgain" @cancel="flow.confirmingCancel = true" />
     <template v-else>
       <JourneyScreen
         :top-up="topUp ?? null"

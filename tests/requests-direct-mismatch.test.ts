@@ -165,7 +165,7 @@ describe("a Polkadot deposit", () => {
     }
   });
 
-  it("is not brought back by a balance short of the gate once its deposit was lost, only by the deposit", () => {
+  it("expires once its deposit was lost, and is then brought back only by the deposit", () => {
     const job = { done: false, lastTickAt: 30, claim: null } as const;
     const seen = reduce(record("dotusd-assethub"), reading(ASKED, 10, null));
     const taken = reduce(seen, {
@@ -184,10 +184,10 @@ describe("a Polkadot deposit", () => {
         depositLeftAt: 25,
       },
     });
-    expect(lost.failure?.kind).toBe("deposit-lost");
+    expect(lost.status.kind).toBe("expired");
 
     const short = reduce(lost, reading(8_000_000n, 40));
-    expect(short.status.kind).toBe("failed");
+    expect(short.status.kind).toBe("expired");
     expect(short.depositMismatch).toBeUndefined();
     expect(reduce(lost, reading(ASKED, 40)).status.kind).toBe("deposit-seen");
   });

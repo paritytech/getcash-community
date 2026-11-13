@@ -1461,6 +1461,22 @@ describe("tickOnce", () => {
     expect(world.state.txs).toEqual([]);
   });
 
+  it("ends the wait for a deposit that left once any money is on the burner again, short of the gate included", async () => {
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // The buyer sends again, less than the gate: not the deposit, but no longer the one that left.
+    world.state.nativeAh = KEEP + 1n;
+    const short = await drive(world, 1, state, POOL, undefined, { now: () => 9_000 });
+    expect(short.steps).toEqual(["await-native"]);
+    expect(state).toMatchObject({ fundsSeenAt: null, depositLeftAt: null });
+  });
+
   it("does not take a deposit left short as gone: only an empty burner is a deposit that left", async () => {
     const world = scriptedWorld({ rejectSubmits: 1 });
     world.state.nativeAh = ASK + KEEP;

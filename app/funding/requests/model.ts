@@ -1079,3 +1079,13 @@ export const railSawPayment = (record: Pick<TopUpRecord, "rail">): boolean =>
  *  the provider's widget. Such a request never expires, however long the funds take to land. */
 export const buyerPaid = (record: Pick<TopUpRecord, "rail" | "meldSubmittedAt">): boolean =>
   railSawPayment(record) || record.meldSubmittedAt !== undefined;
+
+/** The deposit reached the account and left the best chain, and the worker has not seen it back:
+ *  it was sent, and the worker owns the wait for it. */
+export const depositGone = (record: Pick<TopUpRecord, "failure" | "witnesses">): boolean => {
+  const worker = record.witnesses.worker;
+  return (
+    record.failure?.kind === "deposit-lost" ||
+    (worker?.known === true && worker.depositLeftAt !== undefined)
+  );
+};

@@ -942,12 +942,19 @@ function depositLeft(at: number, leftAt: number, over: Partial<WorkerJobView> = 
   };
 }
 
-/** A Chainflip swap that sent its deposit, which the worker took two minutes before a fork took it
- *  back, `leftMinutesAgo` minutes ago. Returns when it left. */
-async function depositDropped(s: Session, f: Flow, index: number, leftMinutesAgo = 0) {
+/** A swap that sent its deposit, which the worker took two minutes before a fork took it back,
+ *  `leftMinutesAgo` minutes ago. Under Chainflip's own source when `chainflip`, the preview's direct
+ *  one otherwise. Returns when it left. */
+async function depositDropped(
+  s: Session,
+  f: Flow,
+  index: number,
+  { leftMinutesAgo = 0, chainflip = false }: { leftMinutesAgo?: number; chainflip?: boolean } = {},
+) {
   base(s, f);
   const r = await previewRequest(s, {
     ...BITCOIN_SWAP,
+    ...(chainflip ? { sourceId: "btc" } : {}),
     index,
     startedMinutesAgo: leftMinutesAgo + 5,
   });
@@ -2532,17 +2539,25 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // An hour on the deposit is still not back: the line turns amber and says so.
+    // The buyer's own transfer is past the time it could land again: the deposit screen asks for
+    // it once more.
+    name: "top-up / crypto / journey: transfer dropped, asked again",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i, { leftMinutesAgo: 11 });
+    },
+  },
+  {
+    // An hour on, Chainflip's payout is still not back: the line turns amber and says so.
     name: "top-up / crypto / pipeline: deposit dropped, an hour on",
     apply: async (s, f, i) => {
-      await depositDropped(s, f, i, 61);
+      await depositDropped(s, f, i, { leftMinutesAgo: 61, chainflip: true });
     },
   },
   {
     // A day on it never came back: the top-up ends.
     name: "top-up / crypto / journey: deposit lost",
     apply: async (s, f, i) => {
-      const { r, leftAt } = await depositDropped(s, f, i);
+      const { r, leftAt } = await depositDropped(s, f, i, { chainflip: true });
       await r.observe(
         depositLeft(leftAt + 1_000, leftAt, { phase: "failed", failure: "deposit-lost" }),
       );

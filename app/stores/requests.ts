@@ -36,6 +36,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   conversionRouteOf,
+  depositGone,
   effectiveSourceId,
   handoffSaleOf,
   isDirectDeposit,
@@ -234,16 +235,21 @@ const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "sent",
 ]);
 
-/** A top-up that had lost its deposit has it on its account again. */
+/** A top-up that ended with its deposit gone has it on its account again: failed as lost, or, a
+ *  direct one, expired. */
 function lostDepositBack(previous: RequestRecord, next: RequestRecord): next is TopUpRecord {
   return (
     isTopUp(previous) &&
     isTopUp(next) &&
-    previous.failure?.kind === "deposit-lost" &&
+    endedGone(previous) &&
     next.failure === undefined &&
     next.status.kind === "deposit-seen"
   );
 }
+
+/** Ended while its deposit was gone: the worker gave the job up, and the deposit may still land. */
+const endedGone = (record: TopUpRecord): boolean =>
+  (record.status.kind === "failed" || record.status.kind === "expired") && depositGone(record);
 
 /** A critical change is written to the host before `observe` resolves: the money's first
  *  sighting (a worker step can carry a record from rank 0 straight to converting), a terminal or
@@ -1559,7 +1565,7 @@ export const useRequestsStore = defineStore("requests", () => {
     return (
       kind === "awaiting-deposit" ||
       (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined) ||
-      (kind === "failed" && record.failure?.kind === "deposit-lost")
+      endedGone(record)
     );
   }
   /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
