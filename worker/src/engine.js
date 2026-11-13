@@ -64,7 +64,8 @@ const MAX_TICK_GAP_MS = 30_000;
 const DEPOSIT_WINDOW_MS = 86_400_000;
 /** A deposit that left the best chain after it was seen is waited for this long from when it
  *  left, then the job fails as lost. Long, since a provider's transfer can land again late, after
- *  an outage; the page warns long before, an hour after it left. */
+ *  an outage. The page warns an hour after it left, and asks for a direct deposit again after ten
+ *  minutes. */
 const DEPOSIT_RETURN_WINDOW_MS = 86_400_000;
 
 const store = createJobStore(FUNDING_KEY, "funding");

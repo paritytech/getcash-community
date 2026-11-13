@@ -453,18 +453,12 @@ describe("requests store: the hand-off step", () => {
       lastTickAt: FIXTURE_NOW - MINUTE,
       state: { ...AWAITING_JOB.state, fundsSeenAt: null, depositLeftAt: leftAt },
     };
-    const failure = {
-      kind: "deposit-lost" as const,
-      step: "deposit" as const,
-      message: "the deposit did not come back",
-      recoverable: false,
-    };
-    // Still lost: nothing to hand over.
+    // Still lost, a direct deposit that expired for it: nothing to hand over.
     await requests.create(AWAITING_REF, {
       ...migrated(awaitingDepositCryptoRecord),
       handoff: AWAITING_HANDOFF,
-      status: { kind: "failed", at: leftAt, recoverable: false },
-      failure,
+      status: { kind: "expired", at: leftAt },
+      failure: { kind: "expired", step: "deposit", message: "expired", recoverable: false },
     });
     // Back on the account, and the send when it landed never reached the worker.
     await requests.create(FUNDED_REF, {

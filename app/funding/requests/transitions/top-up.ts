@@ -564,9 +564,12 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
   if (isDirectDeposit(next) && next.deposit !== undefined) {
     if (next.status.kind === "awaiting-deposit") return applyDirectReading(next, observation);
     // An ended one is not brought back by a balance short of the gate: the worker would not
-    // convert it, and the journey offers the way to take it back.
+    // convert it, and the journey offers the way to take it back. One whose deposit a fork took
+    // records what the buyer sent since, which its ending offers back only when it is there.
     const ended = next.status.kind === "expired" || next.status.kind === "cancelled";
-    if (ended && BigInt(burnerNative) < directDepositGate(next)) return next;
+    if (ended && BigInt(burnerNative) < directDepositGate(next)) {
+      return depositGone(next) ? applyDirectReading(next, observation) : next;
+    }
   }
   if (BigInt(burnerNative) > 0n) {
     if (next.status.kind === "settled") {

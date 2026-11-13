@@ -70,7 +70,8 @@ const inResendWait = (record: TopUpRecord, now: number): boolean =>
 /** The provider's milestones, with Sent at the provider's report or the deposit on the burner,
  *  whichever came first: money on the burner shows the provider sent it. A deposit a fork took
  *  back off the burner was sent all the same; a direct deposit has no other word for it, until it
- *  is asked for again, when the timeline closes on the deposit screen, or ends as one never sent. */
+ *  is asked for again, when the timeline closes on the deposit screen, or ends as one never
+ *  sent. */
 function providerMilestones(
   record: TopUpRecord,
   route: TimelineRoute,

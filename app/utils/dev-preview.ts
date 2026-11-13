@@ -943,8 +943,8 @@ function depositLeft(at: number, leftAt: number, over: Partial<WorkerJobView> = 
 }
 
 /** A swap that sent its deposit, which the worker took two minutes before a fork took it back,
- *  `leftMinutesAgo` minutes ago. Under Chainflip's own source when `chainflip`, the preview's direct
- *  one otherwise. Returns when it left. */
+ *  `leftMinutesAgo` minutes ago. Under Chainflip's own source when `chainflip`, the preview's
+ *  direct one otherwise. Returns when it left. */
 async function depositDropped(
   s: Session,
   f: Flow,

@@ -2887,10 +2887,10 @@ export const useRequestsStore = defineStore("requests", () => {
    *  pass waits for the worker's heartbeat once, up to `WORKER_READY_MS`, and skips every send
    *  when it never comes. A job it has no record of, or one that gave up a deposit now back,
    *  gets the request's stored hand-off as it is; a job it expired after the buyer paid gets it
-   *  with a fresh deadline, because the worker keeps the hand-off's own; a legacy record without a hand-off builds one hosted world to
-   *  obtain it, stores it and lets the world go. Nothing here observes the record: the worker's
-   *  answer arrives with the next job read. A failure is noted on the entry and the next
-   *  reconcile tries again. */
+   *  with a fresh deadline, because the worker keeps the hand-off's own; a legacy record without
+   *  a hand-off builds one hosted world to obtain it, stores it and lets the world go. Nothing
+   *  here observes the record: the worker's answer arrives with the next job read. A failure is
+   *  noted on the entry and the next reconcile tries again. */
   async function handOffLostRequests(now: number): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;

@@ -296,7 +296,7 @@ export interface WorkerJobView {
   /** When the deposit left the best chain after the worker took it, while it stays away. */
   depositLeftAt?: number;
   lastTickAt: number | null;
-  /** The time the worker really ran since the deposit was final, until it registered the claim:
+  /** The time the worker really ran since it took the deposit, until it registered the claim:
    *  ticks apart by more than 30 s count as 30 s. */
   workedMs?: number;
   claim: {
@@ -411,8 +411,9 @@ export interface TopUpRecord {
   observedAt?: Partial<Record<ObservedFact, number>>;
   /** A Chainflip swap's progress, from core's status reads. */
   chainflip?: ChainflipFacts;
-  /** The worker's facts past the deposit, each kept from its first report. Only `finalized` and
-   *  `best` of the deposit move on. */
+  /** The worker's facts past the deposit, each kept from its first report but for what a fork
+   *  takes back: the deposit's block and the conversion. Only `finalized` and `best` of the
+   *  deposit move on. */
   depositInBlock?: DepositInBlock;
   conversionPreparedAt?: number;
   converted?: ConvertedTx;
