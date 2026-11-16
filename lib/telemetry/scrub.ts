@@ -65,15 +65,21 @@ function redactPhrases(run: string): string {
   return found ? out.join(" ") : run;
 }
 
+/** what a pattern scans; past it a hostile line costs time, not information */
+const MAX_SCRUBBED = 4_000;
+/** longer than any value a guard takes out, so one the cut split in two goes with the tail */
+const CUT_MARGIN = 256;
+
 export function scrubText(text: string): string {
+  const cut = text.length > MAX_SCRUBBED;
   WORD_RUN.lastIndex = 0;
-  let out = text.replace(WORD_RUN, redactPhrases);
+  let out = (cut ? text.slice(0, MAX_SCRUBBED) : text).replace(WORD_RUN, redactPhrases);
   for (const [pattern, replacement] of REDACTIONS) {
     // a global regex remembers where the last match stopped
     pattern.lastIndex = 0;
     out = out.replace(pattern, replacement);
   }
-  return out;
+  return cut ? `${out.slice(0, -CUT_MARGIN)}…` : out;
 }
 
 /** A URL without its query and hash, for a field that holds one URL. */

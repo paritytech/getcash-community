@@ -89,6 +89,19 @@ describe("the text guards", () => {
     expect(scrubbed).toBe(`burner ${address} from [redacted: hash]`);
   });
 
+  it("As a person topping up, an oversized log line is cut short and a key lying across the cut never leaves in part", () => {
+    // Given
+    const text = `${"x ".repeat(1_980)}${"ab".repeat(32)} ${"tail ".repeat(100)}`;
+
+    // When
+    const scrubbed = scrubText(text);
+
+    // Then
+    expect(scrubbed.length).toBeLessThan(4_000);
+    expect(scrubbed.endsWith("…")).toBe(true);
+    expect(scrubbed).not.toMatch(/[0-9a-f]{8}/);
+  });
+
   it("As a person topping up, a log line names a signing key or a refund key by mistake and it never leaves, while the refund address stays", () => {
     const seed = new Uint8Array(32).fill(7);
     const keys = REFUND_CHAINS.map((chain) => deriveRefundKey(chain, seed));
