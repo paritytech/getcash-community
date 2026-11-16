@@ -139,7 +139,10 @@ const sameTx = (kept: ConvertedTx, read: ConvertedTx | undefined): boolean =>
 /** Folds one read of the worker's job into the facts kept so far. */
 export function workerObserved(record: TopUpRecord, job: WorkerJobView, at: number): TopUpRecord {
   const { depositSeen, conversion, claim } = job;
-  let next = depositSeen === undefined ? record : depositFollowed(record, depositSeen);
+  // The worker keeps the block it first read any money in, and drops it only for a deposit it
+  // counted: one the app took back stays gone until money is read on the account again.
+  const followed = depositSeen !== undefined && record.depositDroppedAt === undefined;
+  let next = followed ? depositFollowed(record, depositSeen) : record;
   if (conversion !== undefined && next.conversionPreparedAt === undefined) {
     next = { ...next, conversionPreparedAt: conversion.preparedAt };
   }

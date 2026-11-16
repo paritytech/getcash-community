@@ -2,7 +2,7 @@
 // 6, their texts, and the failures past the provider's part.
 
 import { cashAmount } from "../../utils/cash";
-import type { TopUpRecord } from "../requests/model";
+import { depositLeftAtOf, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
 import { earlierFact, factAt } from "./observed";
@@ -91,7 +91,7 @@ export function depositOnBurner(record: TopUpRecord): Fact | undefined {
 /** The deposit reached the account and a fork took it back: it was sent, and is awaited again
  *  from when it left. */
 export function depositLeftOf(record: TopUpRecord): Fact | undefined {
-  const leftAt = workerOf(record)?.depositLeftAt;
+  const leftAt = depositLeftAtOf(record);
   return leftAt === undefined ? undefined : { at: leftAt };
 }
 
@@ -100,7 +100,7 @@ const psmRefused = (record: TopUpRecord): boolean => (workerOf(record)?.psmRefus
 /** The deposit left the best chain long enough ago to say so: a fork took it, and it has not come
  *  back in the time a provider's transfer is normally sent again. */
 function leftLong(record: TopUpRecord, now: number): boolean {
-  const leftAt = workerOf(record)?.depositLeftAt;
+  const leftAt = depositLeftAtOf(record);
   return leftAt !== undefined && now - leftAt > LATE.leftMs;
 }
 

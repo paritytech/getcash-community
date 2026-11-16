@@ -8,6 +8,7 @@ import {
   DEPOSIT_EXPIRED_REASON,
   FUNDING_HELD_REASON,
   PROVISIONAL_REVERT_MS,
+  SIGHTING_DROPPED_AFTER_MS,
   buyerPaid,
   depositGone,
   directDepositGate,
@@ -49,7 +50,13 @@ type ProviderResult = Extract<Observation, { source: "provider"; result: unknown
  *  Polkadot deposit drops once it is settled one way or the other, and the early claim word a
  *  retry drops. */
 type ClearedField =
-  "cancelledAt" | "failureReason" | "refunded" | "failure" | "depositMismatch" | "creditedAt";
+  | "cancelledAt"
+  | "failureReason"
+  | "refunded"
+  | "failure"
+  | "depositMismatch"
+  | "creditedAt"
+  | "depositDroppedAt";
 
 const EXPIRED_FAILURE: RequestFailure = {
   kind: "expired",
@@ -116,6 +123,10 @@ function without(record: TopUpRecord, fields: readonly ClearedField[]): TopUpRec
   return copy;
 }
 
+/** Money read on the account again: a sighting the app took back no longer stands as gone. */
+const undropped = (record: TopUpRecord): TopUpRecord =>
+  record.depositDroppedAt === undefined ? record : without(record, ["depositDroppedAt"]);
+
 const earliest = (funded: number | undefined, at: number): number =>
   funded === undefined ? at : Math.min(funded, at);
 
@@ -171,6 +182,18 @@ function depositLeft(record: TopUpRecord, since: number): TopUpRecord {
   return kind === "deposit-seen" || kind === "converting" || kind === "claiming"
     ? { ...rest, status: { kind: "awaiting-deposit" } }
     : rest;
+}
+
+/** The app's own sighting of the deposit on the account, which the worker never counted and so
+ *  never reports gone, taken back as `depositLeft` takes back one it did: when the account read
+ *  empty at `since`, after the sighting, and nothing the app read there since says otherwise. */
+function sightingDropped(record: TopUpRecord, since: number): TopUpRecord {
+  const { status } = record;
+  if (status.kind !== "deposit-seen" || status.via !== "chain" || status.at > since) return record;
+  const dropped = depositLeft(record, since);
+  return dropped.status.kind === "awaiting-deposit"
+    ? { ...dropped, depositDroppedAt: status.at }
+    : record;
 }
 
 function failed(record: TopUpRecord, at: number, failure: RequestFailure): TopUpRecord {
@@ -381,7 +404,20 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
   if (job.depositLeftAt !== undefined) {
     next = depositLeft(next, Math.max(job.depositLeftAt, job.emptyReadAt ?? 0));
   }
-  if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
+  // The worker reports gone only a deposit it counted. One it never did, the app's sighting
+  // alone, goes when the worker's latest read found the account empty a minute after it, past
+  // any lag between their views of the chain; and is back when its latest read found money
+  // there, of any amount, as the worker counts a deposit back.
+  const { emptyReadAt, heldReadAt } = job;
+  const readEmpty =
+    emptyReadAt !== undefined && (heldReadAt === undefined || emptyReadAt > heldReadAt);
+  if (job.fundsSeenAt === null && readEmpty) {
+    next = sightingDropped(next, emptyReadAt - SIGHTING_DROPPED_AFTER_MS);
+  }
+  if (heldReadAt !== undefined && !readEmpty) next = undropped(next);
+  if (job.fundsSeenAt !== null) {
+    next = moneySeen(undropped(next), job.fundsSeenAt, "finalized", "worker");
+  }
   // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
   // only a retry after a failure drops it.
   const { claim } = job;
@@ -562,10 +598,12 @@ function moneyOnBurner(record: TopUpRecord, { at, finality, via }: ChainObservat
 function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRecord {
   const { at, burnerNative, finality, block } = observation;
   const reading = { burnerNative, ...(block === undefined ? {} : { block }), at };
-  const next: TopUpRecord = {
+  const read: TopUpRecord = {
     ...witnessed(record, { chain: { ...record.witnesses.chain, [finality]: reading } }),
     confirmedAt: at,
   };
+  // Money on the account again, of any amount, as the worker counts it back.
+  const next = BigInt(burnerNative) > 0n ? undropped(read) : read;
   if (isDirectDeposit(next) && next.deposit !== undefined) {
     if (next.status.kind === "awaiting-deposit") return applyDirectReading(next, observation);
     // An ended one is not brought back by a balance short of the gate: the worker would not

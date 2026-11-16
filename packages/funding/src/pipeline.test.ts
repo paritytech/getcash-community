@@ -1461,15 +1461,17 @@ describe("tickOnce", () => {
     expect(world.state.txs).toEqual([]);
   });
 
-  it("stamps the time it read the account empty, and only that", async () => {
+  it("stamps when each read started by what it found, and nothing for a read that fails", async () => {
     const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
     world.state.nativeAh = ASK + KEEP;
     const state = freshTickState();
-    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
-    expect(state.emptyReadAt).toBeNull();
+    await expect(drive(world, 1, state, POOL, undefined, { now: () => 1_000 })).rejects.toThrow(
+      /not submitted/,
+    );
+    expect(state).toMatchObject({ emptyReadAt: null, heldReadAt: 1_000 });
     world.state.nativeAh = 0n;
     await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
-    expect(state).toMatchObject({ emptyReadAt: 5_000, depositLeftAt: 5_000 });
+    expect(state).toMatchObject({ emptyReadAt: 5_000, heldReadAt: 1_000, depositLeftAt: 5_000 });
 
     // A read that fails stamps nothing.
     const failing = {
@@ -1477,14 +1479,12 @@ describe("tickOnce", () => {
       readUnderlyingOnPeople: () => Promise.reject(new Error("rpc down")),
     };
     await expect(drive(world, 1, state, POOL, undefined, failing)).rejects.toThrow(/rpc down/);
-    expect(state.emptyReadAt).toBe(5_000);
+    expect(state).toMatchObject({ emptyReadAt: 5_000, heldReadAt: 1_000 });
 
-    // Nor does a read that finds money.
-    world.state.nativeAh = ASK + KEEP;
-    await expect(drive(world, 1, state, POOL, undefined, { now: () => 13_000 })).rejects.toThrow(
-      /not submitted/,
-    );
-    expect(state.emptyReadAt).toBe(5_000);
+    // Money of any amount, short of the deposit too.
+    world.state.nativeAh = 1n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 13_000 });
+    expect(state).toMatchObject({ emptyReadAt: 5_000, heldReadAt: 13_000 });
   });
 
   it("keeps waiting for a deposit that left when a tick reads it back and then fails, so a second fork still counts", async () => {
@@ -2624,6 +2624,7 @@ describe("the submit, and the arrival on People", () => {
         ...freshTickState(),
         attempts: 1,
         fundsSeenAt: 2_000,
+        heldReadAt: 2_000,
         nonceAtSubmit: 0,
         peopleAtXcm: 3n,
         sentToPeople: expect.any(BigInt),

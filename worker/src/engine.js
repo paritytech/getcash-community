@@ -139,7 +139,7 @@ const saveJobs = () => store.save();
  *                                            // the conversion's block is discarded and resent
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, depositLeftAt: number|null, replacedAt: number|null,
- *            emptyReadAt: number|null, nonceAtSubmit: number|null,
+ *            emptyReadAt: number|null, heldReadAt: number|null, nonceAtSubmit: number|null,
  *            inclusionBlock: number|null, inclusionHash: string|null, arrived,
  *            sentToPeople: string|null, peopleFeeCash: string|null, workedMs,
  *            rejections, lastRejection },
@@ -975,6 +975,7 @@ function restoreTickState(stored) {
   state.depositLeftAt = stored.depositLeftAt ?? null;
   state.replacedAt = stored.replacedAt ?? null;
   state.emptyReadAt = stored.emptyReadAt ?? null;
+  state.heldReadAt = stored.heldReadAt ?? null;
   state.nonceAtSubmit = stored.nonceAtSubmit ?? null;
   state.inclusionBlock = stored.inclusionBlock ?? null;
   state.inclusionHash = stored.inclusionHash ?? null;
@@ -996,6 +997,7 @@ function storeTickState(state) {
     depositLeftAt: state.depositLeftAt,
     replacedAt: state.replacedAt,
     emptyReadAt: state.emptyReadAt,
+    heldReadAt: state.heldReadAt,
     nonceAtSubmit: state.nonceAtSubmit,
     inclusionBlock: state.inclusionBlock,
     inclusionHash: state.inclusionHash,

@@ -507,6 +507,9 @@ export interface TickState {
   /** When the latest read that found the burner's deposit account empty at the best block
    *  started (ms): the worker's own word that no deposit was there then. Null before any. */
   emptyReadAt: number | null;
+  /** When the latest read that found money on that account, of any amount, started (ms). The
+   *  later of this and `emptyReadAt` is what the latest read found. Null before any. */
+  heldReadAt: number | null;
   /** The burner's nonce at the latest block before the last submit, kept until the chain's final
    *  word on it: with `xcmSubmitted` unset the answer is owed and a tick settles from the chain
    *  what became of the submit; set, the conversion's block going final lets it go. */
@@ -544,6 +547,7 @@ export const freshTickState = (): TickState => ({
   depositLeftAt: null,
   replacedAt: null,
   emptyReadAt: null,
+  heldReadAt: null,
   nonceAtSubmit: null,
   inclusionBlock: null,
   inclusionHash: null,
@@ -970,6 +974,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     "tick balance reads",
   );
   if (depositAh === 0n) state.emptyReadAt = readStartedAt;
+  else state.heldReadAt = readStartedAt;
 
   // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
   // it there. Asked only of a burner the program would have reaped, since a fork can take the

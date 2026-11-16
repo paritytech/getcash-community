@@ -467,6 +467,33 @@ describe("top-up timeline, a deposit a fork took", () => {
     expect(marks(view.view)).toBe("✕○○○○○○");
   });
 
+  it("reads a sighting the app took back as a deposit that left", () => {
+    const later = openedTimeline(record({ depositDroppedAt: LEFT }), sentRoute, {
+      now: LEFT + HOUR + 1,
+      watchingSince: SENT,
+    });
+    expect(later.view.state).toBe("delayed");
+    expect(later.message).toEqual(delay(DROPPED));
+
+    const direct: TopUpRecord = {
+      ...cryptoRecord(POLKADOT_DOT),
+      depositDroppedAt: LEFT,
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "await-native",
+          done: false,
+          fundsSeenAt: null,
+          lastTickAt: LEFT,
+          at: LEFT,
+        },
+      },
+    };
+    const view = openedTimeline(direct, directRoute, { now: LEFT + MINUTE, watchingSince: SENT });
+    expect(marks(view.view)).toBe("●●●○○○○");
+    expect(view.message).toEqual(normal("Your money is arriving"));
+  });
+
   it("does not say a deposit seen on the account again was dropped", () => {
     const topUp = record({ observedAt: { "on-burner": LEFT + HOUR } }, { depositLeftAt: LEFT });
     const view = openedTimeline(topUp, sentRoute, { now: LEFT + 2 * HOUR, watchingSince: SENT });
@@ -1320,6 +1347,27 @@ describe("top-up timeline, failures", () => {
     [
       "a direct deposit that expired after the network dropped its transfer",
       expired(droppedDirect()),
+      CRYPTO_EXPIRED_TEXT,
+      CLOSE,
+      {},
+    ],
+    [
+      "a direct deposit that expired after the app took back its sighting",
+      expired({
+        ...cryptoRecord(POLKADOT_DOT),
+        depositDroppedAt: SENT,
+        witnesses: {
+          worker: {
+            known: true,
+            phase: "failed",
+            done: false,
+            fundsSeenAt: null,
+            lastTickAt: SENT,
+            at: SENT,
+            failure: "expired",
+          },
+        },
+      }),
       CRYPTO_EXPIRED_TEXT,
       CLOSE,
       {},

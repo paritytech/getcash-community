@@ -513,6 +513,31 @@ describe("requests store: the hand-off step", () => {
     expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "awaiting-deposit" });
   });
 
+  it("gives back a sighting it took when the worker's latest read found money on the account", async () => {
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+      depositDroppedAt: FIXTURE_NOW - 3 * MINUTE,
+    });
+    await writeJobs({
+      "dot-assethub:3": {
+        ...AWAITING_JOB,
+        lastTickAt: FIXTURE_NOW - MINUTE,
+        state: {
+          ...AWAITING_JOB.state,
+          fundsSeenAt: null,
+          emptyReadAt: FIXTURE_NOW - 2 * MINUTE,
+          heldReadAt: FIXTURE_NOW - MINUTE,
+        },
+      },
+    });
+
+    await requests.reconcile("boot");
+
+    expect(requests.get(AWAITING_REF)).not.toHaveProperty("depositDroppedAt");
+  });
+
   it("builds one world for a legacy record, persists the payload, disposes the world", async () => {
     // Stored as today's record: no hand-off on it, and no job in the worker's blob.
     await seed([awaitingDepositCryptoRecord]);

@@ -393,6 +393,7 @@ type WorkerJob = {
     fundsSeenAt?: number | null;
     depositLeftAt?: number | null;
     emptyReadAt?: number | null;
+    heldReadAt?: number | null;
     psmRefusals?: number;
     workedMs?: number;
   };
@@ -551,6 +552,7 @@ function jobView(job: WorkerJob): WorkerJobView {
   const workedMs = job.state?.workedMs;
   const leftAt = job.state?.depositLeftAt;
   const readAt = job.state?.emptyReadAt;
+  const heldAt = job.state?.heldReadAt;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -559,6 +561,7 @@ function jobView(job: WorkerJob): WorkerJobView {
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     ...(isNumber(leftAt) ? { depositLeftAt: leftAt } : {}),
     ...(isNumber(readAt) ? { emptyReadAt: readAt } : {}),
+    ...(isNumber(heldAt) ? { heldReadAt: heldAt } : {}),
     lastTickAt: job.lastTickAt ?? null,
     ...(isNumber(workedMs) ? { workedMs } : {}),
     claim:

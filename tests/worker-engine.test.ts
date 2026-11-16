@@ -735,6 +735,7 @@ describe("worker funding engine", () => {
       state.fundsSeenAt = null;
       state.depositLeftAt = Date.now();
       state.emptyReadAt = Date.now();
+      state.heldReadAt = preparedAt;
       return outcome("await-native");
     });
     await engine.tickAllFunding();
@@ -743,12 +744,23 @@ describe("worker funding engine", () => {
       phase: "await-native",
       done: false,
       conversion: { preparedAt },
-      // The time it read the account empty is saved with it.
-      state: { depositLeftAt: leftAt, emptyReadAt: leftAt, fundsSeenAt: null, workedMs: 0 },
+      // The times it last read the account empty and with money are saved with it.
+      state: {
+        depositLeftAt: leftAt,
+        emptyReadAt: leftAt,
+        heldReadAt: preparedAt,
+        fundsSeenAt: null,
+        workedMs: 0,
+      },
     });
     expect(storedJob().depositSeen).toBeUndefined();
     expect(storedJob().conversion.converted).toBeUndefined();
     expect((await sessionStatus(engine)).depositLeftAt).toBe(leftAt);
+
+    // Both read times outlive a tick that reads nothing new.
+    mocks.tickOnce.mockImplementationOnce(async () => outcome("await-native"));
+    await engine.tickAllFunding();
+    expect(storedJob().state).toMatchObject({ emptyReadAt: leftAt, heldReadAt: preparedAt });
   });
 
   it("waits a day for a deposit that left the best chain from when it left, past the deposit window, then fails it as lost", async () => {

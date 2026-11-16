@@ -8,6 +8,7 @@ import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
   depositGone,
+  depositLeftAtOf,
   isDirectDeposit,
   isFinished,
   paymentWatchUntil,
@@ -205,8 +206,7 @@ export const DIRECT_RESEND_AFTER_MS = 10 * 60_000;
 /** A direct deposit the network dropped long enough ago that only a new transfer brings it: the
  *  journey shows where to send it again. */
 export function directDepositDropped(record: TopUpRecord, now: number): boolean {
-  const worker = record.witnesses.worker;
-  const leftAt = worker?.known === true ? worker.depositLeftAt : undefined;
+  const leftAt = depositLeftAtOf(record);
   return (
     isDirectDeposit(record) &&
     record.status.kind === "awaiting-deposit" &&
