@@ -109,7 +109,7 @@ describe("a top-up channel", () => {
   it("is handed out only once Chainflip's own record agrees with what was asked", async () => {
     const { checkedAgainstChainflip } = await backendWith("abc123");
     const open = (read: () => Promise<typeof SERVED | null>) =>
-      checkedAgainstChainflip(rail, EGRESS, read, 0).requestDepositAddress(args);
+      checkedAgainstChainflip(rail, EGRESS, read, 1, 20).requestDepositAddress(args);
 
     const reads = [Promise.reject(new Error("HTTP 404")), Promise.resolve(SERVED)];
     await expect(open(() => reads.shift()!)).resolves.toBe(opened);

@@ -21,17 +21,18 @@ import { devLog } from "./log";
 
 export const NETWORK: ChainflipNetworkId = "mainnet";
 
-const CHANNEL_READ_TRIES = 15;
+const CHANNEL_READ_WINDOW_MS = 30_000;
 const CHANNEL_READ_WAIT_MS = 2_000;
 
 type ChannelRead = (id: string) => Promise<ChainflipChannelRecord | null>;
 
-async function readOpenedChannel(id: string, read: ChannelRead, waitMs: number) {
-  for (let attempt = 1; ; attempt += 1) {
+async function readOpenedChannel(id: string, read: ChannelRead, waitMs: number, windowMs: number) {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
     try {
       return await read(id);
     } catch (error) {
-      if (attempt >= CHANNEL_READ_TRIES) throw error;
+      if (Date.now() + waitMs >= deadline) throw error;
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
@@ -65,12 +66,13 @@ export function checkedAgainstChainflip(
   egress: { chain: string; asset: string },
   read: ChannelRead = (id) => readChannelRecord(id, undefined, NETWORK),
   waitMs = CHANNEL_READ_WAIT_MS,
+  windowMs = CHANNEL_READ_WINDOW_MS,
 ): ChainflipRail {
   return {
     ...rail,
     async requestDepositAddress(args) {
       const channel = await rail.requestDepositAddress(args);
-      const record = await readOpenedChannel(channel.depositChannelId, read, waitMs);
+      const record = await readOpenedChannel(channel.depositChannelId, read, waitMs, windowMs);
       const mismatch = channelMismatch(record, channel, args, egress);
       if (mismatch !== null) {
         throw new Error(

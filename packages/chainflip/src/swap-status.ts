@@ -17,18 +17,26 @@ export const CHAINFLIP_SWAP_API_PERSEVERANCE = "https://chainflip-swap-persevera
 const swapApiFor = (network: ChainflipNetworkId): string =>
   network === "perseverance" ? CHAINFLIP_SWAP_API_PERSEVERANCE : CHAINFLIP_SWAP_API;
 
+const swapUrl = (network: ChainflipNetworkId, id: string): string =>
+  `${swapApiFor(network)}/v2/swaps/${encodeURIComponent(id)}`;
+
 export type FetchLike = (
   url: string,
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
+const READ_TIMEOUT_MS = 10_000;
+
+const fetchWithin: FetchLike = (url) =>
+  fetch(url, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+
 /** A status backend over fetch; throws on anything but a 2xx, so a tick retries later. */
 export function createFetchStatusBackend(
-  fetchImpl: FetchLike = (url) => fetch(url),
+  fetchImpl: FetchLike = fetchWithin,
   network: ChainflipNetworkId = "mainnet",
 ): StatusBackend {
   return {
     async getStatusV2({ id }) {
-      const response = await fetchImpl(`${swapApiFor(network)}/v2/swaps/${id}`);
+      const response = await fetchImpl(swapUrl(network, id));
       if (!response.ok) throw new Error(`Chainflip status read failed: HTTP ${response.status}`);
       return response.json();
     },
@@ -71,10 +79,10 @@ const str = (value: unknown): string => (typeof value === "string" ? value : "")
  */
 export async function readChannelRecord(
   channelId: string,
-  fetchImpl: FetchLike = (url) => fetch(url),
+  fetchImpl: FetchLike = fetchWithin,
   network: ChainflipNetworkId = "mainnet",
 ): Promise<ChainflipChannelRecord | null> {
-  const response = await fetchImpl(`${swapApiFor(network)}/v2/swaps/${channelId}`);
+  const response = await fetchImpl(swapUrl(network, channelId));
   if (!response.ok) throw new Error(`Chainflip channel read failed: HTTP ${response.status}`);
   const body = (await response.json()) as {
     destAddress?: unknown;
