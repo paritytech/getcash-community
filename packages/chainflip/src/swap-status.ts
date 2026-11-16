@@ -24,7 +24,7 @@ export type FetchLike = (
   url: string,
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
-const READ_TIMEOUT_MS = 10_000;
+const READ_TIMEOUT_MS = 30_000;
 
 const fetchWithin: FetchLike = (url) =>
   fetch(url, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });

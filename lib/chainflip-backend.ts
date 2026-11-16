@@ -27,7 +27,7 @@ import { devLog } from "./log";
 
 export const NETWORK: ChainflipNetworkId = "mainnet";
 
-const CHANNEL_READ_WINDOW_MS = 30_000;
+const CHANNEL_READ_WINDOW_MS = 120_000;
 const CHANNEL_READ_WAIT_MS = 2_000;
 
 type ChannelRead = (id: string) => Promise<ChainflipChannelRecord | null>;
