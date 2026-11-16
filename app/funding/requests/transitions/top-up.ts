@@ -477,16 +477,18 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     // provider counts it paid. Not once the deposit was seen on the account again since, which
     // the hand-off the app then sends re-arms the job for. A direct deposit is the buyer's own
     // transfer, which nothing sends again: its request was asking for a new one, and expires.
-    if (
-      job.failure === "deposit-lost" &&
-      rank === 0 &&
-      next.observedAt?.["on-burner"] === undefined
-    ) {
+    // The worker never counted a deposit the app took back, so its window closes as expired.
+    const lost =
+      job.failure === "deposit-lost" ||
+      (job.failure === "expired" && next.depositDroppedAt !== undefined);
+    if (lost && rank === 0 && next.observedAt?.["on-burner"] === undefined) {
       if (isDirectDeposit(next)) return expired(next, at);
+      // An expired job's own words name its window, not the deposit that left.
+      const said = job.failure === "deposit-lost" ? job.lastError : undefined;
       return failed(next, at, {
         kind: "deposit-lost",
         step: "deposit",
-        message: job.lastError ?? "the deposit did not come back",
+        message: said ?? "the deposit did not come back",
         recoverable: false,
       });
     }

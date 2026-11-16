@@ -5,6 +5,7 @@ import type { ChainflipProgressFacts, PaymentState, SwapStatusResult } from "@ge
 import { chainflipObserved } from "../app/funding/requests/facts";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
+  buyerPaid,
   DEPOSIT_EXPIRED_REASON,
   depositGone,
   FUNDING_HELD_REASON,
@@ -1236,6 +1237,29 @@ describe("request reducer: a deposit a fork took", () => {
     it("asks for a direct transfer again ten minutes after the sighting", () => {
       expect(directDepositDropped(dropped(), at(1) + DIRECT_RESEND_AFTER_MS - 1)).toBe(false);
       expect(directDepositDropped(dropped(), at(1) + DIRECT_RESEND_AFTER_MS)).toBe(true);
+    });
+
+    it("ends a paid request as lost when the worker's window closes on a deposit it took back", () => {
+      expect(buyerPaid(card() as TopUpRecord)).toBe(true);
+      const sighted = reduce(card(), chain(at(1), FUNDS, "best"));
+      expect(sighted.status).toMatchObject({ kind: "deposit-seen", via: "chain" });
+      const gone = reduce(sighted, readEmpty(at(2.5), at(2.2)));
+      expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+      const window = readEmpty(at(2) + DAY, at(2) + DAY, {
+        phase: "failed",
+        failure: "expired",
+        lastError: "no deposit arrived within the deposit window",
+      });
+      const ended = reduce(gone, window);
+      expect(ended.status).toEqual({ kind: "failed", at: at(2) + DAY, recoverable: false });
+      expect(ended.failure).toMatchObject({
+        kind: "deposit-lost",
+        step: "deposit",
+        message: "the deposit did not come back",
+      });
+      // A paid request whose deposit never showed still waits on the provider, as before.
+      const unread = worker(at(2) + DAY, job({ phase: "failed", failure: "expired" }));
+      expect(reduce(card(), unread).status.kind).toBe("awaiting-deposit");
     });
 
     it("is not expired by the clock but by the worker's deposit window, or by the clock once the worker's job is gone", () => {
