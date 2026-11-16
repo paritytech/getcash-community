@@ -9,10 +9,78 @@ import {
   type ChainflipNetworkId,
   type SwapSdkLike,
 } from "@getsome/chainflip";
-import { NETWORK as CHAIN_NETWORK } from "@getsome/core";
+import { readChannelRecord, type ChainflipChannelRecord } from "@getsome/chainflip/swap-status";
+import {
+  NETWORK as CHAIN_NETWORK,
+  type ChainflipRail,
+  type DepositChannel,
+  type OpenChannelArgs,
+} from "@getsome/core";
+import { sameChannelAddress } from "@getsome/withdraw";
 import { devLog } from "./log";
 
 export const NETWORK: ChainflipNetworkId = "mainnet";
+
+const CHANNEL_READ_TRIES = 15;
+const CHANNEL_READ_WAIT_MS = 2_000;
+
+type ChannelRead = (id: string) => Promise<ChainflipChannelRecord | null>;
+
+async function readOpenedChannel(id: string, read: ChannelRead, waitMs: number) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await read(id);
+    } catch (error) {
+      if (attempt >= CHANNEL_READ_TRIES) throw error;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
+function channelMismatch(
+  record: ChainflipChannelRecord | null,
+  channel: DepositChannel,
+  args: OpenChannelArgs,
+  egress: { chain: string; asset: string },
+): string | null {
+  if (record === null) return "Chainflip cannot name it";
+  const addresses = [
+    ["deposit", record.depositAddress, channel.deposit.address],
+    ["payout", record.destinationAddress, args.destAddress],
+    ["refund", record.refundAddress, args.refundAddress ?? ""],
+  ] as const;
+  for (const [name, served, asked] of addresses) {
+    if (asked.trim() === "" || !sameChannelAddress(served, asked)) {
+      return `its ${name} address is '${served}', not '${asked}'`;
+    }
+  }
+  if (record.destinationChain !== egress.chain || record.destinationAsset !== egress.asset) {
+    return `it pays out '${record.destinationAsset}' on '${record.destinationChain}', not ${egress.asset} on ${egress.chain}`;
+  }
+  return null;
+}
+
+export function checkedAgainstChainflip(
+  rail: ChainflipRail,
+  egress: { chain: string; asset: string },
+  read: ChannelRead = (id) => readChannelRecord(id, undefined, NETWORK),
+  waitMs = CHANNEL_READ_WAIT_MS,
+): ChainflipRail {
+  return {
+    ...rail,
+    async requestDepositAddress(args) {
+      const channel = await rail.requestDepositAddress(args);
+      const record = await readOpenedChannel(channel.depositChannelId, read, waitMs);
+      const mismatch = channelMismatch(record, channel, args, egress);
+      if (mismatch !== null) {
+        throw new Error(
+          `Chainflip's record of channel ${channel.depositChannelId} does not match the top-up: ${mismatch}`,
+        );
+      }
+      return channel;
+    },
+  };
+}
 
 /** The BaaS API key the build was given, or null when it has none. */
 function brokerApiKey(): string | null {

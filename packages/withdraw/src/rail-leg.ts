@@ -156,6 +156,9 @@ function sameAccount(a: string, b: string): boolean {
   }
 }
 
+export const sameChannelAddress = (a: string, b: string): boolean =>
+  sameAccount(a, b) || sameAddress(a, b);
+
 export interface RailLegInput {
   rail: RailClient;
   /** Pays the channel from the key on Asset Hub: everything it holds, or the exact `amount` for a

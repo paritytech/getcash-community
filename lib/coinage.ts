@@ -76,7 +76,7 @@ import {
   type FakeHandoff,
   type Harness,
 } from "@getsome/testing";
-import { mainnetSdk, NETWORK } from "./chainflip-backend";
+import { checkedAgainstChainflip, mainnetSdk, NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import { devLog } from "./log";
 
@@ -1096,7 +1096,8 @@ export async function railFor(sourceId: SourceId, route: ConversionRoute): Promi
   if (!SOURCE_CONFIG_BY_ID.has(sourceId)) return createManualRail({ token });
   const delivered = chainflipTokenOf(token);
   if (delivered === undefined) throw new Error(`Chainflip cannot deliver ${token.symbol}`);
-  return createChainflipRail({ sdk: await mainnetSdk(), egress: egressFor(delivered) });
+  const egress = egressFor(delivered);
+  return checkedAgainstChainflip(createChainflipRail({ sdk: await mainnetSdk(), egress }), egress);
 }
 
 export async function createCoinageSession(

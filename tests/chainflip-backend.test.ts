@@ -84,3 +84,49 @@ describe("the Chainflip SDK the app builds", () => {
     }
   });
 });
+
+describe("a top-up channel", () => {
+  const BURNER = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+  const BURNER_OTHER_PREFIX = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
+  const REFUND = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+  const DEPOSIT = "bc1p9438v9cmxqsm0hrkfm27nq4k09w7s7lrnsay6tfc2x0hrttm56qs36t3z5";
+  const EGRESS = { chain: "Assethub", asset: "USDT" };
+  const SERVED = {
+    depositAddress: DEPOSIT,
+    destinationAddress: BURNER_OTHER_PREFIX,
+    destinationChain: "Assethub",
+    destinationAsset: "USDT",
+    refundAddress: REFUND.toUpperCase(),
+    expired: false,
+  };
+  const opened = {
+    depositChannelId: "7-Bitcoin-1",
+    deposit: { address: DEPOSIT, amount: 1n, formatted: "1", assetSymbol: "BTC", expiresAt: 0 },
+  };
+  const rail = { requestDepositAddress: async () => opened } as never;
+  const args = { quote: {}, destAddress: BURNER, refundAddress: REFUND } as never;
+
+  it("is handed out only once Chainflip's own record agrees with what was asked", async () => {
+    const { checkedAgainstChainflip } = await backendWith("abc123");
+    const open = (read: () => Promise<typeof SERVED | null>) =>
+      checkedAgainstChainflip(rail, EGRESS, read, 0).requestDepositAddress(args);
+
+    const reads = [Promise.reject(new Error("HTTP 404")), Promise.resolve(SERVED)];
+    await expect(open(() => reads.shift()!)).resolves.toBe(opened);
+
+    await expect(open(async () => null)).rejects.toThrow(/cannot name it/);
+    await expect(open(async () => ({ ...SERVED, depositAddress: REFUND }))).rejects.toThrow(
+      /deposit address/,
+    );
+    await expect(open(async () => ({ ...SERVED, destinationAddress: REFUND }))).rejects.toThrow(
+      /payout address/,
+    );
+    await expect(open(async () => ({ ...SERVED, refundAddress: DEPOSIT }))).rejects.toThrow(
+      /refund address/,
+    );
+    await expect(open(async () => ({ ...SERVED, destinationAsset: "DOT" }))).rejects.toThrow(
+      /pays out 'DOT'/,
+    );
+    await expect(open(() => Promise.reject(new Error("HTTP 404")))).rejects.toThrow("HTTP 404");
+  });
+});
