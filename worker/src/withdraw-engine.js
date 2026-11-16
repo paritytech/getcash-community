@@ -46,8 +46,10 @@ import {
   anchorFor,
   asBig,
   bounded,
+  brief,
   connectChain,
   createJobStore,
+  errorText,
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
@@ -434,7 +436,7 @@ export async function startWithdraw(params) {
   try {
     record = newRecord(input, Date.now());
   } catch (error) {
-    return { error: "invalid", reason: String(error?.message ?? error) };
+    return { error: "invalid", reason: errorText(error) };
   }
   const key = await keypairFor(record.label);
   if (key.address !== record.keyAddress) {
@@ -519,7 +521,7 @@ function rearm(record, nowMs) {
 function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
-  record.lastError = reason;
+  record.lastError = brief(reason);
   record.failedAt = Date.now();
 }
 
@@ -786,7 +788,9 @@ async function tickRailLeg(record) {
     // the attempt lands and the sale is paid, or it outlives its mortality unlanded and the
     // refusal stands (see `exactPaymentLanded`).
     if (refused && exactAmount !== null && exact.inFlight) {
-      record.lastError = `the provider refused the sale while a payment to it may still land: ${error.message}`;
+      record.lastError = brief(
+        `the provider refused the sale while a payment to it may still land: ${error.message}`,
+      );
       return;
     }
     // Nothing moved: the native is still on the key. A fresh Chainflip channel can carry it; a
@@ -1344,7 +1348,7 @@ async function tickRecord(record, nowMs) {
             record.txs.push(info);
           },
           onTransientError: (error) => {
-            record.lastError = String(error?.message ?? error);
+            record.lastError = errorText(error);
           },
         },
         state,
@@ -1441,7 +1445,7 @@ export async function tickAllWithdraw() {
             fail(record, "unfundable", error.message);
           } else {
             // Other errors are transient; the next wake retries.
-            record.lastError = String(error?.message ?? error);
+            record.lastError = errorText(error);
           }
         }
         if (judged) judgeBounds(record, nowMs, read);
@@ -1453,7 +1457,7 @@ export async function tickAllWithdraw() {
           await settlePayment(record);
           delete record.residueError;
         } catch (error) {
-          record.residueError = String(error?.message ?? error);
+          record.residueError = errorText(error);
         }
       }
       // Off the payment's path, and tried again on every pass until it is over, whatever became of
@@ -1464,7 +1468,7 @@ export async function tickAllWithdraw() {
           await settleInFlight(record);
           delete record.residueError;
         } catch (error) {
-          record.residueError = String(error?.message ?? error);
+          record.residueError = errorText(error);
         }
       }
       const kind = returnDue(record);
@@ -1474,7 +1478,7 @@ export async function tickAllWithdraw() {
           else await keepWayHome(record);
           delete record.residueError;
         } catch (error) {
-          record.residueError = String(error?.message ?? error);
+          record.residueError = errorText(error);
         }
       }
       ticked += 1;

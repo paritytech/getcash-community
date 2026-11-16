@@ -29,7 +29,7 @@ export function createJobStore(storageKey, label) {
       const store = await getHostLocalStorage();
       await store?.writeJSON(storageKey, jobs);
     } catch (error) {
-      console.warn(`[${label}] jobs write failed: ${String(error?.message ?? error)}`);
+      console.warn(`[${label}] jobs write failed: ${errorText(error)}`);
     }
   }
 
@@ -48,6 +48,16 @@ export function createJobStore(storageKey, label) {
     },
   };
 }
+
+const MAX_ERROR_TEXT = 200;
+
+/** `text` cut to what a job keeps of an error: a provider's reply can run to any length. */
+export function brief(value) {
+  const text = String(value);
+  return text.length <= MAX_ERROR_TEXT ? text : `${text.slice(0, MAX_ERROR_TEXT - 1)}…`;
+}
+
+export const errorText = (error) => brief(error?.message ?? error);
 
 /** Parses a bigint stored as a string, with a fallback for bad input. */
 export const asBig = (value, fallback = 0n) => {
