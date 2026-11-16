@@ -47,8 +47,14 @@ export interface WithdrawNetwork {
 
 const accountId = AccountId();
 
-/** A 32-byte account in any SS58 prefix. */
+/** A 20-byte Ethereum style account, which Asset Hub takes through its contracts pallet. */
+export function isH160Address(address: string): boolean {
+  return /^0x[0-9a-fA-F]{40}$/.test(address.trim());
+}
+
+/** A 32-byte account in any SS58 prefix, or an H160. */
 export function isAssetHubAddress(address: string): boolean {
+  if (isH160Address(address)) return true;
   try {
     return accountId.enc(address.trim()).length === 32;
   } catch {
@@ -61,6 +67,11 @@ export function assetHubAccountHex(address: string): `0x${string}` {
   const bytes = accountId.enc(address.trim());
   return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
+
+/** The 32-byte account Asset Hub maps an H160 to, as SS58, asked of the chain. The contracts
+ *  pallet picks the Polkadot account mapped to the H160, else the H160 padded with 0xEE. Asking
+ *  the runtime keeps that rule in one place. */
+export type H160AccountReader = (h160: `0x${string}`) => Promise<string>;
 
 const assetHubDestination = (id: string, asset: string, landing: DepositAsset): DirectDestination =>
   Object.freeze({
@@ -131,14 +142,18 @@ export const withdrawDestination = (id: string): WithdrawDestination | undefined
 export const destinationTokenIcon = (destination: WithdrawDestination): string =>
   tokenIcon(destination.asset);
 
-/** The Asset Hub account the funds land on for a destination: the address itself for Asset Hub.
- *  Null for a provider destination: the sale's token lands on the withdrawal's own key, which
- *  then pays the provider and is where a refund comes back to. */
-export function landingAccountHex(
+/** The Asset Hub account the funds land on for a destination: the address itself for Asset Hub,
+ *  an H160 read on the chain first. Null for a provider destination: the sale's token lands on
+ *  the withdrawal's own key, which then pays the provider and is where a refund comes back to. */
+export async function landingAccountHex(
   destination: WithdrawDestination,
   address: string,
-): `0x${string}` | null {
-  return destination.rail === "direct" ? assetHubAccountHex(address) : null;
+  readH160Account: H160AccountReader,
+): Promise<`0x${string}` | null> {
+  if (destination.rail !== "direct") return null;
+  if (!isH160Address(address)) return assetHubAccountHex(address);
+  const h160 = address.trim().toLowerCase() as `0x${string}`;
+  return assetHubAccountHex(await readH160Account(h160));
 }
 
 /** A figure in the landing asset as the summary shows it: four decimals, the trailing zeros

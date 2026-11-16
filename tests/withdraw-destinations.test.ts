@@ -7,6 +7,7 @@ import {
   isAssetHubAddress,
   landingAccountHex,
   matchesOtherNetwork,
+  type H160AccountReader,
   shortDestinationAddress,
   WITHDRAW_NETWORKS,
   withdrawDestination,
@@ -17,6 +18,11 @@ import {
 const ALICE_POLKADOT = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 const ALICE_GENERIC = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const ALICE_HEX = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
+/** An Ethereum style account, mixed case as wallets show it. */
+const H160 = "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db";
+
+/** A reader for paths that must not touch the chain. */
+const noChain: H160AccountReader = () => Promise.reject(new Error("asked the chain"));
 
 describe("withdrawal destinations", () => {
   it("lists Polkadot first on the direct rail, with its tokens, then the Chainflip networks", () => {
@@ -56,22 +62,47 @@ describe("withdrawal destinations", () => {
     expect(withdrawDestination("nope")).toBeUndefined();
   });
 
-  it("accepts an Asset Hub account in any prefix and lands the PAS on its public key", () => {
+  it("accepts an Asset Hub account in any prefix and lands the PAS on its public key", async () => {
     expect(isAssetHubAddress(ALICE_POLKADOT)).toBe(true);
     expect(isAssetHubAddress(` ${ALICE_GENERIC} `)).toBe(true);
     expect(isAssetHubAddress("0x4B2c02db")).toBe(false);
     expect(isAssetHubAddress("15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp6")).toBe(false);
     expect(assetHubAccountHex(ALICE_GENERIC)).toBe(ALICE_HEX);
-    expect(landingAccountHex(withdrawDestination("dot-assethub")!, ALICE_POLKADOT)).toBe(ALICE_HEX);
-    expect(landingAccountHex(withdrawDestination("usdc-assethub")!, ALICE_GENERIC)).toBe(ALICE_HEX);
+    // An SS58 account is its own landing: the chain is never asked.
+    await expect(
+      landingAccountHex(withdrawDestination("dot-assethub")!, ALICE_POLKADOT, noChain),
+    ).resolves.toBe(ALICE_HEX);
+    await expect(
+      landingAccountHex(withdrawDestination("usdc-assethub")!, ALICE_GENERIC, noChain),
+    ).resolves.toBe(ALICE_HEX);
   });
 
-  it("checks a Chainflip destination's address with that chain's rule, and lands on the key", () => {
+  it("accepts an H160 on Asset Hub and lands it on the account the chain maps it to", async () => {
+    expect(isAssetHubAddress(H160)).toBe(true);
+    expect(isAssetHubAddress(` ${H160} `)).toBe(true);
+    expect(isAssetHubAddress(H160.slice(0, -1))).toBe(false);
+    const dot = withdrawDestination("dot-assethub")!;
+    // The chain is asked, with the H160 as it keys it, and its answer is the landing: here a
+    // Polkadot account that claimed the H160, never the H160 padded.
+    const asked: string[] = [];
+    const claimedByAlice = async (h160: string) => {
+      asked.push(h160);
+      return ALICE_GENERIC;
+    };
+    await expect(landingAccountHex(dot, ` ${H160} `, claimedByAlice)).resolves.toBe(ALICE_HEX);
+    expect(asked).toEqual([H160.toLowerCase()]);
+    // A failed read stops the withdrawal rather than guessing.
+    await expect(landingAccountHex(dot, H160, noChain)).rejects.toThrow("asked the chain");
+  });
+
+  it("checks a Chainflip destination's address with that chain's rule, and lands on the key", async () => {
     const ethereum = withdrawDestination("usdc-eth")!;
     expect(ethereum.validateAddress("0x4B2c0000000000000000000000000000000C02db")).toBe(true);
     expect(ethereum.validateAddress(ALICE_POLKADOT)).toBe(false);
     // No landing of its own: the PAS lands on the withdrawal's key, which pays the provider.
-    expect(landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db")).toBeNull();
+    await expect(
+      landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db", noChain),
+    ).resolves.toBeNull();
   });
 
   it("tells a wrong-network address from a malformed one", () => {
