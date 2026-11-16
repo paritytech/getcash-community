@@ -165,7 +165,7 @@ function requestContinue() {
           :disabled="skeleton || loading || !canContinue"
           @click="requestContinue"
         >
-          {{ skeleton ? "" : loading ? `Opening ${config.provider}…` : cta }}
+          {{ skeleton ? "" : cta }}
         </PillButton>
       </div>
     </div>
