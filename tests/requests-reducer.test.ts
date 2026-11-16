@@ -1238,7 +1238,7 @@ describe("request reducer: a deposit a fork took", () => {
       expect(directDepositDropped(dropped(), at(1) + DIRECT_RESEND_AFTER_MS)).toBe(true);
     });
 
-    it("is not expired by the clock but by the worker's deposit window", () => {
+    it("is not expired by the clock but by the worker's deposit window, or by the clock once the worker's job is gone", () => {
       const deadline = awaitingDepositCryptoRecord.depositExpiresAt!;
       expect(reduce(dropped(), clock(deadline + 1)).status.kind).toBe("awaiting-deposit");
       const window = readEmpty(deadline + 2, deadline + 1, { phase: "failed", failure: "expired" });

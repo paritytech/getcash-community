@@ -421,7 +421,8 @@ export interface TopUpRecord {
   chainflip?: ChainflipFacts;
   /** The worker's facts past the deposit, each kept from its first report but for what a fork
    *  takes back: the deposit's block and the conversion. Only `finalized` and `best` of the
-   *  deposit move on. */
+   *  deposit move on. The timeline reads only that the deposit's block is there; its numbers are
+   *  kept for the record. */
   depositInBlock?: DepositInBlock;
   /** When the app took back its own sighting of the deposit, one the worker never counted and so
    *  never reports gone: it left, as the worker's `depositLeftAt` says of one it counted. Cleared

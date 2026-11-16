@@ -63,7 +63,8 @@ function failedAt({ status }: TopUpRecord): number | undefined {
   return status.kind === "failed" || status.kind === "expired" ? status.at : undefined;
 }
 
-/** A direct deposit a fork took, still within the time its transfer can land again. */
+/** A request still waiting for its deposit and not yet asking for it again: for a direct deposit
+ *  a fork took, the time its transfer can still land again. */
 const inResendWait = (record: TopUpRecord, now: number): boolean =>
   record.status.kind === "awaiting-deposit" && !directDepositDropped(record, now);
 

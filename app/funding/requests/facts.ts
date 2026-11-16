@@ -1,5 +1,6 @@
 // The facts the top-up timeline reads off a record. Each is kept from the read that first gave it,
-// and a later read never erases one or moves it back, except a conversion a fork took.
+// and a later read never erases one or moves it back, except what a fork took: the deposit's
+// block and the conversion. The deposit's block is not taken while the app holds its sighting back.
 
 import type { PaymentState, SwapProgress } from "@getsome/core";
 import type {

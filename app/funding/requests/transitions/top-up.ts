@@ -171,8 +171,9 @@ function moneySeen(
 /** The deposit left the best chain, after the worker took it: its sightings go, and a request
  *  waits for it again, from the claim too, which the worker says only while it holds no claim.
  *  Not one the app read final on the account, which no fork takes, nor one the app's latest read
- *  of the account at the best block found there after `since`, the later of when it left and the
- *  worker's last read of the account empty, which is the deposit back. */
+ *  of the account at the best block found there after `since`, which is the deposit back. `since`
+ *  is the later of when it left and the worker's last read of the account empty, or for a sighting
+ *  the worker never counted, a minute before that read. */
 function depositLeft(record: TopUpRecord, since: number): TopUpRecord {
   if (record.observedAt?.["final-on-burner"] !== undefined) return record;
   const latest = record.witnesses.chain?.best;
