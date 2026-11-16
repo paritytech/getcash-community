@@ -52,6 +52,8 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
     burners: new Map<string, { address: string; free: bigint } | Error>(),
     /** Every burner read, in order. */
     probes: [] as string[],
+    /** Called as each burner read answers, by key: a test moves the clock there. */
+    onProbe: null as ((key: string) => void) | null,
     /** The tier each burner was last read in, by key. */
     probeTiers: new Map<string, string>(),
     /** Every burner subscription, in order, with the tier it reads the burner in; the test
@@ -114,6 +116,7 @@ vi.mock("../lib/coinage-live", () => ({
     const key = `${sourceId}:${tradeN}`;
     chain.probes.push(key);
     chain.probeTiers.set(key, route.tier);
+    chain.onProbe?.(key);
     const answer = chain.burners.get(key);
     if (answer instanceof Error) throw answer;
     return answer ?? { address: chain.address(key), free: 0n };
@@ -290,6 +293,7 @@ describe("requests store: the chain step", () => {
     setRequestsClock(() => FIXTURE_NOW);
     chain.burners.clear();
     chain.probes.length = 0;
+    chain.onProbe = null;
     chain.probeTiers.clear();
     chain.watchers.length = 0;
     chain.counters.clear();
@@ -376,6 +380,28 @@ describe("requests store: the chain step", () => {
       status: { kind: "awaiting-deposit" },
       witnesses: { chain: { best: { burnerNative: "0", at: FIXTURE_NOW } } },
     });
+  });
+
+  it("stamps a burner read with the time the read started, not the time the pass did", async () => {
+    const requests = useRequestsStore();
+    let now = FIXTURE_NOW;
+    setRequestsClock(() => now);
+    const TOMBSTONE_REF = requestRefOf("dot-assethub", 1);
+    await requests.create(TOMBSTONE_REF, tombstone(1, FIXTURE_NOW + 22 * 60 * MINUTE));
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    // The tombstone's read, first in the pass, takes five minutes to answer, and the
+    // awaiting record's own read one more.
+    chain.onProbe = (key) => {
+      now += key === "dot-assethub:1" ? 5 * MINUTE : MINUTE;
+    };
+
+    await requests.reconcile("boot");
+
+    expect(chain.probes).toEqual(["dot-assethub:1", "dot-assethub:3"]);
+    expect(requests.get(AWAITING_REF)?.witnesses.chain?.best?.at).toBe(FIXTURE_NOW + 5 * MINUTE);
   });
 
   it("gap sweep reads a lost number once, records empty, creates a record when funded", async () => {

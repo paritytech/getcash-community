@@ -467,6 +467,7 @@ describe("requests store: the hand-off step", () => {
       handoff: FUNDED_HANDOFF,
       status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
       observedAt: { "on-burner": FIXTURE_NOW },
+      witnesses: { chain: { best: { burnerNative: "250000000000", at: FIXTURE_NOW } } },
     });
     await writeJobs({ "dot-assethub:3": lostJob, "dot-assethub:4": lostJob });
 
@@ -474,6 +475,42 @@ describe("requests store: the hand-off step", () => {
 
     expect(worker.calls).toEqual([startFunding("dot-assethub:4", FUNDED_HANDOFF)]);
     expect(requests.get(FUNDED_REF)?.status.kind).toBe("deposit-seen");
+  });
+
+  it("takes back a sighting the worker's later read of the account did not find", async () => {
+    const requests = useRequestsStore();
+    const leftAt = FIXTURE_NOW - 3 * MINUTE;
+    // The app saw the deposit back at -2; the worker read the account empty at -1.
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+      status: {
+        kind: "deposit-seen",
+        at: FIXTURE_NOW - 2 * MINUTE,
+        assurance: "provisional",
+        via: "chain",
+      },
+      observedAt: { "on-burner": FIXTURE_NOW - 2 * MINUTE },
+      witnesses: {
+        chain: { best: { burnerNative: "250000000000", at: FIXTURE_NOW - 2 * MINUTE } },
+      },
+    });
+    await writeJobs({
+      "dot-assethub:3": {
+        ...AWAITING_JOB,
+        lastTickAt: FIXTURE_NOW - MINUTE,
+        state: {
+          ...AWAITING_JOB.state,
+          fundsSeenAt: null,
+          depositLeftAt: leftAt,
+          emptyReadAt: FIXTURE_NOW - MINUTE,
+        },
+      },
+    });
+
+    await requests.reconcile("boot");
+
+    expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "awaiting-deposit" });
   });
 
   it("builds one world for a legacy record, persists the payload, disposes the world", async () => {

@@ -392,6 +392,7 @@ type WorkerJob = {
   state?: {
     fundsSeenAt?: number | null;
     depositLeftAt?: number | null;
+    emptyReadAt?: number | null;
     psmRefusals?: number;
     workedMs?: number;
   };
@@ -549,6 +550,7 @@ function jobView(job: WorkerJob): WorkerJobView {
   const refusals = job.state?.psmRefusals;
   const workedMs = job.state?.workedMs;
   const leftAt = job.state?.depositLeftAt;
+  const readAt = job.state?.emptyReadAt;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -556,6 +558,7 @@ function jobView(job: WorkerJob): WorkerJobView {
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     ...(isNumber(leftAt) ? { depositLeftAt: leftAt } : {}),
+    ...(isNumber(readAt) ? { emptyReadAt: readAt } : {}),
     lastTickAt: job.lastTickAt ?? null,
     ...(isNumber(workedMs) ? { workedMs } : {}),
     claim:
@@ -2711,6 +2714,8 @@ export const useRequestsStore = defineStore("requests", () => {
     /** One bounded burner read, applied as the chain's observation; null when it failed. */
     async function probe(ref: RequestRef): Promise<{ address: string; free: bigint } | null> {
       const sourceId = effectiveSourceId(ref);
+      // Stamped when the read starts, as the worker stamps its own, so that the two compare.
+      const readAt = requestsNow();
       const read = await bounded(`burner read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
         probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
@@ -2718,7 +2723,7 @@ export const useRequestsStore = defineStore("requests", () => {
         devLog("requests", `${read.reason} (kept)`, undefined, "warn");
         return null;
       }
-      await observe(ref, chainReading(read.value.free, now));
+      await observe(ref, chainReading(read.value.free, readAt));
       return read.value;
     }
 

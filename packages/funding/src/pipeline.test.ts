@@ -1461,6 +1461,68 @@ describe("tickOnce", () => {
     expect(world.state.txs).toEqual([]);
   });
 
+  it("stamps the time it read the account empty, and only that", async () => {
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    expect(state.emptyReadAt).toBeNull();
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(state).toMatchObject({ emptyReadAt: 5_000, depositLeftAt: 5_000 });
+
+    // A read that fails stamps nothing.
+    const failing = {
+      now: () => 9_000,
+      readUnderlyingOnPeople: () => Promise.reject(new Error("rpc down")),
+    };
+    await expect(drive(world, 1, state, POOL, undefined, failing)).rejects.toThrow(/rpc down/);
+    expect(state.emptyReadAt).toBe(5_000);
+
+    // Nor does a read that finds money.
+    world.state.nativeAh = ASK + KEEP;
+    await expect(drive(world, 1, state, POOL, undefined, { now: () => 13_000 })).rejects.toThrow(
+      /not submitted/,
+    );
+    expect(state.emptyReadAt).toBe(5_000);
+  });
+
+  it("keeps waiting for a deposit that left when a tick reads it back and then fails, so a second fork still counts", async () => {
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // Back in a block; the tick reads it, then the pool quote fails.
+    world.state.nativeAh = ASK + KEEP;
+    const base = (
+      world.client as unknown as { getTypedApi: () => Record<string, never> }
+    ).getTypedApi() as unknown as { apis: { AssetConversionApi: object } };
+    const flaky = {
+      ...base,
+      apis: {
+        ...base.apis,
+        AssetConversionApi: {
+          ...base.apis.AssetConversionApi,
+          quote_price_tokens_for_exact_tokens: () => Promise.reject(new Error("quote timed out")),
+        },
+      },
+    };
+    const failing = { now: () => 9_000, api: flaky as never };
+    await expect(drive(world, 1, state, POOL, undefined, failing)).rejects.toThrow(
+      /quote timed out/,
+    );
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // A second fork drops that block: still the deposit that left, read empty again.
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 13_000 });
+    expect(state).toMatchObject({ depositLeftAt: 5_000, emptyReadAt: 13_000 });
+  });
+
   it("ends the wait for a deposit that left once any money is on the burner again, short of the gate included", async () => {
     const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
     world.state.nativeAh = ASK + KEEP;

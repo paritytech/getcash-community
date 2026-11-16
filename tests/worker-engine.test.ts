@@ -734,6 +734,7 @@ describe("worker funding engine", () => {
       state.xcmSubmitted = false;
       state.fundsSeenAt = null;
       state.depositLeftAt = Date.now();
+      state.emptyReadAt = Date.now();
       return outcome("await-native");
     });
     await engine.tickAllFunding();
@@ -742,7 +743,8 @@ describe("worker funding engine", () => {
       phase: "await-native",
       done: false,
       conversion: { preparedAt },
-      state: { depositLeftAt: leftAt, fundsSeenAt: null, workedMs: 0 },
+      // The time it read the account empty is saved with it.
+      state: { depositLeftAt: leftAt, emptyReadAt: leftAt, fundsSeenAt: null, workedMs: 0 },
     });
     expect(storedJob().depositSeen).toBeUndefined();
     expect(storedJob().conversion.converted).toBeUndefined();

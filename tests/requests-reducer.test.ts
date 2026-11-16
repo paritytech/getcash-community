@@ -1088,6 +1088,53 @@ describe("request reducer: a deposit a fork took", () => {
     expect(reduce(unknown, meld(at(7), { status: "receiving" })).status.kind).toBe("failed");
   });
 
+  describe("a sighting of the deposit back on the account", () => {
+    /** The deposit left at +3; the app then saw it on the account at +4. */
+    const sightedAfterLeaving = () =>
+      reduce(reduce(taken(), left(at(3), at(3))), chain(at(4), FUNDS, "best"));
+
+    it("stands until the worker reads the account again", () => {
+      const sighted = sightedAfterLeaving();
+      expect(sighted.status.kind).toBe("deposit-seen");
+      // The worker's last read was before the sighting: nothing new.
+      expect(reduce(sighted, left(at(4), at(3), { emptyReadAt: at(3) })).status.kind).toBe(
+        "deposit-seen",
+      );
+    });
+
+    it("goes when the worker read the account empty after it: a second fork took it too", () => {
+      const back = reduce(sightedAfterLeaving(), left(at(5), at(3), { emptyReadAt: at(5) }));
+      expect(back.status).toEqual({ kind: "awaiting-deposit" });
+      expect(back.observedAt?.["on-burner"]).toBeUndefined();
+    });
+
+    it("stands when the app read the deposit again after the worker's empty read, though it first saw it before", () => {
+      // Seen at +4, dropped again at +4.5, back in a later block at +6; the worker read the
+      // account empty at +5.
+      const dropped = reduce(sightedAfterLeaving(), chain(at(4.5), "0", "best"));
+      const again = reduce(dropped, chain(at(6), FUNDS, "best"));
+      expect(again.observedAt?.["on-burner"]).toBe(at(4));
+      const kept = reduce(again, left(at(6.5), at(3), { emptyReadAt: at(5) }));
+      expect(kept.status.kind).toBe("deposit-seen");
+    });
+
+    it("goes when the app's own latest read found the account empty too, however recent", () => {
+      const dropped = reduce(sightedAfterLeaving(), chain(at(5.5), "0", "best"));
+      const gone = reduce(dropped, left(at(6), at(3), { emptyReadAt: at(5) }));
+      expect(gone.status).toEqual({ kind: "awaiting-deposit" });
+    });
+
+    it("goes when the worker gave the deposit up as lost after it, and the request ends", () => {
+      const lost = left(at(5) + DAY, at(3), {
+        phase: "failed",
+        failure: "deposit-lost",
+        emptyReadAt: at(5) + DAY,
+        lastError: "the deposit left the best chain and did not come back",
+      });
+      expect(reduce(sightedAfterLeaving(), lost).status.kind).toBe("expired");
+    });
+  });
+
   it("goes back from the claim when the deposit left before the worker held a claim, and expires a direct one that never comes back", () => {
     const arrived = reduce(
       taken(),

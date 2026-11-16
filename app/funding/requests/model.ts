@@ -295,6 +295,8 @@ export interface WorkerJobView {
   fundsSeenAt: number | null;
   /** When the deposit left the best chain after the worker took it, while it stays away. */
   depositLeftAt?: number;
+  /** When the worker last read the deposit's account empty. */
+  emptyReadAt?: number;
   lastTickAt: number | null;
   /** The time the worker really ran since it took the deposit, until it registered the claim:
    *  ticks apart by more than 30 s count as 30 s. */

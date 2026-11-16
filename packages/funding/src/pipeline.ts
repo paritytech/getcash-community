@@ -504,6 +504,9 @@ export interface TickState {
    *  nothing has shown on People since (ms). Past DEPOSIT_GONE_AFTER_MS the deposit is taken as
    *  gone with it. Null otherwise. */
   replacedAt: number | null;
+  /** When the latest read that found the burner's deposit account empty at the best block
+   *  started (ms): the worker's own word that no deposit was there then. Null before any. */
+  emptyReadAt: number | null;
   /** The burner's nonce at the latest block before the last submit, kept until the chain's final
    *  word on it: with `xcmSubmitted` unset the answer is owed and a tick settles from the chain
    *  what became of the submit; set, the conversion's block going final lets it go. */
@@ -540,6 +543,7 @@ export const freshTickState = (): TickState => ({
   fundsSeenAt: null,
   depositLeftAt: null,
   replacedAt: null,
+  emptyReadAt: null,
   nonceAtSubmit: null,
   inclusionBlock: null,
   inclusionHash: null,
@@ -956,6 +960,7 @@ async function settleInclusion(
 export async function tickOnce(input: TickOnceInput, state: TickState): Promise<TickOutcome> {
   const { api, route, address } = input;
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
+  const readStartedAt = input.now();
   const [depositAh, peopleHeld] = await bounded(
     Promise.all([
       readDeposit(api, route, address, "best"),
@@ -964,6 +969,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     input.tickTimeoutMs,
     "tick balance reads",
   );
+  if (depositAh === 0n) state.emptyReadAt = readStartedAt;
 
   // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
   // it there. Asked only of a burner the program would have reaped, since a fork can take the

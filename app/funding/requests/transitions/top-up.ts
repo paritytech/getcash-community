@@ -157,14 +157,15 @@ function moneySeen(
   return seenOnBurner(via) ? burnerSighted(seen, at) : seen;
 }
 
-/** The deposit left the best chain at `leftAt`, after the worker took it: its sightings go, and a
- *  request waits for it again, from the claim too, which the worker says only while it holds no
- *  claim. Not one the app read final on the account, which no fork takes, nor one seen on the
- *  account since it left, which is the deposit back. */
-function depositLeft(record: TopUpRecord, leftAt: number): TopUpRecord {
+/** The deposit left the best chain, after the worker took it: its sightings go, and a request
+ *  waits for it again, from the claim too, which the worker says only while it holds no claim.
+ *  Not one the app read final on the account, which no fork takes, nor one the app's latest read
+ *  of the account at the best block found there after `since`, the later of when it left and the
+ *  worker's last read of the account empty, which is the deposit back. */
+function depositLeft(record: TopUpRecord, since: number): TopUpRecord {
   if (record.observedAt?.["final-on-burner"] !== undefined) return record;
-  const sightedAt = record.observedAt?.["on-burner"];
-  if (sightedAt !== undefined && sightedAt > leftAt) return record;
+  const latest = record.witnesses.chain?.best;
+  if (latest !== undefined && BigInt(latest.burnerNative) > 0n && latest.at > since) return record;
   const { depositInBlock: _taken, ...rest } = burnerSightingRetracted(record);
   const { kind } = record.status;
   return kind === "deposit-seen" || kind === "converting" || kind === "claiming"
@@ -374,8 +375,12 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     at,
   );
   // A job that saw funds is a money observation whatever its phase says. It stands as final: the
-  // worker acts on it, at the best block, and says so when a fork takes it away again.
-  if (job.depositLeftAt !== undefined) next = depositLeft(next, job.depositLeftAt);
+  // worker acts on it, at the best block, and says so when a fork takes it away again. A sighting
+  // of the deposit on the account counts as it back only when it is newer than the worker's own
+  // last read of the account empty. Older, a fork took that block too.
+  if (job.depositLeftAt !== undefined) {
+    next = depositLeft(next, Math.max(job.depositLeftAt, job.emptyReadAt ?? 0));
+  }
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
   // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
   // only a retry after a failure drops it.
