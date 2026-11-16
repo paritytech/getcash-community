@@ -35,6 +35,10 @@ export const HIDDEN_RESET_MS = 5_000;
 export const JOB_POLL_MS = 2_000;
 /** The same poll while a top-up's claim is in flight and the host's word on it is due. */
 export const JOB_POLL_CLAIMING_MS = 1_000;
+/** A deposit watch that failed is tried again after this, doubled for each failure in a row. */
+export const DEPOSIT_WATCH_RETRY_MS = 2_000;
+/** The longest wait before a failed deposit watch is tried again. */
+export const DEPOSIT_WATCH_RETRY_MAX_MS = 30_000;
 /** Foreground Meld status poll. */
 export const MELD_POLL_MS = 3_000;
 /** The Meld poll's ceiling while its reads keep failing; the delay doubles up to it. */

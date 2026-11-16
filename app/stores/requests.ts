@@ -22,6 +22,8 @@ import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
   DEPOSIT_EXPIRED_REASON,
+  DEPOSIT_WATCH_RETRY_MAX_MS,
+  DEPOSIT_WATCH_RETRY_MS,
   HIDDEN_RESET_MS,
   JOB_POLL_CLAIMING_MS,
   JOB_POLL_MS,
@@ -1553,12 +1555,18 @@ export const useRequestsStore = defineStore("requests", () => {
   // read final on the burner, the app follows its burner at each best and each finalized block.
   // The app is the early witness of the deposit, before or after a provider's word, and its own
   // finalized read confirms it. Hosted only; it ends once the deposit is final on the burner or
-  // the request moves past it, and a failed subscription is let go until the next sync
-  // re-subscribes.
+  // the request moves past it. A failed subscription is tried again while its request stays on
+  // screen, after a wait that doubles with each failure in a row.
   let depositWatch: {
     key: RequestKey;
     unsubscribe: (() => void) | null;
     stopped: boolean;
+  } | null = null;
+  /** The failures in a row of the watch on one request, and the try pending after the last. */
+  let depositRetry: {
+    key: RequestKey;
+    failures: number;
+    timer: ReturnType<typeof setTimeout> | null;
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
@@ -1590,11 +1598,20 @@ export const useRequestsStore = defineStore("requests", () => {
       if (depositWatch.key === key) return;
       stopDepositWatch();
     }
+    // A try still pending is owed no more: it was this start, or for a request no longer on screen,
+    // whose failures this one does not carry, even while that try loads the chain module.
+    if (depositRetry?.timer != null) {
+      clearTimeout(depositRetry.timer);
+      depositRetry.timer = null;
+    }
+    if (depositRetry !== null && depositRetry.key !== key) depositRetry = null;
     // Claimed before the subscription lands, so a second start while it is pending is a no-op.
     const watching = { key, unsubscribe: null as (() => void) | null, stopped: false };
     depositWatch = watching;
     const sourceId = effectiveSourceId(ref);
-    const failed = (e: unknown): void => {
+    // The subscription's own error is the chain client's; a subscribe that rejected failed before
+    // it, deriving the account or dialing, and a failed dial is not cached.
+    const failed = (e: unknown, fromClient: boolean): void => {
       if (watching.stopped) return;
       devLog(
         "requests",
@@ -1602,12 +1619,17 @@ export const useRequestsStore = defineStore("requests", () => {
         undefined,
         "warn",
       );
-      stopDepositWatch();
+      dropDepositWatch();
+      retryDepositWatch(key, fromClient);
     };
+    const clientFailed = (e: unknown): void => failed(e, true);
     // Only a change is observed, since the watch emits at every block; each finality on its own.
+    // Any reading shows the subscription alive, which ends its failures in a row.
     const last: Partial<Record<Finality, string>> = {};
     const changed = (finality: Finality, reading: string): boolean => {
-      if (watching.stopped || last[finality] === reading) return false;
+      if (watching.stopped) return false;
+      if (depositRetry?.key === key) depositRetry = null;
+      if (last[finality] === reading) return false;
       last[finality] = reading;
       return true;
     };
@@ -1634,7 +1656,7 @@ export const useRequestsStore = defineStore("requests", () => {
                 ),
               );
             },
-            failed,
+            clientFailed,
           );
         }
         return live.watchTradeBurner(
@@ -1646,13 +1668,16 @@ export const useRequestsStore = defineStore("requests", () => {
               void observe(ref, chainReading(free, requestsNow(), finality));
             }
           },
-          failed,
+          clientFailed,
         );
       })
-      .then((unsubscribe) => {
-        if (watching.stopped) unsubscribe();
-        else watching.unsubscribe = unsubscribe;
-      }, failed);
+      .then(
+        (unsubscribe) => {
+          if (watching.stopped) unsubscribe();
+          else watching.unsubscribe = unsubscribe;
+        },
+        (e: unknown) => failed(e, false),
+      );
   }
   /** Starts the watch over again after a request took new terms: its token may have changed, and
    *  the balance it already read has to be read again against the new gate. */
@@ -1660,12 +1685,46 @@ export const useRequestsStore = defineStore("requests", () => {
     stopDepositWatch();
     syncDepositWatch();
   }
+  /** Stops the watch with any try pending, and forgets its failures. */
   function stopDepositWatch(): void {
+    clearDepositRetry();
+    dropDepositWatch();
+  }
+  /** Lets the subscription go, and nothing else. */
+  function dropDepositWatch(): void {
     if (depositWatch === null) return;
     const watching = depositWatch;
     depositWatch = null;
     watching.stopped = true;
     watching.unsubscribe?.();
+  }
+  function clearDepositRetry(): void {
+    if (depositRetry?.timer != null) clearTimeout(depositRetry.timer);
+    depositRetry = null;
+  }
+  /** Tries the watch on `key` again after its latest failure, while its request stays on screen.
+   *  From the second failure in a row on, when the client failed it, the Asset Hub client is
+   *  dialed afresh first: a client that died stays cached, and every try on it would fail the
+   *  same way. Other failures leave the client to the reads that share it. */
+  function retryDepositWatch(key: RequestKey, fromClient: boolean): void {
+    const failures = (depositRetry?.key === key ? depositRetry.failures : 0) + 1;
+    clearDepositRetry();
+    const wait = Math.min(DEPOSIT_WATCH_RETRY_MS * 2 ** (failures - 1), DEPOSIT_WATCH_RETRY_MAX_MS);
+    const retry: NonNullable<typeof depositRetry> = { key, failures, timer: null };
+    retry.timer = setTimeout(() => {
+      retry.timer = null;
+      if (failures < 2 || !fromClient) {
+        syncDepositWatch();
+        return;
+      }
+      void import("~~/lib/host-chain").then(({ evictChain, ASSET_HUB }) => {
+        // Stopped or started over while the module loaded: this try is no longer owed.
+        if (depositRetry !== retry) return;
+        evictChain(ASSET_HUB);
+        syncDepositWatch();
+      });
+    }, wait);
+    depositRetry = retry;
   }
   /** The watch follows the request on screen until its deposit is final on the burner, hosted,
    *  and not otherwise. */
