@@ -3,7 +3,12 @@
 // behind it is going, one fetch per tick. Chainflip carries the crypto destinations, Meld the
 // fiat ones; the pickers grey a route until its provider is here.
 
-import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
+import {
+  assetHubSource,
+  channelTermsFault,
+  readChannelRecord,
+  readSwapStatus,
+} from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
 import {
@@ -66,7 +71,7 @@ export const PAY_TIMEOUT_MS =
  */
 export function railFor(provider, record) {
   if (provider === "chainflip") {
-    return { status: (id) => readSwapStatus(id), channel: (id) => readChannelRecord(id) };
+    return { status: (id) => readSwapStatus(id), channel: (id) => chainflipChannel(id, record) };
   }
   if (provider === "meld") {
     const meld = record?.meld;
@@ -83,6 +88,15 @@ export function railFor(provider, record) {
     return withMeldAssets(rail, client);
   }
   return null;
+}
+
+/** Chainflip's record of a channel, refused unless its terms suit the token the key pays in. */
+async function chainflipChannel(id, record, network) {
+  const channel = await readChannelRecord(id, undefined, network);
+  if (channel === null) return null;
+  const fault = channelTermsFault(channel, assetHubSource(depositTokenOf(recordedRoute(record))));
+  if (fault !== null) throw new ChannelMismatchError(`channel ${id}: ${fault}`);
+  return channel;
 }
 
 const personhoodFetches = new Map();
@@ -144,7 +158,7 @@ function swapSaleRail(sale, record) {
   return {
     channel: async (id) => {
       const [swap, order] = await Promise.all([
-        readChannelRecord(id, undefined, SWAP_NETWORK),
+        chainflipChannel(id, record, SWAP_NETWORK),
         sale.channel(record.channel.id),
       ]);
       if (swap === null) return null;

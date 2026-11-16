@@ -1093,11 +1093,16 @@ export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
  *  for a swap source; the manual rail, a direct deposit of that token, for every other. */
 export async function railFor(sourceId: SourceId, route: ConversionRoute): Promise<ChainflipRail> {
   const token = depositTokenOf(route);
-  if (!SOURCE_CONFIG_BY_ID.has(sourceId)) return createManualRail({ token });
+  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
+  if (source === undefined) return createManualRail({ token });
   const delivered = chainflipTokenOf(token);
   if (delivered === undefined) throw new Error(`Chainflip cannot deliver ${token.symbol}`);
   const egress = egressFor(delivered);
-  return checkedAgainstChainflip(createChainflipRail({ sdk: await mainnetSdk(), egress }), egress);
+  return checkedAgainstChainflip(
+    createChainflipRail({ sdk: await mainnetSdk(), egress }),
+    source,
+    egress,
+  );
 }
 
 export async function createCoinageSession(

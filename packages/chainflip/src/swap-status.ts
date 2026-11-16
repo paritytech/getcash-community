@@ -5,7 +5,7 @@
 // Mainnet by default. A test build reads Perseverance, Chainflip's test network: it opens real
 // channels and quotes, though it watches none of the chains this app runs on.
 
-import type { SwapStatusResult } from "@getsome/core";
+import type { SwapStatusResult, TokenSpec } from "@getsome/core";
 import type { ChainflipNetworkId } from "./sdk";
 import { getSwapStatus, type StatusBackend } from "./status";
 
@@ -61,11 +61,59 @@ export interface ChainflipChannelRecord {
   destinationChain: string;
   destinationAsset: string;
   refundAddress: string;
+  sourceChain: string;
+  sourceAsset: string;
+  /** What the channel's brokers take between them, basis points; NaN when one does not say. */
+  commissionBps: number;
+  /** The price under which the swap refunds, destination per source; NaN or 0 when none is set. */
+  minPrice: number;
   /** Chainflip's own word on the channel being closed, rather than our stored clock. */
   expired: boolean;
 }
 
+export interface ChannelSource {
+  chain: string;
+  asset: string;
+}
+
+export const assetHubSource = (token: TokenSpec): ChannelSource => ({
+  chain: "Assethub",
+  asset: token.chainflipAsset ?? "",
+});
+
+/** Four times what BaaS takes today, so a raise on its side does not stop every channel. */
+export const MAX_CHANNEL_COMMISSION_BPS = 20;
+
+/** Chainflip stores the minimum price in another encoding and serves it back rounded. */
+const MIN_PRICE_ROUNDING = 1e-4;
+
+/** What is wrong with the terms Chainflip holds for a channel paid from `source`, or null. */
+export function channelTermsFault(
+  record: ChainflipChannelRecord,
+  source: ChannelSource,
+  minPrice = 0,
+): string | null {
+  if (record.sourceChain !== source.chain || record.sourceAsset !== source.asset) {
+    return `it takes '${record.sourceAsset}' on '${record.sourceChain}', not ${source.asset} on ${source.chain}`;
+  }
+  if (!(record.commissionBps <= MAX_CHANNEL_COMMISSION_BPS)) {
+    return `its brokers take ${record.commissionBps} bps, over the ${MAX_CHANNEL_COMMISSION_BPS} allowed`;
+  }
+  if (!(record.minPrice > 0 && record.minPrice >= minPrice * (1 - MIN_PRICE_ROUNDING))) {
+    return `its minimum price is ${record.minPrice}, under ${minPrice}`;
+  }
+  return null;
+}
+
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
+
+const commissionOf = (brokers: unknown): number =>
+  Array.isArray(brokers)
+    ? brokers.reduce<number>((sum, broker: { commissionBps?: unknown } | null) => {
+        const bps = broker?.commissionBps;
+        return sum + (typeof bps === "number" ? bps : Number.NaN);
+      }, 0)
+    : 0;
 
 /**
  * Chainflip's record of the channel, read back by its id. Returns null when Chainflip answers but
@@ -88,7 +136,10 @@ export async function readChannelRecord(
     destAddress?: unknown;
     destChain?: unknown;
     destAsset?: unknown;
-    fillOrKillParams?: { refundAddress?: unknown } | null;
+    srcChain?: unknown;
+    srcAsset?: unknown;
+    brokers?: unknown;
+    fillOrKillParams?: { refundAddress?: unknown; minPrice?: unknown } | null;
     depositChannel?: { depositAddress?: unknown; isExpired?: unknown };
   };
   const channel = body.depositChannel;
@@ -101,6 +152,10 @@ export async function readChannelRecord(
     destinationChain: str(body.destChain),
     destinationAsset: str(body.destAsset),
     refundAddress: str(body.fillOrKillParams?.refundAddress),
+    sourceChain: str(body.srcChain),
+    sourceAsset: str(body.srcAsset),
+    commissionBps: commissionOf(body.brokers),
+    minPrice: Number(str(body.fillOrKillParams?.minPrice)),
     expired: channel.isExpired === true,
   };
 }

@@ -33,6 +33,9 @@ describe("the channel record read", () => {
     destAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
     destChain: "Bitcoin",
     destAsset: "BTC",
+    srcChain: "Assethub",
+    srcAsset: "DOT",
+    brokers: [{ commissionBps: 5 }, { commissionBps: 2 }],
     fillOrKillParams: { refundAddress: "5Key", minPrice: "0.99" },
     depositChannel: { depositAddress: "5Channel", isExpired: false },
   };
@@ -51,6 +54,10 @@ describe("the channel record read", () => {
       destinationChain: "Bitcoin",
       destinationAsset: "BTC",
       refundAddress: "5Key",
+      sourceChain: "Assethub",
+      sourceAsset: "DOT",
+      commissionBps: 7,
+      minPrice: 0.99,
       expired: false,
     });
   });

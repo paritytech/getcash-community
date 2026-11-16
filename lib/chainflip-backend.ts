@@ -6,10 +6,16 @@ import {
   BAAS_COMMISSION_BPS,
   baasBrokerUrl,
   createSwapSdk,
+  requestedMinPrice,
   type ChainflipNetworkId,
   type SwapSdkLike,
 } from "@getsome/chainflip";
-import { readChannelRecord, type ChainflipChannelRecord } from "@getsome/chainflip/swap-status";
+import {
+  channelTermsFault,
+  readChannelRecord,
+  type ChainflipChannelRecord,
+  type ChannelSource,
+} from "@getsome/chainflip/swap-status";
 import {
   NETWORK as CHAIN_NETWORK,
   type ChainflipRail,
@@ -42,7 +48,8 @@ function channelMismatch(
   record: ChainflipChannelRecord | null,
   channel: DepositChannel,
   args: OpenChannelArgs,
-  egress: { chain: string; asset: string },
+  source: ChannelSource,
+  egress: ChannelSource,
 ): string | null {
   if (record === null) return "Chainflip cannot name it";
   const addresses = [
@@ -58,12 +65,13 @@ function channelMismatch(
   if (record.destinationChain !== egress.chain || record.destinationAsset !== egress.asset) {
     return `it pays out '${record.destinationAsset}' on '${record.destinationChain}', not ${egress.asset} on ${egress.chain}`;
   }
-  return null;
+  return channelTermsFault(record, source, requestedMinPrice(args));
 }
 
 export function checkedAgainstChainflip(
   rail: ChainflipRail,
-  egress: { chain: string; asset: string },
+  source: ChannelSource,
+  egress: ChannelSource,
   read: ChannelRead = (id) => readChannelRecord(id, undefined, NETWORK),
   waitMs = CHANNEL_READ_WAIT_MS,
   windowMs = CHANNEL_READ_WINDOW_MS,
@@ -73,7 +81,7 @@ export function checkedAgainstChainflip(
     async requestDepositAddress(args) {
       const channel = await rail.requestDepositAddress(args);
       const record = await readOpenedChannel(channel.depositChannelId, read, waitMs, windowMs);
-      const mismatch = channelMismatch(record, channel, args, egress);
+      const mismatch = channelMismatch(record, channel, args, source, egress);
       if (mismatch !== null) {
         throw new Error(
           `Chainflip's record of channel ${channel.depositChannelId} does not match the top-up: ${mismatch}`,

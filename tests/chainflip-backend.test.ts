@@ -90,6 +90,7 @@ describe("a top-up channel", () => {
   const BURNER_OTHER_PREFIX = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
   const REFUND = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
   const DEPOSIT = "bc1p9438v9cmxqsm0hrkfm27nq4k09w7s7lrnsay6tfc2x0hrttm56qs36t3z5";
+  const SOURCE = { chain: "Bitcoin", asset: "BTC" };
   const EGRESS = { chain: "Assethub", asset: "USDT" };
   const SERVED = {
     depositAddress: DEPOSIT,
@@ -97,6 +98,10 @@ describe("a top-up channel", () => {
     destinationChain: "Assethub",
     destinationAsset: "USDT",
     refundAddress: REFUND.toUpperCase(),
+    sourceChain: "Bitcoin",
+    sourceAsset: "BTC",
+    commissionBps: 5,
+    minPrice: 1990,
     expired: false,
   };
   const opened = {
@@ -104,12 +109,16 @@ describe("a top-up channel", () => {
     deposit: { address: DEPOSIT, amount: 1n, formatted: "1", assetSymbol: "BTC", expiresAt: 0 },
   };
   const rail = { requestDepositAddress: async () => opened } as never;
-  const args = { quote: {}, destAddress: BURNER, refundAddress: REFUND } as never;
+  const args = {
+    quote: { raw: { estimatedPrice: "2000" } },
+    destAddress: BURNER,
+    refundAddress: REFUND,
+  } as never;
 
   it("is handed out only once Chainflip's own record agrees with what was asked", async () => {
     const { checkedAgainstChainflip } = await backendWith("abc123");
     const open = (read: () => Promise<typeof SERVED | null>) =>
-      checkedAgainstChainflip(rail, EGRESS, read, 1, 20).requestDepositAddress(args);
+      checkedAgainstChainflip(rail, SOURCE, EGRESS, read, 1, 20).requestDepositAddress(args);
 
     const reads = [Promise.reject(new Error("HTTP 404")), Promise.resolve(SERVED)];
     await expect(open(() => reads.shift()!)).resolves.toBe(opened);
@@ -126,6 +135,15 @@ describe("a top-up channel", () => {
     );
     await expect(open(async () => ({ ...SERVED, destinationAsset: "DOT" }))).rejects.toThrow(
       /pays out 'DOT'/,
+    );
+    await expect(open(async () => ({ ...SERVED, sourceAsset: "ETH" }))).rejects.toThrow(
+      /takes 'ETH'/,
+    );
+    await expect(open(async () => ({ ...SERVED, commissionBps: 21 }))).rejects.toThrow(
+      /brokers take 21 bps/,
+    );
+    await expect(open(async () => ({ ...SERVED, minPrice: 1980 }))).rejects.toThrow(
+      /minimum price is 1980/,
     );
     await expect(open(() => Promise.reject(new Error("HTTP 404")))).rejects.toThrow("HTTP 404");
   });

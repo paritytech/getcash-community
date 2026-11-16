@@ -9,6 +9,15 @@ export interface DepositBackend {
   requestDepositAddressV2(args: RequestDepositAddressV2Args): Promise<unknown>;
 }
 
+const rawQuoteOf = (args: OpenChannelArgs) => args.quote.raw as Record<string, unknown>;
+
+const tolerancePct = (args: OpenChannelArgs): string =>
+  args.fillOrKill?.slippageTolerancePercent ?? String(channelSlippagePct(rawQuoteOf(args)));
+
+/** The minimum price the SDK sets on a channel opened with `args`, destination per source. */
+export const requestedMinPrice = (args: OpenChannelArgs): number =>
+  (Number(rawQuoteOf(args)["estimatedPrice"]) * (100 - Number(tolerancePct(args)))) / 100;
+
 export async function requestDepositAddress(
   backend: DepositBackend,
   source: SourceConfig,
@@ -17,17 +26,15 @@ export async function requestDepositAddress(
   if (!args.refundAddress) {
     throw new Error(`${source.shortName} refund address is required`);
   }
-  const rawQuote = args.quote.raw as Record<string, unknown>;
 
   let result: unknown;
   try {
     result = await backend.requestDepositAddressV2({
-      quote: rawQuote,
+      quote: rawQuoteOf(args),
       destAddress: args.destAddress,
       fillOrKillParams: {
         refundAddress: args.refundAddress,
-        slippageTolerancePercent:
-          args.fillOrKill?.slippageTolerancePercent ?? String(channelSlippagePct(rawQuote)),
+        slippageTolerancePercent: tolerancePct(args),
         retryDurationMinutes: args.fillOrKill?.retryDurationMinutes ?? 10,
       },
     });
