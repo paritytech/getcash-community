@@ -144,6 +144,9 @@ importers:
       '@getsome/core':
         specifier: workspace:*
         version: link:../core
+      '@getsome/ephemeral':
+        specifier: workspace:*
+        version: link:../ephemeral
       '@noble/hashes':
         specifier: ^2.0.1
         version: 2.3.0

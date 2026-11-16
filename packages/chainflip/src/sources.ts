@@ -2,7 +2,9 @@
 // is gated at runtime per source by probeLiquidity.
 
 import { sha256 } from "@noble/hashes/sha2.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
 import type { SourceDescriptor, SourceId, TokenSpec } from "@getsome/core";
+import { checksumAddress } from "@getsome/ephemeral";
 
 function validateBtcRefundAddress(addr: string): boolean {
   const trimmed = addr.trim();
@@ -11,9 +13,15 @@ function validateBtcRefundAddress(addr: string): boolean {
   );
 }
 
-// Shape-only: 0x + 40 hex. The checksum is not enforced.
+// 0x + 40 hex. A mixed-case address must carry its EIP-55 checksum.
 function validateEvmRefundAddress(addr: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(addr.trim());
+  const trimmed = addr.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(trimmed)) return false;
+  const hex = trimmed.slice(2);
+  const lower = hex.toLowerCase();
+  return (
+    hex === lower || hex === hex.toUpperCase() || trimmed === checksumAddress(hexToBytes(lower))
+  );
 }
 
 function validateSolanaAddress(addr: string): boolean {

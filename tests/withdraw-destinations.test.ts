@@ -68,10 +68,10 @@ describe("withdrawal destinations", () => {
 
   it("checks a Chainflip destination's address with that chain's rule, and lands on the key", () => {
     const ethereum = withdrawDestination("usdc-eth")!;
-    expect(ethereum.validateAddress("0x4B2c0000000000000000000000000000000C02db")).toBe(true);
+    expect(ethereum.validateAddress("0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db")).toBe(true);
     expect(ethereum.validateAddress(ALICE_POLKADOT)).toBe(false);
     // No landing of its own: the PAS lands on the withdrawal's key, which pays the provider.
-    expect(landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db")).toBeNull();
+    expect(landingAccountHex(ethereum, "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db")).toBeNull();
   });
 
   it("tells a wrong-network address from a malformed one", () => {

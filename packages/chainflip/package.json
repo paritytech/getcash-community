@@ -18,6 +18,7 @@
     "@chainflip/sdk": "^2.1.1",
     "@noble/hashes": "^2.0.1",
     "@getsome/core": "workspace:*",
+    "@getsome/ephemeral": "workspace:*",
     "axios": "^1.20.0"
   }
 }

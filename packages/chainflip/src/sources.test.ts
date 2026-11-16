@@ -125,10 +125,13 @@ describe("refund-address validators", () => {
     expect(btc.validateRefundAddress("0x1234")).toBe(false);
   });
 
-  it("EVM accepts 0x + 40 hex", () => {
+  it("EVM accepts 0x + 40 hex, and a mixed-case address only with its checksum", () => {
     const eth = get("eth");
     expect(eth.validateRefundAddress("0x52908400098527886E0F7030069857D2E4169EE7")).toBe(true);
     expect(eth.validateRefundAddress("0x52908400098527886e0f7030069857d2e4169ee7")).toBe(true);
+    expect(eth.validateRefundAddress("0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db")).toBe(true);
+    expect(eth.validateRefundAddress("0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02dB")).toBe(false);
+    expect(eth.validateRefundAddress("0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02dc")).toBe(false);
     expect(eth.validateRefundAddress("0x123")).toBe(false);
     expect(eth.validateRefundAddress("52908400098527886E0F7030069857D2E4169EE7")).toBe(false);
   });
