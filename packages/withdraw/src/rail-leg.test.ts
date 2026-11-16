@@ -250,6 +250,27 @@ describe("the provider leg", () => {
     expect(wrong.paid).toEqual([]);
   });
 
+  it("refuses a channel that refunds elsewhere or pays out another asset", async () => {
+    const KEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+    const KEY_OTHER_PREFIX = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
+    const asked = { refundAddress: KEY, payoutAsset: { chain: "Bitcoin", asset: "BTC" } };
+    const served = { ...RECORD, destinationChain: "Bitcoin", destinationAsset: "BTC" };
+
+    const ours = world(checking({ ...served, refundAddress: KEY_OTHER_PREFIX }).rail, asked);
+    expect((await railTickOnce(ours.input, seeded())).step).toBe("handoff");
+
+    for (const record of [served, { ...served, refundAddress: KEY.replace(/.$/, "2") }]) {
+      const theirs = world(checking(record).rail, asked);
+      await expect(railTickOnce(theirs.input, seeded())).rejects.toThrow(/refunds to/);
+      expect(theirs.paid).toEqual([]);
+    }
+
+    const swapped = { ...served, refundAddress: KEY, destinationAsset: "USDT" };
+    const other = world(checking(swapped).rail, asked);
+    await expect(railTickOnce(other.input, seeded())).rejects.toThrow(/pays out 'USDT' on/);
+    expect(other.paid).toEqual([]);
+  });
+
   it("takes the provider's word that a channel is closed, whatever our clock says", async () => {
     const closed = world(checking({ ...RECORD, expired: true }).rail);
     await expect(railTickOnce(closed.input, seeded())).rejects.toBeInstanceOf(ChannelExpiredError);

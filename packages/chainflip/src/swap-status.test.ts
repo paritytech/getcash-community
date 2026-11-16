@@ -31,6 +31,9 @@ describe("reading a swap's status with fetch", () => {
 describe("the channel record read", () => {
   const record = {
     destAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+    destChain: "Bitcoin",
+    destAsset: "BTC",
+    fillOrKillParams: { refundAddress: "5Key", minPrice: "0.99" },
     depositChannel: { depositAddress: "5Channel", isExpired: false },
   };
   const serving =
@@ -45,6 +48,9 @@ describe("the channel record read", () => {
     expect(await readChannelRecord("42", serving(record))).toEqual({
       depositAddress: "5Channel",
       destinationAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
   });

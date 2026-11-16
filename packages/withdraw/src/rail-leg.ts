@@ -89,6 +89,9 @@ export interface RailChannelRecord {
   destinationAddress?: string;
   /** `off-chain` when the payout has no address to compare; absent for a payout to an address. */
   payout?: "off-chain";
+  destinationChain?: string;
+  destinationAsset?: string;
+  refundAddress?: string;
   /** The provider's own word on the channel being closed. */
   expired: boolean;
   /** What the provider expects to receive, base units, for a provider that holds the key to an
@@ -176,6 +179,8 @@ export interface RailLegInput {
   payout?: "off-chain";
   /** The exact amount the key pays, base units, for a provider that expects one. */
   amount?: bigint;
+  refundAddress?: string;
+  payoutAsset?: { chain: string; asset: string };
   /** For a payment that keeps its own memory of an attempt that may have left (the exact
    *  payment's nonce): whether that attempt landed, from the chain alone. Asked before anything
    *  else while the key is unpaid, since a provider that saw the funds may already have closed the
@@ -257,6 +262,23 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
   if (!sameAccount(record.depositAddress, handoff.address)) {
     throw new ChannelMismatchError(
       `channel ${handoff.id} takes deposits at ${record.depositAddress}, not ${handoff.address}`,
+    );
+  }
+  if (
+    input.refundAddress !== undefined &&
+    !sameAccount(record.refundAddress ?? "", input.refundAddress)
+  ) {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} refunds to '${record.refundAddress ?? ""}', not ${input.refundAddress}`,
+    );
+  }
+  const asset = input.payoutAsset;
+  if (
+    asset !== undefined &&
+    (record.destinationChain !== asset.chain || record.destinationAsset !== asset.asset)
+  ) {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} pays out '${record.destinationAsset ?? ""}' on '${record.destinationChain ?? ""}', not ${asset.asset} on ${asset.chain}`,
     );
   }
   if (input.payout === "off-chain") {

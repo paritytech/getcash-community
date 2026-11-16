@@ -242,6 +242,7 @@ describe("a fiat sale through an offramp lane", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: CF_DEPOSIT,
       destinationAddress: SOLANA_DEPOSIT,
+      refundAddress: "5Key",
       expired: false,
     });
     mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
@@ -318,6 +319,7 @@ describe("a fiat sale through an offramp lane", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: CF_DEPOSIT,
       destinationAddress: "Some0therSo1anaAddressThatIsNotTheProv1der",
+      refundAddress: "5Key",
       expired: false,
     });
     const engine = await landed();
@@ -358,6 +360,7 @@ describe("a fiat sale through an offramp lane", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: CF_DEPOSIT,
       destinationAddress: SOLANA_DEPOSIT,
+      refundAddress: "5Key",
       expired: true, // Meld closed the order once the swap paid it
     });
     const resumed = await engineWith({ "s-1": job });

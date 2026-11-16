@@ -50,6 +50,9 @@ export interface ChainflipChannelRecord {
   depositAddress: string;
   /** Where the swap pays out: the address the user gave. */
   destinationAddress: string;
+  destinationChain: string;
+  destinationAsset: string;
+  refundAddress: string;
   /** Chainflip's own word on the channel being closed, rather than our stored clock. */
   expired: boolean;
 }
@@ -75,6 +78,9 @@ export async function readChannelRecord(
   if (!response.ok) throw new Error(`Chainflip channel read failed: HTTP ${response.status}`);
   const body = (await response.json()) as {
     destAddress?: unknown;
+    destChain?: unknown;
+    destAsset?: unknown;
+    fillOrKillParams?: { refundAddress?: unknown } | null;
     depositChannel?: { depositAddress?: unknown; isExpired?: unknown };
   };
   const channel = body.depositChannel;
@@ -84,6 +90,9 @@ export async function readChannelRecord(
   return {
     depositAddress,
     destinationAddress: str(body.destAddress),
+    destinationChain: str(body.destChain),
+    destinationAsset: str(body.destAsset),
+    refundAddress: str(body.fillOrKillParams?.refundAddress),
     expired: channel.isExpired === true,
   };
 }

@@ -743,6 +743,12 @@ async function tickRailLeg(record) {
         // The Chainflip channel of a swap sale must pay out to the provider's deposit address.
         destinationAddress:
           swapOf(record) === null ? record.destination?.address : record.channel?.address,
+        ...(record.rail === "chainflip" || swapOf(record) !== null
+          ? { refundAddress: record.keyAddress }
+          : {}),
+        ...(record.rail === "chainflip"
+          ? { payoutAsset: { chain: record.destination.chain, asset: record.destination.asset } }
+          : {}),
         ...(exactAmount === null
           ? swapOf(record) === null
             ? {}

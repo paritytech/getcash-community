@@ -163,6 +163,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5Channel",
       destinationAddress: "bc1qw508",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
@@ -342,6 +345,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5Fresh",
       destinationAddress: "bc1qw508",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     await engine.tickAllWithdraw();
@@ -354,6 +360,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5SomewhereElse",
       destinationAddress: "bc1qw508",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     const engine = await engineWith(landedJob());
@@ -371,6 +380,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5Channel",
       destinationAddress: "bc1qsomeoneelse",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     const engine = await engineWith(landedJob());
