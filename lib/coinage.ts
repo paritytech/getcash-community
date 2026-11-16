@@ -35,6 +35,8 @@ import {
   type RefundChain,
   type RefundKey,
 } from "@getsome/ephemeral";
+import { blake2b } from "@noble/hashes/blake2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
@@ -751,16 +753,36 @@ function handoffPayloadOnce(
   };
 }
 
-/** Deterministic 32-byte seed from a label, for mock mode. */
+const MOCK_ROOT_KEY = "getsome.mock.entropy";
+let mockRoot: Uint8Array | undefined;
+
+function storedMockRoot(): Uint8Array | null {
+  try {
+    const stored = window.localStorage.getItem(MOCK_ROOT_KEY) ?? "";
+    return /^[0-9a-f]{64}$/.test(stored) ? hexToBytes(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function newMockRoot(): Uint8Array {
+  const root = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    window.localStorage.setItem(MOCK_ROOT_KEY, bytesToHex(root));
+  } catch {
+    return root;
+  }
+  return root;
+}
+
+/** 32-byte seed from a label and a random root kept in this browser, for mock mode. */
 function mockEntropy(): EntropyPort {
+  mockRoot ??= storedMockRoot() ?? newMockRoot();
+  const key = mockRoot;
   return {
     deterministic: true,
     async deriveSeed(label: Uint8Array): Promise<Uint8Array> {
-      const out = new Uint8Array(32);
-      label.forEach((b, i) => {
-        out[i % 32] = (out[i % 32] ?? 0) ^ b;
-      });
-      return out;
+      return blake2b(label, { key, dkLen: 32 });
     },
   };
 }
