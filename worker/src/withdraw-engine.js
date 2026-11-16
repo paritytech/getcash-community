@@ -571,11 +571,14 @@ function describeWithdraw(record) {
 }
 
 /**
- * Dev builds only: takes the provider's word as delivered for a job on the rail leg, so the walk
- * can be finished where the provider cannot be reached. On a test network the channel is real
- * but the swap never runs, since the provider watches another chain.
+ * Test networks only: takes the provider's word as delivered for a job on the rail leg, so the
+ * walk can be finished where the provider cannot be reached. On a test network the channel is
+ * real but the swap never runs, since the provider watches another chain.
  */
 export async function skipWithdrawRail(params) {
+  if (!NETWORK.testnet) {
+    return { error: "invalid", reason: "the rail leg can be skipped on a test network only" };
+  }
   const input = readParams(params);
   const all = await loadJobs();
   const sessionId = String(input.sessionId ?? "");
