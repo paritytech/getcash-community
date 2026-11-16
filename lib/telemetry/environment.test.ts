@@ -1,6 +1,7 @@
+import { deriveRefundKey, REFUND_CHAINS } from "@getsome/ephemeral";
 import { describe, expect, it } from "vitest";
 import { environmentFor, ingestHost } from "./environment";
-import { describeError, maskSafe, reasonOf, scrubText, scrubUrl } from "./scrub";
+import { describeError, maskSafe, reasonOf, safeStringify, scrubText, scrubUrl } from "./scrub";
 
 const PROD = "https://prod@o1.ingest.de.sentry.io/1";
 
@@ -86,6 +87,19 @@ describe("the text guards", () => {
 
     // Then
     expect(scrubbed).toBe(`burner ${address} from [redacted: hash]`);
+  });
+
+  it("As a person topping up, a log line names a signing key or a refund key by mistake and it never leaves, while the refund address stays", () => {
+    const seed = new Uint8Array(32).fill(7);
+    const keys = REFUND_CHAINS.map((chain) => deriveRefundKey(chain, seed));
+    const signingKey = safeStringify({ secretKey: new Uint8Array(64).fill(9) });
+
+    const scrubbed = keys.map((key) => scrubText(`${key.address} ${key.secret}`));
+
+    expect(scrubText(signingKey)).toBe('{"secretKey":"[redacted: hash]"}');
+    keys.forEach((key, i) => {
+      expect(scrubbed[i]).toMatch(new RegExp(`^${key.address} \\[redacted: (hash|key)\\]$`));
+    });
   });
 
   it("As a person who pasted a recovery phrase, I never have it logged or sent, even inside a sentence", () => {
