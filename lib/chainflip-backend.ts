@@ -53,12 +53,12 @@ function channelMismatch(
 ): string | null {
   if (record === null) return "Chainflip cannot name it";
   const addresses = [
-    ["deposit", record.depositAddress, channel.deposit.address],
-    ["payout", record.destinationAddress, args.destAddress],
-    ["refund", record.refundAddress, args.refundAddress ?? ""],
+    ["deposit", record.depositAddress, channel.deposit.address, source.chain],
+    ["payout", record.destinationAddress, args.destAddress, egress.chain],
+    ["refund", record.refundAddress, args.refundAddress ?? "", source.chain],
   ] as const;
-  for (const [name, served, asked] of addresses) {
-    if (asked.trim() === "" || !sameChannelAddress(served, asked)) {
+  for (const [name, served, asked, chain] of addresses) {
+    if (asked.trim() === "" || !sameChannelAddress(served, asked, chain)) {
       return `its ${name} address is '${served}', not '${asked}'`;
     }
   }

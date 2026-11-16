@@ -293,12 +293,15 @@ describe("the provider leg", () => {
   it("holds a base58 payout address to its exact spelling, since a case variant is another account", async () => {
     // Solana addresses are bare public keys with no checksum, so nothing rejects a case variant
     // for us: the comparison has to.
-    const solana = "4Nd1mYQx3sABznWXpq2mV3G7iC6nnZq6dvGnHLm2rrDF";
-    const variant = solana.toLowerCase();
-    const provider = checking({ ...RECORD, destinationAddress: variant });
-    const { input, paid } = world(provider.rail, { destinationAddress: solana });
-    await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelMismatchError);
-    expect(paid).toEqual([]);
+    for (const solana of [
+      "4Nd1mYQx3sABznWXpq2mV3G7iC6nnZq6dvGnHLm2rrDF",
+      "bc1mYQx3sABznWXpq2mV3G7iC6nnZq6dvGnHLm2rrDFa",
+    ]) {
+      const provider = checking({ ...RECORD, destinationAddress: solana.toLowerCase() });
+      const { input, paid } = world(provider.rail, { destinationAddress: solana });
+      await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelMismatchError);
+      expect(paid).toEqual([]);
+    }
   });
 
   it("leaves a provider that cannot be reached for the next tick, unpaid", async () => {

@@ -124,19 +124,35 @@ export class ChannelMismatchError extends Error {
   }
 }
 
+const EVM_CHAINS: ReadonlySet<string> = new Set(["Ethereum", "Arbitrum"]);
+const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
+const BECH32_ADDRESS = /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]+$/;
+
+const isBech32 = (address: string): boolean =>
+  (address === address.toLowerCase() || address === address.toUpperCase()) &&
+  BECH32_ADDRESS.test(address.toLowerCase());
+
 /** The formats that define the same address in either case: Ethereum, whose checksum is carried in
  *  the casing, and bech32, which is specified in both. Base58 has no such rule, and a Solana
  *  address is a bare public key with no checksum at all, so a case variant of one is simply a
- *  different account. */
-const eitherCase = (address: string): boolean => /^(0x|bc1|tb1|bcrt1)/i.test(address);
+ *  different account. Judged by the chain's format, or by the address's own shape without one. */
+function eitherCase(address: string, chain?: string): boolean {
+  const evm = chain === undefined || EVM_CHAINS.has(chain);
+  const bitcoin = chain === undefined || chain === "Bitcoin";
+  return (evm && EVM_ADDRESS.test(address)) || (bitcoin && isBech32(address));
+}
 
-/** Addresses on the destination chain, compared as the provider may hand them back: exactly,
- *  unless the format itself says the two spellings are one address. */
-function sameAddress(a: string, b: string): boolean {
+/** Addresses on `chain`, compared as the provider may hand them back: exactly, unless the format
+ *  itself says the two spellings are one address. */
+function sameAddress(a: string, b: string, chain?: string): boolean {
   const left = a.trim();
   const right = b.trim();
   if (left === right) return true;
-  return eitherCase(left) && eitherCase(right) && left.toLowerCase() === right.toLowerCase();
+  return (
+    eitherCase(left, chain) &&
+    eitherCase(right, chain) &&
+    left.toLowerCase() === right.toLowerCase()
+  );
 }
 
 /**
@@ -156,8 +172,8 @@ function sameAccount(a: string, b: string): boolean {
   }
 }
 
-export const sameChannelAddress = (a: string, b: string): boolean =>
-  sameAccount(a, b) || sameAddress(a, b);
+export const sameChannelAddress = (a: string, b: string, chain?: string): boolean =>
+  sameAccount(a, b) || sameAddress(a, b, chain);
 
 export interface RailLegInput {
   rail: RailClient;
@@ -297,7 +313,7 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
         `channel ${handoff.id} cannot be checked: it pays out to '${named}' and the withdrawal names '${wanted}'`,
       );
     }
-    if (!sameAddress(named, wanted)) {
+    if (!sameAddress(named, wanted, asset?.chain)) {
       throw new ChannelMismatchError(`channel ${handoff.id} pays out to ${named}, not ${wanted}`);
     }
   }
