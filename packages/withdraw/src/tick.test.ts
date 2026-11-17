@@ -867,6 +867,33 @@ describe("withdrawTickOnce", () => {
     expect(state).toMatchObject({ waitingSince: null, attempts: 3, redeemSubmitted: true });
   });
 
+  it("does not take CASH someone else paid into the key on Asset Hub for the XCM's, and redeems once the XCM's is there", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const landed = world.state.keyCashAh;
+    world.state.keyCashAh = 1n;
+    const waiting = await drive(world, 1, state, PSM_SALE);
+    expect(waiting.steps).toEqual(["await-arrival"]);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+    world.state.keyCashAh = landed + 1n;
+    world.state.psmDebt = sizedExit(world).net;
+    const run = await drive(world, 2, state, PSM_SALE);
+    expect(run.steps).toEqual(["redeem", "done"]);
+  });
+
+  it("redeems what the key holds once the XCM's CASH was seen, though it is less by then", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const short = await drive(world, 1, state, PSM_SALE);
+    expect(short.outcomes[0]).toMatchObject({ step: "redeem", waiting: true });
+    world.state.keyCashAh /= 2n;
+    world.state.psmDebt = sizedExit(world).net;
+    const run = await drive(world, 2, state, PSM_SALE);
+    expect(run.steps).toEqual(["redeem", "done"]);
+  });
+
   it("waits, counting nothing, when the dry run finds the room gone meanwhile", async () => {
     const world = scriptedWorld({ refuseRedeem: "InsufficientReserve" });
     const state = freshWithdrawTickState();

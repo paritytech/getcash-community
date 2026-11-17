@@ -34,14 +34,15 @@
 // and the claimer named in the program can recover the assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
-// PAS on the key means the swap happened; the XCM is next; CASH on the key's Asset Hub account
-// means the XCM landed and the redeem is next, signed once at the key's nonce there, which says
-// whether it went out. A reload resumes from the persisted state. A tick that throws is retried
-// on the next tick. Terminal is a transaction rejected at inclusion after the dry run passed,
-// three times over, since each rejection costs a fee and the same transaction will not pass on
-// the fourth try; and, on the PSM tier, the PSM refusing the redeem three times for a reason
-// waiting cannot clear, or once for one no retry can. A PSM short of room is not terminal while
-// the pair still mints: the run waits on Asset Hub, spending nothing, until a mint makes room.
+// PAS on the key means the swap happened; the XCM is next; the XCM's CASH on the key's Asset Hub
+// account means the XCM landed and the redeem is next, signed once at the key's nonce there, which
+// says whether it went out. A reload resumes from the persisted state. A tick that throws is
+// retried on the next tick. Terminal is a transaction rejected at inclusion after the dry run
+// passed, three times over, since each rejection costs a fee and the same transaction will not
+// pass on the fourth try; and, on the PSM tier, the PSM refusing the redeem three times for a
+// reason waiting cannot clear, or once for one no retry can. A PSM short of room is not terminal
+// while the pair still mints: the run waits on Asset Hub, spending nothing, until a mint makes
+// room.
 
 import type { PolkadotSigner } from "polkadot-api";
 import {
@@ -190,7 +191,8 @@ export interface WithdrawTickState {
   expectedLanding: bigint | null;
   /** The least the destination must gain for that XCM to count as arrived (`arrivalFloor`);
    *  null on a run submitted before it was kept, which falls back to the landing less the
-   *  slippage. */
+   *  slippage. On the PSM tier, the least CASH the key must hold on Asset Hub for it: what the
+   *  XCM carries past its fee earmark, which lands whole. Null once it was seen. */
   arrivalFloor: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
@@ -498,7 +500,9 @@ export async function withdrawTickOnce(
       // Read before the submit, so what the XCM adds is measured from what was there. Set before
       // the driver persists, so a submit whose answer is lost keeps its baseline. The PSM tier
       // lands on the key and takes its baseline at the redeem.
-      if (input.sale.tier !== "psm") {
+      if (input.sale.tier === "psm") {
+        state.arrivalFloor = sizing.args.cashToSend - sizing.args.remoteFeesCash;
+      } else {
         state.destinationBefore = await bounded(
           input.readDestinationOnAssetHub(input.destinationHex),
           input.tickTimeoutMs,
@@ -711,11 +715,12 @@ async function settleExit(
 }
 
 /**
- * The PSM tier once its XCM has left People: waits for the CASH to show on the key's Asset Hub
- * account, then redeems it through the PSM, or sells it on the pool when the user chose that,
- * and reads the stable's arrival. The exit is signed once at the key's nonce, under a mortality:
- * the CASH stays on the key until the exit takes it, so a lost answer is settled from the nonce
- * and the key's CASH, and nothing is sized or sent again while that exit can still land.
+ * The PSM tier once its XCM has left People: waits for the XCM's CASH to show on the key's Asset
+ * Hub account, so CASH from elsewhere is not taken for it, then redeems it through the PSM, or
+ * sells it on the pool when the user chose that, and reads the stable's arrival. The exit is
+ * signed once at the key's nonce, under a mortality: the CASH stays on the key until the exit
+ * takes it, so a lost answer is settled from the nonce and the key's CASH, and nothing is sized
+ * or sent again while that exit can still land.
  */
 async function exitFromAssetHub(
   input: WithdrawTickInput,
@@ -732,9 +737,11 @@ async function exitFromAssetHub(
   const exitFinal = await settleExitBlock(input, state);
   // The stable was seen landed and the blocks stand: done, whatever became of it since.
   if (state.arrived) return { step: "done", balances, submitted: false };
-  if (!state.redeemSubmitted && onKey.cash === 0n) {
+  const short = state.arrivalFloor === null ? onKey.cash === 0n : onKey.cash < state.arrivalFloor;
+  if (!state.redeemSubmitted && short) {
     return { step: "await-arrival", balances, submitted: false };
   }
+  state.arrivalFloor = null;
   // A provider rail lands on the key itself and pays the provider from there, so the stable
   // stays where the redeem puts it.
   const toSelf = input.destinationHex === key.publicKeyHex;
