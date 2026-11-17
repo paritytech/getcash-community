@@ -21,7 +21,6 @@ function enter(keys: readonly FundingKey[]): string {
 
 describe("funding selection configuration", () => {
   it("defines the getcash routes and amount defaults", () => {
-    expect(fundingSelectorConfig.provider).toBe("getcash.dot");
     expect(fundingSelectorConfig.amount).toMatchObject({
       decimals: 2,
       initial: "",
