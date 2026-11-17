@@ -7,7 +7,12 @@ import { AccountId, InvalidTxError, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
 import { createManualRail } from "./manual-rail";
-import { destinationEarmark, estimateDestinationFeeCash, withFeeMargin } from "./funding-program";
+import {
+  destinationEarmark,
+  estimateDestinationFeeCash,
+  pricedAfterSpend,
+  withFeeMargin,
+} from "./funding-program";
 import {
   decideStep,
   DEFAULT_SLIPPAGE_PCT,
@@ -97,7 +102,13 @@ const STABLE_QUOTED = 1_300_000n;
 const DISPATCH_STABLE = 7_000n;
 /** The scripted runtime's answers for the program's own fees, in USDC. */
 const LOCAL_STABLE = 90n;
-const DELIVERY_STABLE = 10n;
+const DELIVERY_QUOTED = 10n;
+/** The stable in the scripted USDC/PAS pool: deep enough that no deposit here moves the price
+ *  by a whole unit of the delivery fee. */
+const STABLE_RESERVE = 1_000_000_000_000n;
+/** The delivery fee the estimate carries: the runtime's quote at the price the program's own
+ *  exchange leaves, rounded up, so one unit more on a pool this deep. */
+const DELIVERY_STABLE = DELIVERY_QUOTED + 1n;
 const FEES_STABLE = LOCAL_STABLE + DELIVERY_STABLE;
 /** The fee allowance the program carries and refunds the unspent part of. */
 const ALLOWANCE_STABLE = withFeeMargin(FEES_STABLE);
@@ -983,6 +994,8 @@ function scriptedStableWorld(
     arrivalAfterReads?: number;
     /** The most stable the stable pool can price in one exchange. */
     stablePoolDepth?: bigint;
+    /** The stable the stable pool holds, when shallower than STABLE_RESERVE. */
+    stableReserve?: bigint;
     /** The most native the CASH pool can price in one exchange. */
     poolDepth?: bigint;
     /** The stable pool's rate at inclusion, in bps of the sizing rate, when it differs. */
@@ -1193,6 +1206,12 @@ function scriptedStableWorld(
             ? undefined
             : nativeOutFor(amount);
         },
+        get_reserves: async (native: unknown, stable: unknown) => {
+          expect(isNativeLoc(native)).toBe(true);
+          expect(stable).toEqual(token.location);
+          const reserve = opts.stableReserve ?? STABLE_RESERVE;
+          return [reserve * 1_000n, reserve];
+        },
       },
       DryRunApi: {
         dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
@@ -1209,7 +1228,7 @@ function scriptedStableWorld(
           expect(asset).toEqual({ type: "V5", value: token.location });
           return {
             success: true,
-            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_STABLE } }] },
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_QUOTED } }] },
           };
         },
       },
@@ -1849,6 +1868,27 @@ describe("tickOnce on the stable pool tier", () => {
     expect(args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
     // The dispatch fee is charged in the stable, with the tick's anchor.
     expect(tx!.options).toEqual({ asset: TOKENS.USDC.location, ...SIGN_OPTIONS });
+  });
+
+  it("prices the delivery fee for the burner's whole balance going into the stable pool", async () => {
+    // A pool of one USDC, so the allowance shows which amount the estimate was given: the whole
+    // balance, not the spend or the quote.
+    const reserve = 1_000_000n;
+    const deposit = STABLE_DEPOSIT + 1_000_000n;
+    const world = scriptedStableWorld({ arrivalAfterReads: 1, stableReserve: reserve });
+    world.state.stableAh = deposit;
+    const run = await drive(world, 4, freshTickState(), STABLE_ROUTE);
+    expect(run.steps).toEqual(["swap", "done"]);
+    const allowance = withFeeMargin(
+      LOCAL_STABLE + pricedAfterSpend(DELIVERY_QUOTED, reserve, deposit),
+    );
+    // Priced on the spend instead, the allowance would come out lower.
+    const spend = deposit - DISPATCH_STABLE - MIN_BALANCE - allowance;
+    expect(allowance).toBeGreaterThan(
+      withFeeMargin(LOCAL_STABLE + pricedAfterSpend(DELIVERY_QUOTED, reserve, spend)),
+    );
+    const payFees = (instruction(world.state.txs[0]!.args, "PayFees") as { asset: Fungible }).asset;
+    expect(payFees.fun.value).toBe(allowance);
   });
 
   it("gates on the two-hop quote, then the fees: short of the bare swap waits without the fee reads", async () => {
