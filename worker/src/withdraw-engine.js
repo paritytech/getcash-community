@@ -1236,6 +1236,7 @@ async function tickRecord(record, nowMs) {
     state.rejections = record.state.rejections ?? 0;
     state.submitted = !!record.state.submitted;
     state.xcmSigned = record.state.xcmSigned === true;
+    state.xcmCashSent = asBig(record.state.xcmCashSent, null);
     state.xcmBlock = record.state.xcmBlock ?? null;
     state.xcmHash = record.state.xcmHash ?? null;
     state.arrived = record.state.arrived === true;
@@ -1262,6 +1263,7 @@ async function tickRecord(record, nowMs) {
         rejections: state.rejections,
         submitted: state.submitted,
         xcmSigned: state.xcmSigned,
+        xcmCashSent: state.xcmCashSent === null ? null : String(state.xcmCashSent),
         xcmBlock: state.xcmBlock,
         xcmHash: state.xcmHash,
         arrived: state.arrived,

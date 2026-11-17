@@ -22,16 +22,16 @@
 // not ours, so its balance in the landing asset is measured against a baseline taken just before
 // the XCM leaves, and the arrival is what the Asset Hub dry run said would land, less the
 // slippage the program itself allows, or the program's own floor when that is lower: a sale that
-// slips further fails the program, so nothing less can be a landing. The key must hold no CASH
-// too, which says the XCM executed on People; a deposit from elsewhere alone does not count. The
-// exit on the PSM tier, the redeem or the pool sale, is the key's own transaction on Asset Hub, so
-// the key says it ran: past the exit's nonce with its CASH gone. The success screen shows what the
-// destination received: the PSM's exact net, or else the gain measured on the destination
-// (`received`). Nothing is followed through block history: hosts serve the current head and
-// nothing older, and a run that resumes after a reload has no memory but the persisted state. A
-// program that fails on Asset Hub traps its assets there and never shows on the destination; the
-// run holds until the driver's bound, and the claimer named in the program can recover the
-// assets.
+// slips further fails the program, so nothing less can be a landing. The key must hold less CASH
+// than the XCM took too, which says the XCM executed on People; a deposit from elsewhere alone
+// does not count, and one to the key does not hide it. The exit on the PSM tier, the redeem or
+// the pool sale, is the key's own transaction on Asset Hub, so the key says it ran: past the
+// exit's nonce with its CASH gone. The success screen shows what the destination received: the
+// PSM's exact net, or else the gain measured on the destination (`received`). Nothing is followed
+// through block history: hosts serve the current head and nothing older, and a run that resumes
+// after a reload has no memory but the persisted state. A program that fails on Asset Hub traps
+// its assets there and never shows on the destination; the run holds until the driver's bound,
+// and the claimer named in the program can recover the assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next; CASH on the key's Asset Hub account
@@ -167,11 +167,14 @@ export interface WithdrawTickState {
   submitted: boolean;
   /** An XCM was signed: set before its broadcast. Only then can an empty key mean it landed. */
   xcmSigned: boolean;
+  /** The CASH that XCM takes off the key: a key that holds less ran it (`xcmRan`). Null while
+   *  none is out, and on a run signed before it was kept, which is read from an empty key. */
+  xcmCashSent: bigint | null;
   /** The People block the XCM was seen in, kept until the finalized chain settles it. Null once
    *  it is final, and while no XCM is out. */
   xcmBlock: number | null;
-  /** That block's hash. Null when the XCM's answer was lost and the empty key alone said it
-   *  landed, in that block or an earlier one. */
+  /** That block's hash. Null when the XCM's answer was lost and the key alone said it landed, in
+   *  that block or an earlier one. */
   xcmHash: string | null;
   /** The arrival was seen. Holds the done while the blocks stand, whatever the destination does
    *  with the funds since; a block that is replaced clears it. */
@@ -225,6 +228,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   rejections: 0,
   submitted: false,
   xcmSigned: false,
+  xcmCashSent: null,
   xcmBlock: null,
   xcmHash: null,
   arrived: false,
@@ -310,6 +314,9 @@ export interface WithdrawTickOutcome {
   waiting?: boolean;
 }
 
+const xcmRan = (state: WithdrawTickState, cash: bigint): boolean =>
+  state.xcmCashSent === null ? cash === 0n : cash < state.xcmCashSent;
+
 /**
  * Whether the finalized chain can vouch for the block a transaction was seen in: "final" when it
  * holds it, "pending" while it is not there yet, and "unsettled" when only the transaction's own
@@ -330,9 +337,9 @@ async function vouch(
  * The XCM is in a best block People may yet replace, so its finalized chain has the last word once
  * it is past that block. The block stands: the XCM is final and the block is let go. Otherwise the
  * XCM usually landed in the block that took its place, and the key says so, as the top up's deposit
- * does: the XCM takes all the CASH, so a key empty at the finalized head means it is final. Empty
- * only at the best head, it landed later, and is watched again from there. Holding CASH at both,
- * it never landed: the latch is released and the tick sends again what the key holds.
+ * does: only the XCM takes its CASH, so a key short of it at the finalized head means it is final.
+ * Short of it only at the best head, it landed later, and is watched again from there. Holding it
+ * at both, it never landed: the latch is released and the tick sends again what the key holds.
  */
 async function settleXcm(input: WithdrawTickInput, state: WithdrawTickState): Promise<void> {
   const block = state.xcmBlock;
@@ -351,8 +358,8 @@ async function settleXcm(input: WithdrawTickInput, state: WithdrawTickState): Pr
   if (said === "final") return letGo();
   const read = (at: "best" | "finalized") =>
     bounded(input.readKeyOnPeople(input.key.address, at), input.tickTimeoutMs, `key read (${at})`);
-  if ((await read("finalized")).cash === 0n) return letGo();
-  if ((await read("best")).cash === 0n) {
+  if (xcmRan(state, (await read("finalized")).cash)) return letGo();
+  if (xcmRan(state, (await read("best")).cash)) {
     state.xcmBlock = await bounded(
       input.peopleApi.query.System.Number.getValue(AT_BEST),
       input.tickTimeoutMs,
@@ -406,10 +413,10 @@ export async function withdrawTickOnce(
       input.tickTimeoutMs,
       "destination balance read",
     );
-    // Two signals: the key holds no CASH, which only the XCM takes in full, so it executed on
-    // People; and the destination gained at least what a successful sale can land. Either alone
-    // is not an arrival.
-    const cashGone = balances.cash === 0n;
+    // Two signals: the key holds less CASH than the XCM took, which only the XCM takes, so it
+    // executed on People; and the destination gained at least what a successful sale can land.
+    // Either alone is not an arrival.
+    const cashGone = xcmRan(state, balances.cash);
     const gained = destination - state.destinationBefore;
     const landed =
       gained >= (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
@@ -424,30 +431,31 @@ export async function withdrawTickOnce(
     return { step: "done", balances, submitted: false };
   }
 
-  if (balances.cash === 0n) {
-    // Only the XCM empties the key of both assets. Seen CASH, an XCM signed, and now nothing: the
-    // XCM landed and its answer was lost. The baseline taken before the submit still measures
-    // the arrival. With no XCM signed, an empty key is a best block that dropped the payment, and
-    // the run waits for it to come back.
-    if (
-      balances.pas === 0n &&
-      state.fundsSeenAt !== null &&
-      state.attempts > 0 &&
-      state.xcmSigned
-    ) {
-      // The XCM is in the latest block or an earlier one, with no hash known: the key at the
-      // finalized head settles it once that head is there (`settleXcm`).
-      state.xcmBlock = await bounded(
-        input.peopleApi.query.System.Number.getValue(AT_BEST),
-        input.tickTimeoutMs,
-        "block number read",
-      );
-      state.xcmHash = null;
-      state.submitted = true;
-      return { step: "await-arrival", balances, submitted: false };
-    }
-    return { step: "await-cash", balances, submitted: false };
+  // Only the XCM takes its CASH off the key. Seen CASH, an XCM signed, and now less than it took:
+  // the XCM landed and its answer was lost. The baseline taken before the submit still measures
+  // the arrival. With no XCM signed, an empty key is a best block that dropped the payment, and
+  // the run waits for it to come back.
+  const answerLost =
+    state.xcmCashSent === null
+      ? balances.cash === 0n &&
+        balances.pas === 0n &&
+        state.fundsSeenAt !== null &&
+        state.attempts > 0 &&
+        state.xcmSigned
+      : balances.cash < state.xcmCashSent;
+  if (answerLost) {
+    // The XCM is in the latest block or an earlier one, with no hash known: the key at the
+    // finalized head settles it once that head is there (`settleXcm`).
+    state.xcmBlock = await bounded(
+      input.peopleApi.query.System.Number.getValue(AT_BEST),
+      input.tickTimeoutMs,
+      "block number read",
+    );
+    state.xcmHash = null;
+    state.submitted = true;
+    return { step: "await-arrival", balances, submitted: false };
   }
+  if (balances.cash === 0n) return { step: "await-cash", balances, submitted: false };
   if (state.fundsSeenAt === null) state.fundsSeenAt = input.now();
 
   // The swap pays in CASH; the XCM pays in PAS. Both pass People's signed extension.
@@ -500,6 +508,7 @@ export async function withdrawTickOnce(
         state.arrivalFloor = arrivalFloor(sizing, input.slippagePct);
       }
       state.xcmSigned = true;
+      state.xcmCashSent = sizing.args.cashToSend;
       state.arrived = false;
       state.received = null;
       await input.onBeforeSubmit?.("withdraw");
@@ -545,6 +554,7 @@ export async function withdrawTickOnce(
     input.tickTimeoutMs,
     "swap sizing",
   );
+  state.xcmCashSent = null;
   await input.onBeforeSubmit?.("swap");
   state.attempts += 1;
   const res = await includedInBlock(

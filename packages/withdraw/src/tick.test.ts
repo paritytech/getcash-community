@@ -1722,6 +1722,46 @@ describe("withdrawTickOnce", () => {
     expect(done.steps).toEqual(["done"]);
   });
 
+  it("counts the arrival, and keeps it when the XCM's block is replaced, though someone paid CASH into the key after the XCM", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state);
+    world.state.keyCash = 1n;
+    const arrived = await drive(world, 1, state);
+    expect(arrived.steps).toEqual(["done"]);
+    world.state.replacedPeople.add(XCM_BLOCK);
+    world.state.finalizedPeople = XCM_BLOCK + 1;
+    const settled = await drive(world, 1, state);
+    expect(settled.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ submitted: true, arrived: true, xcmBlock: null });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("finishes an XCM whose answer was lost though someone paid CASH and PAS into the key after it", async () => {
+    const world = scriptedWorld({ loseXcmAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state);
+    await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
+    world.state.keyCash = 1n;
+    world.state.keyPas = ED;
+    const later = await drive(world, 2, state);
+    expect(later.steps).toEqual(["await-arrival", "done"]);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("does not take the CASH a later swap spends for an XCM that ran", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    Object.assign(state, {
+      attempts: 1,
+      fundsSeenAt: 1_000,
+      xcmSigned: true,
+      xcmCashSent: KEY_CASH,
+    });
+    const run = await drive(world, 3, state);
+    expect(run.steps).toEqual(["swap", "convert", "done"]);
+  });
+
   it("refuses to submit the XCM when the Asset Hub dry run would trap assets", async () => {
     const world = scriptedWorld({ trapOnAssetHubDryRun: 7n });
     const state = freshWithdrawTickState();
