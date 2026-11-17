@@ -18,6 +18,7 @@ const TWENTY_USDT = 20_000_000n;
 const REGULAR = {
   type: "REGULAR",
   egressAmount: "123456",
+  estimatedPrice: "0.002",
   recommendedSlippageTolerancePercent: "1.5",
   estimatedDurationSeconds: 900,
   depositAmount: "40000000000",
@@ -119,6 +120,7 @@ describe("the outgoing channel", () => {
       address: "5ChannelOnAssetHub",
       expiresAt: 1_800_000_000_000,
       expectedEgress: 123_456n,
+      minPrice: (0.002 * 98.5) / 100,
     });
     expect(asked.channel).toEqual({
       quote: REGULAR,

@@ -7,6 +7,7 @@
 
 import type { SwapStatusResult, TokenSpec } from "@getsome/core";
 import type { ChainflipNetworkId } from "./sdk";
+import { ASSET_HUB_DOT, ASSET_HUB_USDT, SOURCE_CONFIGS } from "./sources";
 import { getSwapStatus, type StatusBackend } from "./status";
 
 /** Chainflip's swap API; the SDK's own default. */
@@ -87,6 +88,18 @@ export const MAX_CHANNEL_COMMISSION_BPS = 20;
 /** Chainflip stores the minimum price in another encoding and serves it back rounded. */
 const MIN_PRICE_ROUNDING = 1e-4;
 
+const DESTINATIONS = [...SOURCE_CONFIGS, ASSET_HUB_DOT, ASSET_HUB_USDT];
+
+/** The lowest price Chainflip may serve for a channel asked to fill at `minPrice`: the served
+ *  figure is rounded to the decimals of the asset the channel pays out. */
+function servedPriceFloor(record: ChainflipChannelRecord, minPrice: number): number {
+  const paid = DESTINATIONS.find(
+    (asset) => asset.chain === record.destinationChain && asset.asset === record.destinationAsset,
+  );
+  const step = paid === undefined ? 0 : 10 ** -paid.decimals;
+  return minPrice * (1 - MIN_PRICE_ROUNDING) - step / 2;
+}
+
 /** What is wrong with the terms Chainflip holds for a channel paid from `source`, or null. */
 export function channelTermsFault(
   record: ChainflipChannelRecord,
@@ -99,7 +112,7 @@ export function channelTermsFault(
   if (!(record.commissionBps <= MAX_CHANNEL_COMMISSION_BPS)) {
     return `its brokers take ${record.commissionBps} bps, over the ${MAX_CHANNEL_COMMISSION_BPS} allowed`;
   }
-  if (!(record.minPrice > 0 && record.minPrice >= minPrice * (1 - MIN_PRICE_ROUNDING))) {
+  if (!(record.minPrice > 0 && record.minPrice >= servedPriceFloor(record, minPrice))) {
     return `its minimum price is ${record.minPrice}, under ${minPrice}`;
   }
   return null;

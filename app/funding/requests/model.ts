@@ -646,6 +646,7 @@ export interface WithdrawalChannel {
   /** The exact planck the key pays, for a provider that holds it to its quote. Absent: the key
    *  pays everything it holds. */
   amount?: string;
+  minPrice?: number;
 }
 
 /**

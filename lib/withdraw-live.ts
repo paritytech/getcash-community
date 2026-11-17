@@ -570,6 +570,7 @@ export async function openSwapSaleChannel(args: {
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
     amount: size.landing.toString(),
+    minPrice: channel.minPrice,
   };
 }
 
@@ -906,6 +907,7 @@ export async function openWithdrawChannelFor(args: {
     openedAt: Date.now(),
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
+    minPrice: channel.minPrice,
   };
 }
 

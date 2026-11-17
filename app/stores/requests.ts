@@ -607,6 +607,7 @@ type WithdrawJob = {
     expiresAt?: unknown;
     expectedEgress?: unknown;
     amount?: unknown;
+    minPrice?: unknown;
   };
   meld?: { baseUrl?: unknown; productId?: unknown; offline?: unknown };
   createdAt?: number;
@@ -849,6 +850,7 @@ function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
     expiresAt: c.expiresAt,
     expectedEgress: c.expectedEgress,
     ...(isString(c.amount) && /^\d+$/.test(c.amount) ? { amount: c.amount } : {}),
+    ...(isNumber(c.minPrice) && c.minPrice > 0 ? { minPrice: c.minPrice } : {}),
   };
 }
 

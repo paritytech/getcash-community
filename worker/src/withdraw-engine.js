@@ -306,6 +306,9 @@ function channelOf(channel) {
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
     ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
+    ...(Number.isFinite(channel.minPrice) && channel.minPrice > 0
+      ? { minPrice: channel.minPrice }
+      : {}),
   };
 }
 

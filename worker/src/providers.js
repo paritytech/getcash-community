@@ -71,7 +71,10 @@ export const PAY_TIMEOUT_MS =
  */
 export function railFor(provider, record) {
   if (provider === "chainflip") {
-    return { status: (id) => readSwapStatus(id), channel: (id) => chainflipChannel(id, record) };
+    return {
+      status: (id) => readSwapStatus(id),
+      channel: (id) => chainflipChannel(id, record, record?.channel),
+    };
   }
   if (provider === "meld") {
     const meld = record?.meld;
@@ -91,10 +94,14 @@ export function railFor(provider, record) {
 }
 
 /** Chainflip's record of a channel, refused unless its terms suit the token the key pays in. */
-async function chainflipChannel(id, record, network) {
+async function chainflipChannel(id, record, opened, network) {
   const channel = await readChannelRecord(id, undefined, network);
   if (channel === null) return null;
-  const fault = channelTermsFault(channel, assetHubSource(depositTokenOf(recordedRoute(record))));
+  const fault = channelTermsFault(
+    channel,
+    assetHubSource(depositTokenOf(recordedRoute(record))),
+    opened?.minPrice,
+  );
   if (fault !== null) throw new ChannelMismatchError(`channel ${id}: ${fault}`);
   return channel;
 }
@@ -158,7 +165,7 @@ function swapSaleRail(sale, record) {
   return {
     channel: async (id) => {
       const [swap, order] = await Promise.all([
-        chainflipChannel(id, record, SWAP_NETWORK),
+        chainflipChannel(id, record, record.swap, SWAP_NETWORK),
         sale.channel(record.channel.id),
       ]);
       if (swap === null) return null;

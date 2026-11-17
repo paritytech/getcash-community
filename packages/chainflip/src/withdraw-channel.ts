@@ -8,7 +8,7 @@
 // quote the channel is opened with. The worker then only pays the channel and reads the swap.
 
 import type { OpenChannelArgs, Quote } from "@getsome/core";
-import { requestDepositAddress } from "./deposit";
+import { requestDepositAddress, requestedMinPrice } from "./deposit";
 import { pickRegularQuote, type QuoteBackend } from "./quote";
 import type { SwapSdkLike } from "./sdk";
 import { ASSET_HUB_DOT, formatSourceAmount, type SourceConfig } from "./sources";
@@ -148,6 +148,7 @@ export interface WithdrawChannel {
   expiresAt: number;
   /** What the quote said would land, in the destination asset's base units. */
   expectedEgress: bigint;
+  minPrice: number;
 }
 
 /** Quotes and opens the channel in one go, so the two can never disagree. */
@@ -165,16 +166,18 @@ export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promis
     },
     raw: quoted.raw,
   };
-  const channel = await requestDepositAddress(args.sdk, source, {
+  const open: OpenChannelArgs = {
     quote,
     destAddress: args.destination.address,
     refundAddress: args.refundAddress,
     ...(args.fillOrKill ? { fillOrKill: args.fillOrKill } : {}),
-  });
+  };
+  const channel = await requestDepositAddress(args.sdk, source, open);
   return {
     id: channel.depositChannelId,
     address: channel.deposit.address,
     expiresAt: channel.deposit.expiresAt || Date.now() + DEFAULT_CHANNEL_LIFETIME_MS,
     expectedEgress: quoted.egressAmount,
+    minPrice: requestedMinPrice(open),
   };
 }
