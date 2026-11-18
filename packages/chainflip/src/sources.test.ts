@@ -5,7 +5,7 @@ import { SOURCES, SOURCE_CONFIGS, SOURCE_CONFIG_BY_ID, formatSourceAmount } from
 const get = (id: SourceId) => SOURCE_CONFIG_BY_ID.get(id)!;
 
 describe("source catalog", () => {
-  it("contains all 13 SourceIds", () => {
+  it("contains all 15 SourceIds", () => {
     const ids = SOURCE_CONFIGS.map((s) => s.sourceId);
     expect(ids).toEqual([
       "btc",
@@ -16,6 +16,8 @@ describe("source catalog", () => {
       "eth-arbitrum",
       "usdc-arbitrum",
       "usdt-arbitrum",
+      "bnb-bsc",
+      "usdt-bsc",
       "sol-solana",
       "usdc-solana",
       "usdt-solana",
@@ -47,6 +49,8 @@ describe("source catalog", () => {
       "eth-arbitrum": ["Arbitrum", "ETH", 18, "110000000000000000"],
       "usdc-arbitrum": ["Arbitrum", "USDC", 6, "250000000"],
       "usdt-arbitrum": ["Arbitrum", "USDT", 6, "250000000"],
+      "bnb-bsc": ["Bsc", "BNB", 18, "400000000000000000"],
+      "usdt-bsc": ["Bsc", "USDT", 18, "250000000000000000000"],
       "sol-solana": ["Solana", "SOL", 9, "3000000000"],
       "usdc-solana": ["Solana", "USDC", 6, "250000000"],
       "usdt-solana": ["Solana", "USDT", 6, "250000000"],
@@ -72,11 +76,27 @@ describe("deposit URIs", () => {
     );
   });
 
-  it("native ETH uses EIP-681 with the chain id (mainnet @1, arbitrum @42161)", () => {
+  it("native ETH on Ethereum uses EIP-681 with the chain id", () => {
     expect(get("eth").buildDepositUri("0xabc", "110000000000000000")).toBe(
       "ethereum:0xabc@1?value=110000000000000000",
     );
-    expect(get("eth-arbitrum").buildDepositUri("0xabc", 42n)).toBe("ethereum:0xabc@42161?value=42");
+  });
+
+  it("Arbitrum and BNB Chain get the bare address, coin and token alike", () => {
+    // Trust Wallet reads a code naming either chain id as a send of ETH on Ethereum.
+    const ids = ["eth-arbitrum", "usdc-arbitrum", "usdt-arbitrum", "bnb-bsc", "usdt-bsc"] as const;
+    for (const id of ids) {
+      expect(get(id).buildDepositUri("0xdeposit", 20_000_000_000_000_000n)).toBe("0xdeposit");
+    }
+  });
+
+  it("USDT on BNB Chain counts in 18 decimals", () => {
+    // 25 USDT there is 25e18 base units, not the 25e6 of every other USDT.
+    expect(formatSourceAmount(get("usdt-bsc"), 25_062_951_000_000_000_000n)).toBe("25.062951");
+    expect(
+      formatSourceAmount(get("usdt-bsc"), 25_062_951_234_567_890_123n, { maxDecimals: 6 }),
+    ).toBe("25.062952");
+    expect(formatSourceAmount(get("usdt-eth"), 25_062_951n)).toBe("25.062951");
   });
 
   it("SOL uses Solana Pay with a decimal amount", () => {
@@ -91,12 +111,6 @@ describe("deposit URIs", () => {
     );
     expect(get("usdt-eth").buildDepositUri("0xrecipient", 1n)).toBe(
       "ethereum:0xdAC17F958D2ee523a2206206994597C13D831ec7@1/transfer?address=0xrecipient&uint256=1",
-    );
-    expect(get("usdc-arbitrum").buildDepositUri("0xrecipient", 1n)).toBe(
-      "ethereum:0xaf88d065e77c8cC2239327C5EDb3A432268e5831@42161/transfer?address=0xrecipient&uint256=1",
-    );
-    expect(get("usdt-arbitrum").buildDepositUri("0xrecipient", 1n)).toBe(
-      "ethereum:0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9@42161/transfer?address=0xrecipient&uint256=1",
     );
   });
 

@@ -31,6 +31,8 @@ describe("the funding catalog", () => {
     expect(SOURCE_CHAINS.map((chain) => chain.chain)).toEqual([
       "Bitcoin",
       "Ethereum",
+      "Arbitrum",
+      "Bsc",
       "Solana",
       "Tron",
     ]);
@@ -43,11 +45,16 @@ describe("the funding catalog", () => {
     expect(sourceIdFor("Polkadot", "USDT")).toBe("usdt-assethub");
     expect(sourceIdFor("Polkadot", "USDC")).toBe("usdc-assethub");
     expect(sourceIdFor("Ethereum", "USDC")).toBe("usdc-eth");
+    expect(sourceIdFor("Arbitrum", "USDC")).toBe("usdc-arbitrum");
+    expect(sourceIdFor("Bsc", "BNB")).toBe("bnb-bsc");
+    expect(sourceIdFor("Bsc", "USDT")).toBe("usdt-bsc");
+    expect(sourceIdFor("Bsc", "USDC")).toBeUndefined();
     expect(sourceIdFor("Polkadot", "BTC")).toBeUndefined();
     expect(sourcePairFor("usdc-assethub")).toEqual({ chain: "Polkadot", asset: "USDC" });
     expect(sourcePairFor("dotusd-assethub")).toEqual({ chain: "Polkadot", asset: "dotUSD" });
     expect(sourcePairFor("dot-assethub")).toEqual({ chain: "Polkadot", asset: "DOT" });
     expect(sourcePairFor("usdt-tron")).toEqual({ chain: "Tron", asset: "USDT" });
+    expect(sourcePairFor("usdt-bsc")).toEqual({ chain: "Bsc", asset: "USDT" });
     expect(sourcePairFor("meld-card")).toBeUndefined();
   });
 

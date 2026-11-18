@@ -42,11 +42,21 @@ describe("withdrawal destinations", () => {
     expect(others.map((network) => network.label)).toEqual([
       "Bitcoin",
       "Ethereum",
+      "Arbitrum",
+      "BNB Chain",
       "Solana",
       "Tron",
     ]);
     const provided = others.flatMap((network) => network.destinations);
     expect(provided.every((d) => d.rail === "chainflip")).toBe(true);
+    // A destination carries the network's label for the screens and Chainflip's name for the swap.
+    expect(withdrawDestination("usdt-bsc")).toMatchObject({
+      chain: "Bsc",
+      chainLabel: "BNB Chain",
+    });
+    for (const network of others) {
+      expect(network.destinations.every((d) => d.chainLabel === network.label)).toBe(true);
+    }
     // A provider names no landing: the sale its quote picks decides what lands on the key.
     expect(provided.every((d) => d.landing === undefined)).toBe(true);
   });
@@ -59,6 +69,12 @@ describe("withdrawal destinations", () => {
     ]);
     expect(withdrawDestination("dot-assethub")).toMatchObject({ asset: "DOT", rail: "direct" });
     expect(withdrawDestination("usdc-eth")).toMatchObject({ chain: "Ethereum", asset: "USDC" });
+    expect(withdrawNetwork("Arbitrum")?.destinations.map((d) => d.id)).toEqual([
+      "eth-arbitrum",
+      "usdc-arbitrum",
+      "usdt-arbitrum",
+    ]);
+    expect(withdrawNetwork("Bsc")?.destinations.map((d) => d.id)).toEqual(["bnb-bsc", "usdt-bsc"]);
     expect(withdrawDestination("nope")).toBeUndefined();
   });
 

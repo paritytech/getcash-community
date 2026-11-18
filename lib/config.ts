@@ -14,6 +14,8 @@ import { devLog } from "./log";
 export const CHAINS = {
   Bitcoin: "Bitcoin",
   Ethereum: "Ethereum",
+  Arbitrum: "Arbitrum",
+  Bsc: "Bsc",
   Solana: "Solana",
   Tron: "Tron",
   Polkadot: "Polkadot",
@@ -24,6 +26,7 @@ export const ASSETS = {
   ETH: "ETH",
   USDC: "USDC",
   USDT: "USDT",
+  BNB: "BNB",
   SOL: "SOL",
   TRX: "TRX",
   DOT: "DOT",
@@ -41,6 +44,14 @@ export const SOURCE_CHAINS = [
     assets: [ASSETS.ETH, ASSETS.USDC, ASSETS.USDT],
     label: "Ethereum",
   },
+  {
+    chain: CHAINS.Arbitrum,
+    native: ASSETS.ETH,
+    assets: [ASSETS.ETH, ASSETS.USDC, ASSETS.USDT],
+    label: "Arbitrum",
+  },
+  // Chainflip names the chain Bsc; the screens say BNB Chain.
+  { chain: CHAINS.Bsc, native: ASSETS.BNB, assets: [ASSETS.BNB, ASSETS.USDT], label: "BNB Chain" },
   {
     chain: CHAINS.Solana,
     native: ASSETS.SOL,
@@ -64,6 +75,10 @@ export const POLKADOT_CHAIN = {
 export const FUNDING_CHAINS = [POLKADOT_CHAIN, ...SOURCE_CHAINS] as const;
 export type FundingChain = (typeof FUNDING_CHAINS)[number];
 
+/** A network as the screens name it, from the name Chainflip and the records give it. */
+export const chainLabel = (chain: string): string =>
+  FUNDING_CHAINS.find((candidate) => candidate.chain === chain)?.label ?? chain;
+
 // The destination is always CASH; this app has no other destination assets.
 
 /** UI pair to Chainflip SourceId, also the `?source=` deep-link vocabulary. A pair with no
@@ -73,6 +88,11 @@ export const SOURCE_ID_BY_KEY: Readonly<Record<string, SourceId>> = {
   "Ethereum:ETH": "eth",
   "Ethereum:USDC": "usdc-eth",
   "Ethereum:USDT": "usdt-eth",
+  "Arbitrum:ETH": "eth-arbitrum",
+  "Arbitrum:USDC": "usdc-arbitrum",
+  "Arbitrum:USDT": "usdt-arbitrum",
+  "Bsc:BNB": "bnb-bsc",
+  "Bsc:USDT": "usdt-bsc",
   "Solana:SOL": "sol-solana",
   "Solana:USDC": "usdc-solana",
   "Solana:USDT": "usdt-solana",
