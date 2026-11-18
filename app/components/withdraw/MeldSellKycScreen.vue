@@ -22,7 +22,7 @@ const emit = defineEmits<{ cancel: [] }>();
       :src="widgetUrl"
       class="min-h-0 w-full flex-1 border-0"
       title="Verify with the provider"
-      allow="payment *; camera *; clipboard-write *"
+      allow="payment *; camera *; microphone *; clipboard-write *"
     />
     <template v-if="cancellable || notice" #actions>
       <WidgetCancel
