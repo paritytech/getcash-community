@@ -28,7 +28,7 @@ const STABLE_POOL = { native: NATIVE_LOC, underlying: TOKENS.USDC.location } as 
 const POOL = { native: NATIVE_LOC, underlying: TOKENS.CASH.location } as unknown as Pool;
 /** USDC's min_balance on Paseo Asset Hub Next, as the scripted chain answers it. */
 const MIN_BALANCE = 70_000n;
-/** The USDC in the scripted USDC/PAS pool, about Paseo Asset Hub Next's. */
+/** The USDC in the scripted USDC/PAS pool. */
 const STABLE_RESERVE = 20_000_000_000n;
 const PROGRAM = {
   stablePool: STABLE_POOL,
@@ -286,7 +286,7 @@ describe("pricedAfterSpend", () => {
     expect(pricedAfterSpend(250n, 1_000n, 1_000n)).toBe(1_000n);
     // A move under a unit still rounds up to one.
     expect(pricedAfterSpend(10n, 1_000_000_000_000n, 1n)).toBe(11n);
-    // Paseo Asset Hub Next on 2026-11-17: 5,000 USDC into a pool of 19,930.
+    // 5,000 USDC into a pool of 19,930.
     expect(pricedAfterSpend(30_480n, 19_930_493_079n, 5_000_000_000n)).toBe(47_692n);
   });
 });
@@ -372,9 +372,7 @@ describe("estimateStableProgramFees", () => {
   });
 
   it("covers the delivery fee a deposit a quarter of the pool's size pays after its own exchange", async () => {
-    // Paseo Asset Hub Next on 2026-11-17: the runtime quoted 2,796 and 30,480 for 5,000 USDC into
-    // a pool of 19,930 USDC. The dry run refused every allowance under 50,759 with NotHoldingFees,
-    // and the margin alone gave 36,604.
+    // 5,000 USDC into a pool of 19,930, where the chain accepts no allowance under 50,759.
     const { api } = recordingApi({
       localExternal: 2_796n,
       deliveryExternal: 30_480n,
