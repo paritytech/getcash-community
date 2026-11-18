@@ -31,10 +31,10 @@ describe("the funding catalog", () => {
     expect(SOURCE_CHAINS.map((chain) => chain.chain)).toEqual([
       "Bitcoin",
       "Ethereum",
-      "Arbitrum",
-      "Bsc",
       "Solana",
       "Tron",
+      "Bsc",
+      "Arbitrum",
     ]);
     expect(SOURCE_CHAINS.some((chain) => (chain.chain as string) === "Polkadot")).toBe(false);
   });

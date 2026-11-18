@@ -34,8 +34,9 @@ export const ASSETS = {
   CASH: "CASH",
 } as const;
 
-// The Chainflip source chains with their available assets. `native` is the network's own coin.
-// The withdraw side and the floors read this catalog; the direct network below stays out of it.
+// The Chainflip source chains with their available assets, in the order Chainflip's own app
+// lists them. `native` is the network's own coin. The withdraw side and the floors read this
+// catalog; the direct network below stays out of it.
 export const SOURCE_CHAINS = [
   { chain: CHAINS.Bitcoin, native: ASSETS.BTC, assets: [ASSETS.BTC], label: "Bitcoin" },
   {
@@ -45,20 +46,20 @@ export const SOURCE_CHAINS = [
     label: "Ethereum",
   },
   {
-    chain: CHAINS.Arbitrum,
-    native: ASSETS.ETH,
-    assets: [ASSETS.ETH, ASSETS.USDC, ASSETS.USDT],
-    label: "Arbitrum",
-  },
-  // Chainflip names the chain Bsc; the screens say BNB Chain.
-  { chain: CHAINS.Bsc, native: ASSETS.BNB, assets: [ASSETS.BNB, ASSETS.USDT], label: "BNB Chain" },
-  {
     chain: CHAINS.Solana,
     native: ASSETS.SOL,
     assets: [ASSETS.SOL, ASSETS.USDC, ASSETS.USDT],
     label: "Solana",
   },
   { chain: CHAINS.Tron, native: ASSETS.TRX, assets: [ASSETS.TRX, ASSETS.USDT], label: "Tron" },
+  // Chainflip names the chain Bsc; the screens say BNB Chain.
+  { chain: CHAINS.Bsc, native: ASSETS.BNB, assets: [ASSETS.BNB, ASSETS.USDT], label: "BNB Chain" },
+  {
+    chain: CHAINS.Arbitrum,
+    native: ASSETS.ETH,
+    assets: [ASSETS.ETH, ASSETS.USDC, ASSETS.USDT],
+    label: "Arbitrum",
+  },
 ] as const;
 
 /** The direct network: the buyer sends the token from any wallet to the request's own account

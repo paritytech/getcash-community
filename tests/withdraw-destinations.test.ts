@@ -42,10 +42,10 @@ describe("withdrawal destinations", () => {
     expect(others.map((network) => network.label)).toEqual([
       "Bitcoin",
       "Ethereum",
-      "Arbitrum",
-      "BNB Chain",
       "Solana",
       "Tron",
+      "BNB Chain",
+      "Arbitrum",
     ]);
     const provided = others.flatMap((network) => network.destinations);
     expect(provided.every((d) => d.rail === "chainflip")).toBe(true);

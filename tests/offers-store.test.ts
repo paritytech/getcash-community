@@ -229,9 +229,9 @@ describe("offers store", () => {
       "Polkadot",
       "Bitcoin",
       "Ethereum",
-      "Arbitrum",
-      "Bsc",
       "Solana",
+      "Bsc",
+      "Arbitrum",
     ]);
     expect(offers.offeredTokens("Bitcoin")[0]!.offer).toEqual({ state: "ungated" });
     // Chainflip's own no is still a no.
