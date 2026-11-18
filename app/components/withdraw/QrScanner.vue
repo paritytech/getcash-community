@@ -21,6 +21,9 @@ const READ_LONG_SIDE = 720;
 
 const video = ref<HTMLVideoElement | null>(null);
 const failure = ref<CameraFailure | null>(null);
+/** False until the camera's first frame plays: before it, Android's WebView draws its own grey
+ *  play-button poster over an empty video. */
+const playing = ref(false);
 
 const message = computed(() =>
   failure.value === "denied"
@@ -93,10 +96,12 @@ onBeforeUnmount(() => {
       <video
         ref="video"
         class="absolute inset-0 size-full object-cover"
+        :class="{ 'opacity-0': !playing }"
         autoplay
         muted
         playsinline
         aria-hidden="true"
+        @playing="playing = true"
       />
       <!-- Black around the frame, faded out towards the middle of the screen. -->
       <div

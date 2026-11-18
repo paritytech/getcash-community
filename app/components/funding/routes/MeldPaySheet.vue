@@ -87,7 +87,7 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
       :src="payUrl"
       class="min-h-0 w-full flex-1 border-0"
       title="Secure payment"
-      allow="payment *; camera *; clipboard-write *"
+      allow="payment *; camera *; microphone *; clipboard-write *"
     />
     <p v-else class="flex-1 py-8 text-center text-body-m text-fg-tertiary">
       Preparing secure payment…
