@@ -49,7 +49,7 @@ export type TokenTable = Readonly<Record<"PAS" | "CASH" | "DOTUSD" | "USDT" | "U
 const RELAY_NATIVE: XcmLocation = { parents: 1, interior: { type: "Here" } };
 
 /** A pallet-assets asset as Asset Hub keys it: local, so parents 0; pallet 50 is Assets. */
-function assetHubLocal(assetId: number): XcmLocation {
+export function assetHubAssetLocation(assetId: number): XcmLocation {
   return {
     parents: 0,
     interior: {
@@ -97,7 +97,7 @@ export const TOKENS = {
     symbol: "CASH",
     decimals: 6,
     assetHubId: UNDERLYING_ASSET_ID,
-    location: assetHubLocal(UNDERLYING_ASSET_ID),
+    location: assetHubAssetLocation(UNDERLYING_ASSET_ID),
     locationOnPeople: UNDERLYING_ON_PEOPLE,
   },
   // The same asset seen from the deposit side: what a buyer sends to the burner on Asset Hub,
@@ -107,14 +107,14 @@ export const TOKENS = {
     symbol: "dotUSD",
     decimals: 6,
     assetHubId: UNDERLYING_ASSET_ID,
-    location: assetHubLocal(UNDERLYING_ASSET_ID),
+    location: assetHubAssetLocation(UNDERLYING_ASSET_ID),
     locationOnPeople: UNDERLYING_ON_PEOPLE,
   },
   USDT: {
     symbol: "USDT",
     decimals: 6,
     assetHubId: 1984,
-    location: assetHubLocal(1984),
+    location: assetHubAssetLocation(1984),
     chainflipAsset: "USDT",
     meldAsset: "usdt@assethub",
     get meldCurrencyCode(): string {
@@ -125,7 +125,7 @@ export const TOKENS = {
     symbol: "USDC",
     decimals: 6,
     assetHubId: 1337,
-    location: assetHubLocal(1337),
+    location: assetHubAssetLocation(1337),
     meldAsset: "usdc@assethub",
     get meldCurrencyCode(): string {
       return meldCodeOf("usdc@assethub");

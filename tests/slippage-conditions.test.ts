@@ -162,7 +162,8 @@ class Pool {
     return {
       query: {
         AssetConversion: {
-          Pools: { getEntries: async () => [{ keyArgs: [[NATIVE, UNDERLYING]] }] },
+          // The pool exists: it reads as its lp token id.
+          Pools: { getValues: async () => [0] },
         },
       },
       apis: {
