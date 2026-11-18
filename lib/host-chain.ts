@@ -130,9 +130,13 @@ async function dialChain(target: ChainTarget): Promise<PolkadotClient> {
 export function connectChain(target: ChainTarget): Promise<PolkadotClient> {
   let pending = clientCache.get(target.label);
   if (!pending) {
-    pending = dialChain(target);
-    clientCache.set(target.label, pending);
-    pending.catch(() => clientCache.delete(target.label));
+    const dialing = dialChain(target);
+    pending = dialing;
+    clientCache.set(target.label, dialing);
+    // Only this dial: one evicted while it ran may fail after a fresh one took its place.
+    dialing.catch(() => {
+      if (clientCache.get(target.label) === dialing) clientCache.delete(target.label);
+    });
   }
   return pending;
 }
@@ -147,8 +151,18 @@ export function prewarmChains(): void {
 
 /** Tears down and forgets both cached clients; the next connectChain re-dials. */
 export function evictChains(): void {
-  for (const [label, pending] of clientCache) {
-    clientCache.delete(label);
-    pending.then((client) => client.destroy()).catch(() => {});
-  }
+  for (const label of [...clientCache.keys()]) evict(label);
+}
+
+/** Tears down and forgets one chain's cached client; the next connectChain re-dials it. A read
+ *  still running on it fails. */
+export function evictChain(target: ChainTarget): void {
+  evict(target.label);
+}
+
+function evict(label: string): void {
+  const pending = clientCache.get(label);
+  if (pending === undefined) return;
+  clientCache.delete(label);
+  pending.then((client) => client.destroy()).catch(() => {});
 }

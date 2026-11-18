@@ -7,6 +7,8 @@ import { nextTick } from "vue";
 import type { FlowState } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
+  DEPOSIT_WATCH_RETRY_MAX_MS,
+  DEPOSIT_WATCH_RETRY_MS,
   HIDDEN_RESET_MS,
   setRequestsClock,
   PAYMENT_WATCH_MS,
@@ -65,12 +67,14 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
       onError: (e: unknown) => void;
       unsubscribed: boolean;
     }[],
+    /** Every subscribe throws this instead of subscribing, until the test clears it. */
+    subscribeError: null as Error | null,
     counters: new Map<string, number>(),
     slots: new Map<string, FlowState>(),
     address: addressOf,
   };
-  /** Burner subscriptions and chain-client evictions, in the order they happened. */
-  const log: ("subscribe" | "evict")[] = [];
+  /** Burner subscriptions and chain-client evictions, all or Asset Hub's alone, in order. */
+  const log: ("subscribe" | "evict" | "evict asset-hub")[] = [];
   const worker = { available: true, calls: [] as { api: string; payload: unknown }[] };
   const manager = {
     isAvailable: () => worker.available,
@@ -128,6 +132,7 @@ vi.mock("../lib/coinage-live", () => ({
     onValue: (free: bigint, finality: "best" | "finalized") => void,
     onError: (e: unknown) => void,
   ) => {
+    if (chain.subscribeError !== null) throw chain.subscribeError;
     const watcher = {
       key: `${sourceId}:${tradeN}`,
       tier: route.tier,
@@ -156,8 +161,12 @@ vi.mock("../lib/coinage-live", () => ({
   },
 }));
 vi.mock("../lib/host-chain", () => ({
+  ASSET_HUB: { label: "asset-hub" },
   evictChains: vi.fn(() => {
     log.push("evict");
+  }),
+  evictChain: vi.fn((target: { label: string }) => {
+    if (target.label === "asset-hub") log.push("evict asset-hub");
   }),
 }));
 
@@ -296,6 +305,7 @@ describe("requests store: the chain step", () => {
     chain.onProbe = null;
     chain.probeTiers.clear();
     chain.watchers.length = 0;
+    chain.subscribeError = null;
     chain.counters.clear();
     chain.slots.clear();
     worker.available = true;
@@ -712,8 +722,8 @@ describe("requests store: the chain step", () => {
     ]);
     expect(console.warn).not.toHaveBeenCalled();
 
-    // Back on screen, the chain client fails the subscription: one warning, the watch let go
-    // until the next sync.
+    // Back on screen, the chain client fails the subscription: one warning, and the watch is let
+    // go until it is tried again.
     requests.setForeground(BTC_REF);
     await nextTick();
     await settled();
@@ -762,5 +772,245 @@ describe("requests store: the chain step", () => {
     expect(evictChains).toHaveBeenCalledTimes(1);
     expect(log).toEqual(["subscribe", "evict", "subscribe"]);
     detach();
+  });
+
+  describe("a deposit watch that failed", () => {
+    const BTC4_REF = requestRefOf("btc", 4);
+    const turn = () => new Promise((resolve) => realSetTimeout(resolve, 0));
+
+    /** The BTC request on screen with its watch live, the timers fake from here on. */
+    async function watched() {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+      const requests = useRequestsStore();
+      await requests.create(BTC_REF, { ...migrated(btcRecord), handoff: AWAITING_HANDOFF });
+      requests.setForeground(BTC_REF);
+      await nextTick();
+      await until(() => chain.watchers.length === 1);
+      return requests;
+    }
+    /** The live subscription fails. */
+    const fail = () => chain.watchers.at(-1)!.onError(new Error("asset hub unreachable"));
+    /** Moves the clock on by `ms` and lets what it started run. */
+    async function wait(ms: number) {
+      await vi.advanceTimersByTimeAsync(ms);
+      for (let i = 0; i < 20; i++) await turn();
+    }
+
+    it("is tried again after 2 s while its request stays on screen", async () => {
+      await watched();
+      fail();
+      expect(chain.watchers[0]!.unsubscribed).toBe(true);
+      await wait(DEPOSIT_WATCH_RETRY_MS - 1);
+      expect(chain.watchers).toHaveLength(1);
+      await wait(1);
+      expect(watchers()).toEqual([
+        { key: "btc:3", unsubscribed: true },
+        { key: "btc:3", unsubscribed: false },
+      ]);
+      expect(log).toEqual(["subscribe", "subscribe"]);
+    });
+
+    it("is tried again the same way when the subscribe itself fails", async () => {
+      chain.subscribeError = new Error("asset hub unreachable");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+      const requests = useRequestsStore();
+      await requests.create(BTC_REF, { ...migrated(btcRecord), handoff: AWAITING_HANDOFF });
+      requests.setForeground(BTC_REF);
+      await nextTick();
+      await until(() => vi.mocked(console.warn).mock.calls.length === 1);
+      expect(chain.watchers).toHaveLength(0);
+      chain.subscribeError = null;
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
+    });
+
+    it("leaves the shared client alone when the subscribe keeps failing before the client", async () => {
+      chain.subscribeError = new Error("host entropy refused");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+      const requests = useRequestsStore();
+      await requests.create(BTC_REF, { ...migrated(btcRecord), handoff: AWAITING_HANDOFF });
+      requests.setForeground(BTC_REF);
+      await nextTick();
+      await until(() => vi.mocked(console.warn).mock.calls.length === 1);
+      for (const ms of [2_000, 4_000, 8_000]) await wait(ms);
+      expect(console.warn).toHaveBeenCalledTimes(4);
+      expect(log).toEqual([]);
+      chain.subscribeError = null;
+      await wait(16_000);
+      expect(log).toEqual(["subscribe"]);
+    });
+
+    it("waits twice as long after each failure in a row, 30 s at most, and 2 s again after a reading", async () => {
+      await watched();
+      const MAX = DEPOSIT_WATCH_RETRY_MAX_MS;
+      const waits = [2_000, 4_000, 8_000, 16_000, MAX, MAX];
+      for (const [i, ms] of waits.entries()) {
+        fail();
+        await wait(ms - 1);
+        expect(chain.watchers).toHaveLength(i + 1);
+        await wait(1);
+        expect(chain.watchers).toHaveLength(i + 2);
+      }
+      chain.watchers.at(-1)!.onValue(0n, "best");
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      expect(chain.watchers).toHaveLength(waits.length + 2);
+    });
+
+    it("dials a fresh Asset Hub client before each try from the second failure in a row", async () => {
+      await watched();
+      for (const ms of [2_000, 4_000, 8_000]) {
+        fail();
+        await wait(ms);
+      }
+      expect(log).toEqual([
+        "subscribe",
+        "subscribe",
+        "evict asset-hub",
+        "subscribe",
+        "evict asset-hub",
+        "subscribe",
+      ]);
+    });
+
+    it("starts another request on screen from its own count", async () => {
+      const requests = await watched();
+      await requests.create(BTC4_REF, {
+        ...migrated({ ...btcRecord, tradeN: 4 }),
+        handoff: AWAITING_HANDOFF,
+      });
+      // Two failures on the first: its next try, due in 4 s, would dial a fresh client.
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      fail();
+      requests.setForeground(BTC4_REF);
+      await nextTick();
+      await until(() => chain.watchers.length === 3);
+      await wait(60_000);
+      expect(chain.watchers.map(({ key }) => key)).toEqual(["btc:3", "btc:3", "btc:4"]);
+      expect(log).not.toContain("evict asset-hub");
+      // Its own first failure waits 2 s and keeps the client.
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      expect(chain.watchers.map(({ key }) => key)).toEqual(["btc:3", "btc:3", "btc:4", "btc:4"]);
+      expect(log).not.toContain("evict asset-hub");
+    });
+
+    it("leaves no try pending once the request leaves the screen, its deposit is final, or the watch starts again", async () => {
+      // Each case after two failures, so a try left pending would show as a fresh client.
+      const twice = async () => {
+        const requests = await watched();
+        fail();
+        await wait(DEPOSIT_WATCH_RETRY_MS);
+        fail();
+        return requests;
+      };
+
+      const left = await twice();
+      left.leave();
+      await wait(60_000);
+      expect(log).not.toContain("evict asset-hub");
+
+      setActivePinia(createPinia());
+      chain.watchers.length = 0;
+      const final = await twice();
+      await final.observe(BTC_REF, {
+        source: "chain",
+        at: FIXTURE_NOW,
+        burnerNative: "5000000000",
+        finality: "finalized",
+        via: "probe",
+      });
+      await nextTick();
+      await wait(60_000);
+      expect(log).not.toContain("evict asset-hub");
+      final.leave();
+
+      // Started again while its try is pending: that start is the try.
+      setActivePinia(createPinia());
+      chain.watchers.length = 0;
+      const resumed = await twice();
+      resumed.resumePolls();
+      await until(() => chain.watchers.length === 3);
+      await wait(60_000);
+      expect(chain.watchers).toHaveLength(3);
+      expect(log).not.toContain("evict asset-hub");
+    });
+
+    it("drops a try another request came on screen during, before it dials a fresh client", async () => {
+      const requests = await watched();
+      await requests.create(BTC4_REF, {
+        ...migrated({ ...btcRecord, tradeN: 4 }),
+        handoff: AWAITING_HANDOFF,
+      });
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      fail();
+      // The try comes due and starts loading the client module; the other request opens meanwhile.
+      vi.advanceTimersByTime(2 * DEPOSIT_WATCH_RETRY_MS);
+      requests.setForeground(BTC4_REF);
+      await nextTick();
+      await until(() => chain.watchers.length === 3);
+      await wait(0);
+      expect(log).toEqual(["subscribe", "subscribe", "subscribe"]);
+      expect(chain.watchers.map(({ key }) => key)).toEqual(["btc:3", "btc:3", "btc:4"]);
+    });
+
+    it("leaves no try pending while the page is hidden", async () => {
+      const requests = await watched();
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      fail();
+      requests.pausePolls();
+      await wait(10 * MINUTE);
+      expect(log).toEqual(["subscribe", "subscribe"]);
+    });
+
+    it("drops a try the request left the screen during, before it dials a fresh client", async () => {
+      const requests = await watched();
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      fail();
+      // The try comes due and starts loading the client module; the request leaves meanwhile.
+      vi.advanceTimersByTime(2 * DEPOSIT_WATCH_RETRY_MS);
+      requests.leave();
+      await wait(0);
+      expect(log).toEqual(["subscribe", "subscribe"]);
+    });
+
+    it("clears the pending timer itself when the request leaves the screen", async () => {
+      const timersAfterLeaving = async (failures: number) => {
+        setActivePinia(createPinia());
+        chain.watchers.length = 0;
+        const requests = await watched();
+        for (let i = 0; i < failures; i++) fail();
+        requests.leave();
+        await requests.flush();
+        const count = vi.getTimerCount();
+        requests.stopJobPoll();
+        vi.useRealTimers();
+        return count;
+      };
+      expect(await timersAfterLeaving(1)).toBe(await timersAfterLeaving(0));
+    });
+
+    it("leaves no try pending after a return from the background", async () => {
+      let now = FIXTURE_NOW;
+      setRequestsClock(() => now);
+      const requests = await watched();
+      fail();
+      await wait(DEPOSIT_WATCH_RETRY_MS);
+      fail();
+      const doc = fakeDocument();
+      const detach = requests.attachLifecycle({ document: doc, window: fakeWindow() });
+      hide(doc);
+      now += HIDDEN_RESET_MS + 1_000;
+      show(doc);
+      await until(() => chain.watchers.length === 3);
+      await until(() => !requests.reconcilingNow);
+      await wait(60_000);
+      expect(log).toEqual(["subscribe", "subscribe", "evict", "subscribe"]);
+      detach();
+    });
   });
 });
