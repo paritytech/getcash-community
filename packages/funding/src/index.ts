@@ -130,3 +130,5 @@ export {
 } from "./manual-rail";
 export type { ManualRailOptions, ManualSourceId } from "./manual-rail";
 export { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID, PASEO_UNDERLYING_ASSET_ID } from "./paseo";
+export { quoteDepositValue, sizingReads, ZERO_32 } from "./sizing";
+export type { DepositValue, SizingArgs } from "./sizing";

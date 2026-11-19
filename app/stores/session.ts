@@ -30,6 +30,7 @@ import {
   PSM_EXTERNAL,
   recordedRoute,
   type ConversionRoute,
+  type DepositValue,
   type FundingStep,
 } from "@getsome/funding";
 import { depositWindowFor } from "../funding/config";
@@ -88,12 +89,7 @@ import {
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
-import type {
-  DepositValue,
-  FundingSizing,
-  PoolFundingSizing,
-  PsmFundingSizing,
-} from "~~/lib/funding-fees";
+import type { FundingSizing, PoolFundingSizing, PsmFundingSizing } from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId } from "../funding/source-ids";
 import { fmtCash, toCashBase } from "../utils/cash";
@@ -2205,13 +2201,11 @@ export const useSessionStore = defineStore("session", () => {
       const route = await routeForMismatch(record);
       let value: DepositValue | null = null;
       if (route !== null) {
-        const [{ quoteDepositValue }, { connectChain, ASSET_HUB, PEOPLE }, funding] =
-          await Promise.all([
-            import("~~/lib/funding-fees"),
-            import("~~/lib/host-chain"),
-            import("@getsome/funding"),
-          ]);
-        value = await quoteDepositValue({
+        const [{ connectChain, ASSET_HUB, PEOPLE }, funding] = await Promise.all([
+          import("~~/lib/host-chain"),
+          import("@getsome/funding"),
+        ]);
+        value = await funding.quoteDepositValue({
           ahClient: await connectChain(ASSET_HUB),
           peopleClient: await connectChain(PEOPLE),
           underlyingAssetId: funding.PASEO_UNDERLYING_ASSET_ID,
