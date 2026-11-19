@@ -976,6 +976,19 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   if (depositAh === 0n) state.emptyReadAt = readStartedAt;
   else state.heldReadAt = readStartedAt;
 
+  const readTrap = (sent: bigint) =>
+    bounded(
+      findTrap(
+        input.peopleApi,
+        input.beneficiaryHex,
+        sent,
+        trapScanSpan(state.peopleFeeCash),
+        // What the program's dry run had to land before it was submitted.
+        input.settleAmount - state.peopleAtXcm,
+      ),
+      input.tickTimeoutMs,
+      "trap read",
+    );
   // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
   // it there. Asked only of a burner the program would have reaped, since a fork can take the
   // deposit, the program and the arrival People saw at its best block all together. A claim the
@@ -988,17 +1001,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     );
     if (held > state.peopleAtXcm) return true;
     if (state.sentToPeople === null) return false;
-    const trap = await bounded(
-      findTrap(
-        input.peopleApi,
-        input.beneficiaryHex,
-        state.sentToPeople,
-        trapScanSpan(state.peopleFeeCash),
-      ),
-      input.tickTimeoutMs,
-      "trap read",
-    );
-    return trap !== null;
+    return (await readTrap(state.sentToPeople)) !== null;
   };
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(
@@ -1044,16 +1047,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     state.sentToPeople !== null &&
     peopleHeld <= state.peopleAtXcm
   ) {
-    const trap = await bounded(
-      findTrap(
-        input.peopleApi,
-        input.beneficiaryHex,
-        state.sentToPeople,
-        trapScanSpan(state.peopleFeeCash),
-      ),
-      input.tickTimeoutMs,
-      "trap read",
-    );
+    const trap = await readTrap(state.sentToPeople);
     if (trap !== null) throw new FundingTrappedError(trap.amount, trap.key, input.beneficiaryHex);
   }
 

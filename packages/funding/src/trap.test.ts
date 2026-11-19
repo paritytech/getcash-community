@@ -100,8 +100,14 @@ function peopleApi(traps: Record<string, number>, events: unknown[] = []) {
 }
 
 const EARMARK = 1_000n;
+const NEED = 5_000_000n;
 
-const trappedEvent = (origin: unknown, amount: bigint, hash: string) => ({
+const trappedEvent = (
+  origin: unknown,
+  amount: bigint,
+  hash: string,
+  id: unknown = TOKENS.CASH.locationOnPeople,
+) => ({
   phase: { type: "Finalization" },
   event: {
     type: "PolkadotXcm",
@@ -110,10 +116,7 @@ const trappedEvent = (origin: unknown, amount: bigint, hash: string) => ({
       value: {
         hash,
         origin,
-        assets: {
-          type: "V5",
-          value: [{ id: TOKENS.CASH.locationOnPeople, fun: { type: "Fungible", value: amount } }],
-        },
+        assets: { type: "V5", value: [{ id, fun: { type: "Fungible", value: amount } }] },
       },
     },
   },
@@ -142,88 +145,92 @@ describe("findTrap", () => {
   it("finds the trap under the key the amount sent gives, from one read of the traps at the best block", async () => {
     const key = await trapKey(CLAIMER_HEX, AMOUNT);
     const { api, reads } = peopleApi({ [key]: 1 });
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({ amount: AMOUNT, key });
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toEqual({
+      amount: AMOUNT,
+      key,
+    });
     expect(reads).toEqual([["entries", { at: "finalized" }]]);
   });
 
   it("finds a trap short of the amount sent by what People charged, down to the earmark, and not below", async () => {
     const charged = await trapKey(CLAIMER_HEX, AMOUNT - 37n);
     const { api } = peopleApi({ [charged]: 1, [`0x${"ee".repeat(32)}`]: 2 });
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toEqual({
       amount: AMOUNT - 37n,
       key: charged,
     });
     const atTheEdge = await trapKey(CLAIMER_HEX, AMOUNT - EARMARK);
-    expect(await findTrap(peopleApi({ [atTheEdge]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual(
-      { amount: AMOUNT - EARMARK, key: atTheEdge },
-    );
+    expect(
+      await findTrap(peopleApi({ [atTheEdge]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK, NEED),
+    ).toEqual({ amount: AMOUNT - EARMARK, key: atTheEdge });
     const below = await trapKey(CLAIMER_HEX, AMOUNT - EARMARK - 1n);
-    expect(await findTrap(peopleApi({ [below]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+    expect(
+      await findTrap(peopleApi({ [below]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK, NEED),
+    ).toBeNull();
   });
 
   it("finds a trap above the figure too, when the pool filled more than the dry run saw", async () => {
     const above = await trapKey(CLAIMER_HEX, AMOUNT + 60n);
     const { api } = peopleApi({ [above]: 1 });
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toEqual({
       amount: AMOUNT + 60n,
       key: above,
     });
     const tooFar = await trapKey(CLAIMER_HEX, AMOUNT + EARMARK + 1n);
-    expect(await findTrap(peopleApi({ [tooFar]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+    expect(
+      await findTrap(peopleApi({ [tooFar]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK, NEED),
+    ).toBeNull();
   });
 
   it("looks no further than half of TRAP_SCAN_MAX each way, whatever span it is given", async () => {
     const half = TRAP_SCAN_MAX / 2n;
     const far = await trapKey(CLAIMER_HEX, AMOUNT - half - 1n);
     const { api } = peopleApi({ [far]: 1 });
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n)).toBeNull();
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n, NEED)).toBeNull();
     const edge = await trapKey(CLAIMER_HEX, AMOUNT - half);
     expect(
-      await findTrap(peopleApi({ [edge]: 1 }).api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n),
+      await findTrap(peopleApi({ [edge]: 1 }).api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n, NEED),
     ).toEqual({ amount: AMOUNT - half, key: edge });
   });
 
   it("ignores a trap already claimed, whose count is zero", async () => {
     const key = await trapKey(CLAIMER_HEX, AMOUNT);
-    expect(await findTrap(peopleApi({ [key]: 0 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+    expect(
+      await findTrap(peopleApi({ [key]: 0 }).api, CLAIMER_HEX, AMOUNT, EARMARK, NEED),
+    ).toBeNull();
   });
 
-  it("falls back to the block's AssetsTrapped event naming the claimer, which carries the exact amount", async () => {
+  it("falls back to the block's AssetsTrapped event under the claimer's key, which carries the exact amount, however far from the one sent", async () => {
+    const held = AMOUNT - TRAP_SCAN_MAX;
+    const key = await trapKey(CLAIMER_HEX, held);
+    const { api } = peopleApi({ [key]: 1 }, [trappedEvent(claimerOrigin(CLAIMER_HEX), held, key)]);
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toEqual({
+      amount: held,
+      key,
+    });
+  });
+
+  it("ignores an event under the claimer's key that is further than the span short of what the program had to land", async () => {
+    const least = NEED - EARMARK;
+    const key = await trapKey(CLAIMER_HEX, least);
+    const enough = peopleApi({}, [trappedEvent(claimerOrigin(CLAIMER_HEX), least, key)]);
+    expect(await findTrap(enough.api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toEqual({
+      amount: least,
+      key,
+    });
+    const short = peopleApi({}, [
+      trappedEvent(claimerOrigin(CLAIMER_HEX), least - 1n, await trapKey(CLAIMER_HEX, least - 1n)),
+    ]);
+    expect(await findTrap(short.api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toBeNull();
+  });
+
+  it("finds nothing when neither the keys nor the events show a trap: an event of another claimer, or naming the claimer for another asset", async () => {
     const other = `0x${"09".repeat(32)}`;
-    const hash = `0x${"ab".repeat(32)}`;
-    const { api } = peopleApi({}, [
-      trappedEvent(claimerOrigin(other), 1n, `0x${"cd".repeat(32)}`),
-      trappedEvent(claimerOrigin(CLAIMER_HEX), AMOUNT - 7n, hash),
-    ]);
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
-      amount: AMOUNT - 7n,
-      key: hash,
-    });
-  });
-
-  it("reads the claimer's account from a decoded binary as well as from hex", async () => {
-    const hash = `0x${"ab".repeat(32)}`;
-    const origin = {
-      parents: 0,
-      interior: {
-        type: "X1",
-        value: {
-          type: "AccountId32",
-          value: { network: { type: "Polkadot" }, id: { asHex: () => CLAIMER_HEX } },
-        },
-      },
-    };
-    const { api } = peopleApi({}, [trappedEvent(origin, AMOUNT, hash)]);
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
-      amount: AMOUNT,
-      key: hash,
-    });
-  });
-
-  it("finds nothing when neither the keys nor the events show a trap", async () => {
+    const native = { parents: 1, interior: { type: "Here" } };
     const { api } = peopleApi({ [`0x${"ee".repeat(32)}`]: 1 }, [
-      trappedEvent(claimerOrigin(`0x${"09".repeat(32)}`), AMOUNT, `0x${"cd".repeat(32)}`),
+      trappedEvent(claimerOrigin(other), AMOUNT, await trapKey(other, AMOUNT)),
+      trappedEvent(claimerOrigin(CLAIMER_HEX), AMOUNT, `0x${"cd".repeat(32)}`, native),
     ]);
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK, NEED)).toBeNull();
   });
 });
