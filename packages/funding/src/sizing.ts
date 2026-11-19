@@ -81,6 +81,20 @@ export interface DepositValue {
 /** Claims are made in hundredths of a CASH, so a figure is floored to that before it is promised. */
 const CLAIM_UNIT = 10_000n;
 
+/** The pool has no price for what a deposit leaves to convert: there is something to convert, and
+ *  a later quote may price it. */
+export class DepositUnpricedError extends Error {
+  constructor() {
+    super("the pool cannot price the deposit");
+    this.name = "DepositUnpricedError";
+  }
+}
+
+const priced = (quoted: bigint | null): bigint => {
+  if (quoted === null) throw new DepositUnpricedError();
+  return quoted;
+};
+
 /** The stable a deposit leaves for the conversion once the fees and the min_balance come out of
  *  it: the reverse of `stableDepositNeeded`. */
 const leftAfterFees = (deposit: bigint, fees: StableLegFees): bigint =>
@@ -93,8 +107,9 @@ const leftAfterFees = (deposit: bigint, fees: StableLegFees): bigint =>
  * sizing, priced live. A short deposit or one in another token is continued at this figure, so it
  * is the gate's own arithmetic run backwards. The tiers that swap through a pool keep
  * `slippagePct` back from the quote, so the figure still clears when the pool moves a little
- * before the worker converts; anything above it lands as extra CASH. Null when the deposit does
- * not cover its own fees or the pool cannot price it.
+ * before the worker converts; anything above it lands as extra CASH. Null when there is nothing to
+ * convert: the deposit does not cover its own fees, or what is left is worth under one claim unit.
+ * Throws `DepositUnpricedError` when the pool cannot price what is left.
  */
 export async function quoteDepositValue(
   args: Omit<SizingArgs, "settleAmount"> & {
@@ -148,9 +163,9 @@ export async function quoteDepositValue(
         minUnderlyingOut: deposit,
       });
       const left = leftAfterFees(deposit, fees);
-      const native = left <= 0n ? null : await quoteNativeOut(api, stablePool, left);
-      const cash = native === null ? null : await quoteUnderlyingOut(api, pool, native);
-      reaches = cash === null ? null : keepBack(cash);
+      const native = left <= 0n ? 0n : priced(await quoteNativeOut(api, stablePool, left));
+      reaches =
+        native === 0n ? null : keepBack(priced(await quoteUnderlyingOut(api, pool, native)));
     } else {
       const fees = await estimateFundingProgramFees({
         ...common,
@@ -161,8 +176,7 @@ export async function quoteDepositValue(
       keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
       fixedGate = false;
       const spend = deposit - keepNativeForFees;
-      const cash = spend <= 0n ? null : await quoteUnderlyingOut(api, pool, spend);
-      reaches = cash === null ? null : keepBack(cash);
+      reaches = spend <= 0n ? null : keepBack(priced(await quoteUnderlyingOut(api, pool, spend)));
     }
   } catch (e) {
     if (e instanceof DepositBelowFeesError) return null;

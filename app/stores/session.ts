@@ -2205,16 +2205,21 @@ export const useSessionStore = defineStore("session", () => {
           import("~~/lib/host-chain"),
           import("@getsome/funding"),
         ]);
-        value = await funding.quoteDepositValue({
-          ahClient: await connectChain(ASSET_HUB),
-          peopleClient: await connectChain(PEOPLE),
-          underlyingAssetId: funding.PASEO_UNDERLYING_ASSET_ID,
-          peopleParaId: funding.PASEO_PEOPLE_PARA_ID,
-          probeAddress: record.deposit!.address,
-          route,
-          deposit: BigInt(record.depositMismatch!.amount),
-          slippagePct: funding.DIRECT_SLIPPAGE_PCT,
-        });
+        try {
+          value = await funding.quoteDepositValue({
+            ahClient: await connectChain(ASSET_HUB),
+            peopleClient: await connectChain(PEOPLE),
+            underlyingAssetId: funding.PASEO_UNDERLYING_ASSET_ID,
+            peopleParaId: funding.PASEO_PEOPLE_PARA_ID,
+            probeAddress: record.deposit!.address,
+            route,
+            deposit: BigInt(record.depositMismatch!.amount),
+            slippagePct: funding.DIRECT_SLIPPAGE_PCT,
+          });
+        } catch (e) {
+          // A deposit the pool cannot price is an answer, as one below its fees is.
+          if (!(e instanceof funding.DepositUnpricedError)) throw e;
+        }
       }
       if (foregroundMismatch.value?.key === key) {
         mismatchPrice.value = { key, at: Date.now(), route, value };
