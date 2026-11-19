@@ -22,9 +22,10 @@ const sorted = computed(() => sortPickable(props.rows));
 
 <template>
   <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
+  <!-- Clipped where the real list scrolls, so a long one never runs under the screen's actions. -->
   <ul
     v-if="loading"
-    class="-mx-2 flex flex-col gap-2"
+    class="-mx-2 flex min-h-0 flex-col gap-2 overflow-hidden"
     :aria-label="`Loading ${label.toLowerCase()}`"
   >
     <OptionRow v-for="n in rows.length" :key="n" skeleton />
