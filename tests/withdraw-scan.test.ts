@@ -129,10 +129,12 @@ describe("whether a scanned code fits the network and token picked", () => {
 
   it("holds a token transfer code to the picked token's own contract on that network", () => {
     const arbUsdc = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+    const arbUsdt = "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9";
     const bscUsdt = "0x55d398326f99059fF775485246999027B3197955";
     const transfer = (contract: string, id: number) =>
       `ethereum:${contract}@${id}/transfer?address=${ETHEREUM}&uint256=1`;
     expect(fits(transfer(arbUsdc, 42161), "Arbitrum", "USDC")).toBeNull();
+    expect(fits(transfer(arbUsdt, 42161), "Arbitrum", "USDT")).toBeNull();
     expect(fits(transfer(bscUsdt, 56), "Bsc", "USDT")).toBeNull();
     // Ethereum's USDT contract on BNB Chain's id is another token.
     expect(fits(transfer(USDT_CONTRACT, 56), "Bsc", "USDT")).toBe("token");

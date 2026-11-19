@@ -1,6 +1,8 @@
 // The on-ramp catalog: the direct Polkadot network in front of the Chainflip ones, the Chainflip
 // catalog unchanged for the withdraw side and the floors, and the two source id maps agreeing.
 
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DIRECT_SOURCE_IDS,
@@ -13,6 +15,7 @@ import {
   sourcePairFor,
 } from "~~/lib/config";
 import { isCryptoSourceId } from "~~/app/funding/source-ids";
+import { networkIcon, tokenIcon } from "~~/app/utils/icons";
 import { railProviderOf, routeOf } from "~~/app/funding/requests/model";
 
 describe("the funding catalog", () => {
@@ -37,6 +40,27 @@ describe("the funding catalog", () => {
       "Arbitrum",
     ]);
     expect(SOURCE_CHAINS.some((chain) => (chain.chain as string) === "Polkadot")).toBe(false);
+    // Each network's own coin.
+    expect(SOURCE_CHAINS.map((chain) => chain.native)).toEqual([
+      "BTC",
+      "ETH",
+      "SOL",
+      "TRX",
+      "BNB",
+      "ETH",
+    ]);
+  });
+
+  it("has an icon file of its own for every network and token", () => {
+    const icons = FUNDING_CHAINS.flatMap((chain) => [
+      networkIcon(chain.chain),
+      ...chain.assets.map(tokenIcon),
+    ]);
+    expect(icons).not.toContain("/icons/add-money.svg");
+    for (const icon of new Set(icons)) {
+      const file = fileURLToPath(new URL(`../public${icon}`, import.meta.url));
+      expect(existsSync(file), icon).toBe(true);
+    }
   });
 
   it("maps a pair to its source in either catalog, and back", () => {
