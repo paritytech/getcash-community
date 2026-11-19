@@ -25,6 +25,8 @@ import {
   railTickOnce,
   readAssetHubAccount,
   readDestinationBalance,
+  readKeyOnPeople,
+  readUnswept,
   RedeemTooSmallError,
   residueReturnFloor,
   withdrawTickOnce,
@@ -652,7 +654,7 @@ const paymentSeen = (record) =>
 /**
  * The payment's effect on the key, read at one head: the exact figure is out once the key is past
  * the payment's nonce with its balance down by at least the figure; the sweep once one was sent
- * and the key holds none of the sale's token.
+ * and the key holds none of the sale's token a sweep can move (`readUnswept`).
  */
 function paymentShows(record) {
   const { exact, sweep } = record.leg;
@@ -660,7 +662,7 @@ function paymentShows(record) {
     const amount = asBig(record.channel?.amount, 0n);
     return (key) => key.nonce > exact.nonce && asBig(exact.balanceBefore, 0n) - key.free >= amount;
   }
-  return (key) => (sweep?.attempts ?? 0) > 0 && key.free === 0n;
+  return (unswept) => (sweep?.attempts ?? 0) > 0 && unswept === 0n;
 }
 
 /**
@@ -674,8 +676,10 @@ async function settlePayment(record) {
   const seen = paymentSeen(record);
   if (seen === null) return;
   const { exact, sweep } = record.leg;
+  const bySweep = exact?.seen == null;
   const outcome = await paymentOutcome(record, seen, paymentShows(record), {
-    unknownStands: exact?.seen == null,
+    unknownStands: bySweep,
+    ...(bySweep ? { readKey: readUnswept } : {}),
   });
   if (outcome === "pending") return;
   record.leg = {
@@ -1058,10 +1062,10 @@ async function swapSweptOut(record, sweep) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const held = await bounded(
-      readDestinationBalance(
+      readUnswept(
         client.getTypedApi(paseo_next_v2),
         record.keyPublicKeyHex,
-        depositTokenOf(recordedRoute(record)).assetHubId,
+        depositTokenOf(recordedRoute(record)),
       ),
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
       "key read on asset hub",
@@ -1307,13 +1311,7 @@ async function tickRecord(record, nowMs) {
           signOptions: await signOptionsFor(peopleClient),
           assetHubAnchor: () => anchorFor(ahClient),
           readFinalizedNumber: async () => (await ahClient.getFinalizedBlock()).number,
-          readKeyOnPeople: async (ss58, at) => {
-            const [asset, native] = await Promise.all([
-              peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58, { at }),
-              peopleApi.query.System.Account.getValue(ss58, { at }),
-            ]);
-            return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
-          },
+          readKeyOnPeople: (ss58, at) => readKeyOnPeople(peopleApi, ss58, at),
           readDestinationOnAssetHub: (hex) =>
             readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
           readKeyOnAssetHub: async (hex, at) => {

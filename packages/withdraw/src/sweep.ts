@@ -2,9 +2,10 @@
 // provider's account in one transfer that empties and closes the key. The last thing a withdrawal
 // does with its key.
 //
-// IDEMPOTENT BY BALANCE. The key holds the token until the transfer lands, and nothing after. A
-// tick that finds the key empty after a submit takes the sweep as done, whatever became of the
-// submit's answer. A tick that finds it empty before any submit has nothing to move and says so.
+// IDEMPOTENT BY BALANCE. The key holds the token until the transfer lands, and nothing a sweep can
+// move after. A tick that finds the key empty after a submit takes the sweep as done, whatever
+// became of the submit's answer. A tick that finds it empty before any submit has nothing to move
+// and says so.
 //
 // A rejection at inclusion costs a fee and is counted; the third gives the run up, as the message
 // leg does, since the same transfer will not pass on the fourth try.
@@ -17,8 +18,10 @@ import type { PolkadotSigner } from "polkadot-api";
 import type { TokenSpec } from "@getsome/core";
 import { describeDispatchError, includedInBlock } from "@getsome/funding";
 import { bounded } from "./bounded";
+import { readDestinationBalance } from "./destination";
 import type { AssetHubApi } from "./fees";
 import type { SeenBlock } from "./inclusion";
+import { AT_BEST } from "./paseo";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 /** Cross-tick memory for the sweep. The driver persists it; `sweepOnce` mutates it. */
@@ -46,11 +49,25 @@ export interface SweepInput {
   /** Bound on the submit's resolution. */
   submitTimeoutMs: number;
   signOptions?: Record<string, unknown>;
-  /** The key's balance in `token` on Asset Hub at the best head. */
+  /** What a sweep can still move off the key at the best head (`readUnswept`). */
   readKeyOnAssetHub: () => Promise<bigint>;
   /** Runs before the broadcast, so the driver can persist the attempt about to be made. */
   onBeforeSubmit?: () => Promise<void> | void;
   onTx?: (info: { call: "sweep"; txHash: string; block?: number; ok: boolean }) => void;
+}
+
+/** What the key holds in `token` on Asset Hub that a sweep can still move, at the best head or the
+ *  head `at` names. A native balance of no more than the existential deposit reads as 0: a sweep
+ *  leaves that much on a key the chain keeps open, and it cannot pay a transfer's fee. */
+export async function readUnswept(
+  api: AssetHubApi,
+  keyHex: string,
+  token: TokenSpec,
+  at: { at: "best" | "finalized" } = AT_BEST,
+): Promise<bigint> {
+  const held = await readDestinationBalance(api, keyHex, token.assetHubId, at);
+  if (token.assetHubId !== undefined) return held;
+  return held > (await api.constants.Balances.ExistentialDeposit()) ? held : 0n;
 }
 
 /** The whole balance in `token` to `to`, the key reaped behind it. */

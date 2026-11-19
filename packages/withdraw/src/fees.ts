@@ -17,12 +17,12 @@
 // The XCM's transaction fee is paid in PAS and estimated with a margin. People withdraws a fee
 // while keeping the account alive, so the key must hold the existential deposit on top of the
 // fee when the XCM is signed; the swap buys both. A dry run charges no fee, so the withdrawn PAS
-// is what the key holds less the reserve; what the reserve leaves unspent is below the
+// is what the key can send less the reserve; what the reserve leaves unspent is below the
 // existential deposit and the chain reaps it with the account.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
-import { TOKENS } from "@getsome/core";
+import { sendableNative, TOKENS } from "@getsome/core";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   creditedTo,
@@ -85,7 +85,7 @@ export class NeedsSwapError extends Error {
     readonly pasOnKey: bigint,
     readonly pasNeeded: bigint,
   ) {
-    super(`withdraw sizing: the key holds ${pasOnKey} PAS and the XCM needs ${pasNeeded}`);
+    super(`withdraw sizing: the key can send ${pasOnKey} PAS and the XCM needs ${pasNeeded}`);
     this.name = "NeedsSwapError";
   }
 }
@@ -100,6 +100,21 @@ export async function readPoolReserves(
     peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, poolAccount, AT_BEST),
   ]);
   return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
+}
+
+/** The key's CASH on People and the PAS it can send (`sendableNative`), at the best head or the
+ *  finalized one. */
+export async function readKeyOnPeople(
+  peopleApi: PeopleApi,
+  address: string,
+  at: "best" | "finalized",
+): Promise<{ cash: bigint; pas: bigint }> {
+  const [asset, account, existentialDeposit] = await Promise.all([
+    peopleApi.query.Assets.Account.getValue(CASH_LOCATION as never, address, { at }),
+    peopleApi.query.System.Account.getValue(address, { at }),
+    peopleApi.constants.Balances.ExistentialDeposit(),
+  ]);
+  return { cash: asset?.balance ?? 0n, pas: sendableNative(account, existentialDeposit) };
 }
 
 /** The XCM's transaction fee in PAS with its headroom, and the weighed weight the call declares.
@@ -238,7 +253,7 @@ export interface SizeXcmInput {
   assetHubApi: AssetHubApi;
   /** The disposable key: its SS58 on People and its 32-byte public key. */
   key: { address: string; publicKeyHex: string };
-  /** What the key holds after the swap; all the CASH and all the PAS leave. */
+  /** The CASH the key holds after the swap and the PAS it can send; all of both leave. */
   cashOnKey: bigint;
   pasOnKey: bigint;
   /** The Asset Hub account that receives the funds, 32-byte public key hex. The PSM tier's XCM

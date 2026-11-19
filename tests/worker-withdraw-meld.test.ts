@@ -137,6 +137,7 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
             },
           },
         },
+        constants: { Balances: { ExistentialDeposit: async () => 1_000_000_000n } },
       }),
       destroy: () => {},
     }),
