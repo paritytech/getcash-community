@@ -31,6 +31,7 @@ describe("recoveryNotes", () => {
   it("has no gas step for a refund in the chain's own coin", () => {
     expect(recoveryNotes("Bitcoin", "BTC").gasNote).toBeNull();
     expect(recoveryNotes("Arbitrum", "ETH").gasNote).toBeNull();
+    expect(recoveryNotes("Bsc", "BNB").gasNote).toBeNull();
     expect(recoveryNotes("Solana", "SOL").gasNote).toBeNull();
   });
 
@@ -48,6 +49,16 @@ describe("recoveryNotes", () => {
     const notes = recoveryNotes("Tron", "USDT");
     expect(notes.importNote).toBe("Import this key into any wallet that supports Tron.");
     expect(notes.transferNote).toBe("Transfer your USDT to any Tron address you control");
+  });
+
+  it("names BNB Chain as the screens do, never as Chainflip's Bsc", () => {
+    const notes = recoveryNotes("Bsc", "USDT");
+    expect(notes.gasNote).toBe(
+      "USDT on BNB Chain can't move without BNB. Send a small amount to this address first. " +
+        "If you don't have BNB, you can buy it on any exchange.",
+    );
+    expect(notes.importNote).toBe("Import this key into any wallet that supports BNB Chain.");
+    expect(notes.transferNote).toBe("Transfer your USDT to any BNB Chain address you control");
   });
 });
 

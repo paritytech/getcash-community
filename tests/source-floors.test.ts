@@ -15,6 +15,8 @@ const backend: FloorsBackend = {
       minimumSwapAmounts: {
         Bitcoin: { BTC: 40_000n },
         Ethereum: { ETH: 10_000_000_000_000_000n, USDC: 20_000_000n, USDT: 20_000_000n },
+        Arbitrum: { ETH: 3_900_000_000_000_000n, USDC: 10_000_000n, USDT: 10_000_000n },
+        Bsc: { BNB: 20_000_000_000_000_000n, USDT: 10_000_000_000_000_000_000n },
         Solana: { SOL: 68_000_000n, USDC: 10_000_000n, USDT: 10_000_000n },
         Tron: { TRX: 30_000_000n, USDT: 10_000_000n },
       },
@@ -26,13 +28,18 @@ const backend: FloorsBackend = {
 };
 
 describe("learnSourceFloors", () => {
-  it("offers exactly the UI catalog's nine sources", () => {
+  it("offers exactly the UI catalog's fourteen sources", () => {
     expect([...OFFERED_SOURCE_IDS].sort()).toEqual(
       [
         "btc",
         "eth",
         "usdc-eth",
         "usdt-eth",
+        "eth-arbitrum",
+        "usdc-arbitrum",
+        "usdt-arbitrum",
+        "bnb-bsc",
+        "usdt-bsc",
         "sol-solana",
         "usdc-solana",
         "usdt-solana",

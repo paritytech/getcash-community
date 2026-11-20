@@ -11,6 +11,7 @@ const TX_URL: Record<RefundChain, string> = {
   Bitcoin: "https://mempool.space/tx/{tx}",
   Ethereum: "https://etherscan.io/tx/{tx}",
   Arbitrum: "https://arbiscan.io/tx/{tx}",
+  Bsc: "https://bscscan.com/tx/{tx}",
   Tron: "https://tronscan.org/#/transaction/{tx}",
   Solana: "https://solscan.io/tx/{tx}",
 };

@@ -12,6 +12,12 @@ describe("refund transaction links", () => {
     }
   });
 
+  it("sends each EVM chain to its own explorer", () => {
+    expect(refundTxUrl("Ethereum", "0xabc")).toBe("https://etherscan.io/tx/0xabc");
+    expect(refundTxUrl("Arbitrum", "0xabc")).toBe("https://arbiscan.io/tx/0xabc");
+    expect(refundTxUrl("Bsc", "0xabc")).toBe("https://bscscan.com/tx/0xabc");
+  });
+
   it("escapes the reference into the URL", () => {
     expect(refundTxUrl("Bitcoin", "a/b?c")).toBe("https://mempool.space/tx/a%2Fb%3Fc");
   });

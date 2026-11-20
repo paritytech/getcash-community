@@ -138,6 +138,23 @@ describe("Chainflip top-up adapter", () => {
     });
   });
 
+  it("names a network as the screens do, with its own icons", () => {
+    const details = (stored: Partial<Stored>) =>
+      projectChainflipTopUps(
+        [record({ tradeN: 11, amountHuman: "50", startedAt: 100, ...stored }, 200)],
+        200,
+      )[0]?.details;
+    // The record keeps Chainflip's name for the chain, Bsc.
+    expect(details({ sourceId: "bnb-bsc", chain: "Bsc", asset: "BNB" })).toMatchObject({
+      network: { label: "BNB Chain", icon: "/icons/bnb.svg" },
+      token: { label: "BNB", icon: "/icons/bnb.svg" },
+    });
+    expect(details({ sourceId: "usdt-arbitrum", chain: "Arbitrum", asset: "USDT" })).toMatchObject({
+      network: { label: "Arbitrum", icon: "/icons/arbitrum.svg" },
+      token: { label: "USDT", icon: "/icons/usdt.svg" },
+    });
+  });
+
   it("ignores incomplete records and rejects foreign identifiers", () => {
     const incomplete = migrateRecord({ startedAt: 100 }, requestRefOf(undefined, 1), 100);
     expect(incomplete).toBeNull();
