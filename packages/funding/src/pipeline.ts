@@ -91,7 +91,7 @@
 // (trap.ts). FundingTrappedError then ends the run as a recovery, never as a timeout, and nothing
 // is converted twice: the trap waits for the burner's claim.
 
-import { TOKENS } from "@getsome/core";
+import { TOKENS, assetHubAssetLocation } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
   HexString,
@@ -136,7 +136,7 @@ import {
   type ConversionRoute,
   type StablePoolRoute,
 } from "./route";
-import { stableTxOptions } from "./stable";
+import { asLocation, stableTxOptions } from "./stable";
 import { findTrap, trapScanSpan } from "./trap";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
@@ -287,43 +287,28 @@ export function decideStep(b: FundingBalances, t: FundingTargets): FundingStep {
   return "await-native";
 }
 
-type Junction = { type?: string; value?: unknown };
-
-const junctionsOf = (loc: AssetLocation): Junction[] => {
-  const interior = (loc as { interior?: { type?: string; value?: unknown } }).interior;
-  if (interior?.value === undefined) return [];
-  return Array.isArray(interior.value) ? interior.value : [interior.value as Junction];
-};
-
-/** Structural junction match (number/bigint/string-agnostic, order-independent). */
-const isUnderlying = (loc: AssetLocation, assetId: number): boolean =>
-  junctionsOf(loc).some(
-    (j) => j?.type === "GeneralIndex" && BigInt(j.value as never) === BigInt(assetId),
-  );
-
-/** The chain's native asset as AssetConversion keys it: an interior-Here location. */
-const isNative = (loc: AssetLocation): boolean =>
-  ((loc as { parents?: number }).parents ?? 0) <= 1 &&
-  (loc as { interior?: { type?: string } }).interior?.type === "Here";
-
-/** Finds the native pool of each underlying in one read of the pool table, in the order asked,
- *  and returns both sides' exact Location keys. */
+/** The native pool of each pallet-assets asset, in the order asked, named by its exact key: the
+ *  native's Location, then the asset's. Anyone can add a pool to the table, so it is never
+ *  searched; one read of those keys confirms the pools exist. */
 export async function discoverPools(
   api: AssetHubApi,
   underlyingAssetIds: readonly number[],
 ): Promise<Pool[]> {
-  const pools = await api.query.AssetConversion.Pools.getEntries();
-  return underlyingAssetIds.map((underlyingAssetId) => {
-    for (const entry of pools) {
-      const [a, b] = entry.keyArgs[0] ?? [];
-      if (a === undefined || b === undefined) continue;
-      if (isUnderlying(a, underlyingAssetId) && isNative(b)) return { native: b, underlying: a };
-      if (isUnderlying(b, underlyingAssetId) && isNative(a)) return { native: a, underlying: b };
-    }
+  const native = asLocation(TOKENS.PAS.location);
+  const pools = underlyingAssetIds.map((assetId): Pool => ({
+    native,
+    underlying: asLocation(assetHubAssetLocation(assetId)),
+  }));
+  const found = await api.query.AssetConversion.Pools.getValues(
+    pools.map((pool) => [[pool.native, pool.underlying]]),
+  );
+  const missing = found.indexOf(undefined);
+  if (missing !== -1) {
     throw new Error(
-      `no native AssetConversion pool found for underlying asset ${underlyingAssetId}`,
+      `no native AssetConversion pool found for underlying asset ${underlyingAssetIds[missing]}`,
     );
-  });
+  }
+  return pools;
 }
 
 /** `discoverPools` for one underlying. */

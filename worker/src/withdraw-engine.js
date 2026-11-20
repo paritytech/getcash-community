@@ -4,6 +4,8 @@ import {
   chooseRoute,
   depositTokenOf,
   PASEO_UNDERLYING_ASSET_ID,
+  quoteDepositValue,
+  readDeposit,
   recordedRoute,
 } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
@@ -32,7 +34,7 @@ import {
   WithdrawRejectedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
-import { CLAIM_UNIT, fundingStatus, startFunding } from "./engine.js";
+import { amendFunding, cancelFunding, CLAIM_UNIT, fundingStatus, startFunding } from "./engine.js";
 import { readParams } from "./params.js";
 import {
   exactPaymentOut,
@@ -81,9 +83,9 @@ const RUN_TIMEOUT_MS = 900_000;
 const MAX_TICK_GAP_MS = 30_000;
 /** A job whose payment never arrives is retired after this when the hand-off names no window. */
 const PAYMENT_WINDOW_MS = 1_800_000;
-/** The funding job's target for a key sent home: one claim unit of CASH. The pipeline converts
- *  everything the key holds whatever the target, so the target only has to be reachable; the
- *  price is held by `quoteFloorPct` instead, and CASH already on People is claimed as it is. */
+/** The funding job's target for a key sent home with nothing on Asset Hub to convert: one claim
+ *  unit of CASH, so the job is done at once and the CASH already on People is claimed as it is.
+ *  What a key has to convert sets its own target (`sizeWayHome`). */
 const RESIDUE_SETTLE_AMOUNT = CLAIM_UNIT.toString();
 /** Where the claims of a key sent home start counting their ids. The purse's payments to the key
  *  are registered under ids derived from its public key and the attempt, as the claims are, so the
@@ -151,12 +153,15 @@ const saveJobs = () => store.save();
  *                                            // payment was seen in, until it is final; no
  *                                            // hash for an exact payment's lost answer
  *   saleNotFound?, saleNotFoundSince?,       // Meld only: the adapter's 404s in a row, and since
- *   residue?: { amount?, returning, whole?, sessionId?, route?, rearms?, stuck? },
+ *   residue?: { amount?, returning, whole?, sessionId?, route?, terms?, rearms?, stuck? },
  *                                            // Meld only: what the sale left on the key once
  *                                            // the provider was paid, in the sale's token, and
  *                                            // its way home; whole: the sale ended unpaid and
  *                                            // all of it goes home; route: the funding route
  *                                            // the way home takes, decided when it started;
+ *                                            // terms: its funding job's target and the figures
+ *                                            // its gate reads, as decimal strings, when the
+ *                                            // key holds something to convert;
  *                                            // stuck: its funding job failed past RETURN_REARMS
  *   residueError?,                           // why the way home's last step failed; the
  *                                            // next pass tries it again
@@ -861,21 +866,24 @@ async function settleInFlight(record) {
   }
 }
 
-/** Whether a sale's key holds anything worth the way home: `held` of the sale's token or `cash`
- *  of CASH on Asset Hub at or above the floor a residue is sent home at, or CASH on People. */
-async function keyHoldsAnything(record, held, token, cash) {
-  if (held >= residueReturnFloor(token) || cash >= residueReturnFloor(TOKENS.CASH)) return true;
+async function cashOnPeople(people, record) {
+  // At the best head, as the tick that saw the CASH read it.
+  const onPeople = await bounded(
+    people
+      .getTypedApi(paseo_people_next)
+      .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress, AT_BEST),
+    DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    "key read on people",
+  );
+  return onPeople?.balance ?? 0n;
+}
+
+/** Whether a sale's key holds CASH on People that a claim can take, which is one claim unit or
+ *  more: all that is worth the way home when the key holds nothing to convert on Asset Hub. */
+async function holdsCashOnPeople(record) {
   const people = await connectChain(record.peopleGenesis, "people");
   try {
-    // At the best head, as the tick that saw the CASH read it.
-    const onPeople = await bounded(
-      people
-        .getTypedApi(paseo_people_next)
-        .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress, AT_BEST),
-      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-      "key read on people",
-    );
-    return (onPeople?.balance ?? 0n) > 0n;
+    return (await cashOnPeople(people, record)) >= CLAIM_UNIT;
   } finally {
     people.destroy();
   }
@@ -922,11 +930,11 @@ const unrevivable = (record) => goesHomeWhole(record) || record.failure === "unr
  * on-ramp: everything the key holds on Asset Hub in the token the sale landed is converted,
  * teleported to the key on People and claimed into the purse, and CASH already on People is
  * claimed as it is. So a residue starts strictly after the payment is on chain, or that conversion
- * would take the provider's figure too, and one below `residueReturnFloor` stays on the key. A sale
- * that ended unpaid sends everything, wherever it is: the CASH still on People when the price
- * moved, the token on Asset Hub when the provider closed the order, the CASH on Asset Hub when
- * the PSM tier's exit could not pay the promise. The exchange is held to the bound the sale
- * itself went out under.
+ * would take the provider's figure too, and one below `residueReturnFloor`, or that its own fees
+ * would take, stays on the key. A sale that ended unpaid sends everything, wherever it is: the
+ * CASH still on People when the price moved, the token on Asset Hub when the provider closed the
+ * order, the CASH on Asset Hub when the PSM tier's exit could not pay the promise. The exchange is
+ * held to the bound the sale itself went out under.
  */
 async function sendHome(record, kind) {
   const sale = recordedRoute(record);
@@ -934,6 +942,7 @@ async function sendHome(record, kind) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   let held;
   let route;
+  let terms = null;
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     const readKey = (assetHubId, what) =>
@@ -970,25 +979,31 @@ async function sendHome(record, kind) {
       if (settled !== held) {
         throw new Error("waiting for the payment to be final before the residue goes home");
       }
-      if (held < residueReturnFloor(token)) {
-        record.residue = { amount: held.toString(), returning: false };
-        return;
-      }
     }
     // Only a sale that ended unpaid can have its CASH still on the key: a paid one has redeemed
     // it, and what the redeem left is dust.
     const cash =
       kind === "whole" ? await readKey(TOKENS.CASH.assetHubId, "key cash read on asset hub") : 0n;
-    if (kind === "whole" && !(await keyHoldsAnything(record, held, token, cash))) {
-      // A sale that failed before anything reached its key: no way home to start. Not while the
-      // purse may still pay it, or the CASH would land on a key nothing reads again.
-      if (pursePayMayLand(record)) {
-        throw new Error("waiting for the purse's payment window to close");
-      }
-      record.residue = { whole: true, returning: false };
-      return;
+    if (held >= residueReturnFloor(token) || cash >= residueReturnFloor(TOKENS.CASH)) {
+      route = await wayHomeRoute(assetHubApi, sale, held, cash);
+      terms = await sizeWayHome(record, route);
     }
-    route = await wayHomeRoute(assetHubApi, sale, held, cash);
+    if (terms === null) {
+      if (kind === "residue") {
+        record.residue = { amount: held.toString(), returning: false };
+        return;
+      }
+      if (!(await holdsCashOnPeople(record))) {
+        // A sale that failed before anything reached its key: no way home to start. Not while the
+        // purse may still pay it, or the CASH would land on a key nothing reads again.
+        if (pursePayMayLand(record)) {
+          throw new Error("waiting for the purse's payment window to close");
+        }
+        record.residue = { whole: true, returning: false };
+        return;
+      }
+      route ??= await wayHomeRoute(assetHubApi, sale, held, cash);
+    }
   } finally {
     client.destroy();
   }
@@ -1000,6 +1015,7 @@ async function sendHome(record, kind) {
     returning: true,
     sessionId: residueSessionId(record),
     route,
+    ...(terms === null ? {} : { terms }),
   };
   await saveJobs();
   await startWayHome(record);
@@ -1031,6 +1047,60 @@ async function wayHomeRoute(assetHubApi, sale, held, cash) {
   );
 }
 
+/**
+ * The terms of the funding job that carries home, on `route`, what a key holds to convert on Asset
+ * Hub: its target and the figures its gate reads, for the balance the pipeline will read. Null
+ * when that balance has nothing to convert: it is empty, or its fees would take it. Throws while
+ * the pool cannot price it or a read fails, and the next pass sizes it again.
+ */
+async function sizeWayHome(record, route) {
+  const assetHub = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    const people = await connectChain(record.peopleGenesis, "people");
+    try {
+      const [deposit, onPeople] = await Promise.all([
+        bounded(
+          readDeposit(assetHub.getTypedApi(paseo_next_v2), route, record.keyAddress, "best"),
+          DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+          "way home deposit read",
+        ),
+        cashOnPeople(people, record),
+      ]);
+      // The valuation's fee dry run traps on an empty deposit.
+      if (deposit === 0n) return null;
+      const value = await bounded(
+        quoteDepositValue({
+          ahClient: assetHub,
+          peopleClient: people,
+          underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+          peopleParaId: record.peopleParaId,
+          probeAddress: record.keyAddress,
+          route,
+          deposit,
+          slippagePct: record.slippagePct,
+        }),
+        DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        "way home valuation",
+      );
+      if (value === null) return null;
+      return {
+        // The job is done once People holds its target, so the target counts the CASH already
+        // there: the conversion has to arrive on top of it.
+        settleAmount: (onPeople + value.receive).toString(),
+        remoteFeeBuffer: value.remoteFeeBuffer.toString(),
+        keepNativeForFees: value.keepNativeForFees.toString(),
+        ...(value.quotedDeposit === undefined
+          ? {}
+          : { quotedDeposit: value.quotedDeposit.toString() }),
+      };
+    } finally {
+      people.destroy();
+    }
+  } finally {
+    assetHub.destroy();
+  }
+}
+
 /** The purse may still pay a sale's key: no CASH seen yet, and its payment window, with room for a
  *  payment already on its way, is not over. */
 function pursePayMayLand(record, nowMs = Date.now()) {
@@ -1043,7 +1113,7 @@ function pursePayMayLand(record, nowMs = Date.now()) {
 /** Starts, or re-arms, the funding job that carries a sale's key home. Throws when it is refused,
  *  and the next pass tries again. */
 async function startWayHome(record) {
-  const started = await startFunding(wayHomeParams(record, record.residue.route ?? {}));
+  const started = await startFunding(wayHomeParams(record));
   if (started?.error) throw new Error(started.reason ?? started.error);
 }
 
@@ -1099,19 +1169,21 @@ async function swapRefund(record, nowMs = Date.now()) {
   return "pending";
 }
 
-/** The funding job that carries a sale's key home: a job on the key through `route`, held to the
- *  bound the sale itself went out under, claimed under ids far past the purse's payments to the
- *  key. A way home from before the route was recorded is a pool one, which is what it was. */
-const wayHomeParams = (record, route) => ({
+/** The funding job that carries a sale's key home: a job on the key through the route its way
+ *  home recorded, on `terms`, held to the bound the sale itself went out under, claimed under ids
+ *  far past the purse's payments to the key. A way home from before the route was recorded is a
+ *  pool one, which is what it was. */
+const wayHomeParams = (record, terms = record.residue.terms) => ({
   sessionId: residueSessionId(record),
   label: record.label,
   burnerAddress: record.keyAddress,
   settleAmount: RESIDUE_SETTLE_AMOUNT,
+  ...terms,
   underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
   peopleParaId: record.peopleParaId,
   assetHubGenesis: record.assetHubGenesis,
   peopleGenesis: record.peopleGenesis,
-  ...recordedRoute(route),
+  ...recordedRoute(record.residue.route ?? {}),
   quoteFloorPct: record.slippagePct,
   claimIdOffset: RESIDUE_CLAIM_ID_OFFSET,
   // Told apart from a top-up: a trap on the way home fails the job instead of asking anyone
@@ -1122,8 +1194,12 @@ const wayHomeParams = (record, route) => ({
 /**
  * Follows a key's way home once it is on the job: notes when its funding job has claimed the
  * funds, starts that job when it never started (the start was refused, or the worker stopped
- * first), and starts it again when it failed, up to RETURN_REARMS times. Past that, or at once
- * when the program trapped the CASH on People, the residue is marked stuck, for a person.
+ * first), sizes it again while it waits for a deposit its gate does not take, so its target
+ * follows the price until the conversion is sent, and starts it again when it failed, up to
+ * RETURN_REARMS times. Past that, or at once when the program trapped the CASH on People, the
+ * residue is marked stuck, for a person. A key found with nothing left to convert has its job
+ * claim the CASH it holds on People; with none there either the job is cancelled and the way home
+ * ends, not returning.
  */
 async function keepWayHome(record) {
   const residue = record.residue;
@@ -1134,6 +1210,22 @@ async function keepWayHome(record) {
   }
   if (job?.known === false) {
     await startWayHome(record);
+    return;
+  }
+  if (job?.phase === "await-native" && residue.terms !== undefined) {
+    const terms = await sizeWayHome(record, residue.route);
+    if (terms === null && !(await holdsCashOnPeople(record))) {
+      // A job that would not be cancelled is no longer waiting for its deposit: it is followed on.
+      const cancelled = await cancelFunding({ sessionId: residue.sessionId });
+      if (cancelled?.phase === "failed") record.residue = { ...residue, returning: false };
+      return;
+    }
+    // A refusal is a job no longer waiting for its deposit: it keeps the terms it had.
+    const amended = await amendFunding(wayHomeParams(record, terms ?? {}));
+    if (!amended?.error) {
+      const { terms: _replaced, ...rest } = residue;
+      record.residue = terms === null ? rest : { ...rest, terms };
+    }
     return;
   }
   if (job?.phase !== "failed") return;

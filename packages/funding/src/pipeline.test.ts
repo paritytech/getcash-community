@@ -2,6 +2,7 @@
 // on every tier, pool discovery, the quote headroom, the deposit sizing, the dispatch-error
 // decoder, and the manual rail.
 
+import { isDeepStrictEqual } from "node:util";
 import { TOKENS } from "@getsome/core";
 import { AccountId, InvalidTxError, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
@@ -137,6 +138,13 @@ const UNDERLYING_LOC = {
     ],
   },
 };
+
+/** The pool table as the chain reads it: a pool is found under its exact key and no other. A pool
+ *  reads as its lp token id, which is 0 for the first one. */
+const poolTable = (keys: unknown[]) => ({
+  getValues: async (asked: unknown[][]) =>
+    asked.map(([key]) => (keys.some((held) => isDeepStrictEqual(held, key)) ? 0 : undefined)),
+});
 
 describe("decideStep", () => {
   const targets = { settleAmount: SETTLE, depositNeeded: QUOTED + KEEP };
@@ -637,7 +645,7 @@ function scriptedWorld(
   const api = {
     query: {
       AssetConversion: {
-        Pools: { getEntries: async () => [{ keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] }] },
+        Pools: poolTable([[NATIVE_LOC, UNDERLYING_LOC]]),
       },
       System: {
         Number: chain.Number,
@@ -670,7 +678,7 @@ function scriptedWorld(
           if (!opts.quoteAfterXcm && state.xcmLanded) {
             throw new Error("quote called after the XCM; should be lazy");
           }
-          return giveLoc === NATIVE_LOC ? nativeFor(out) : (out * BUY) / QUOTED;
+          return isNativeLoc(giveLoc) ? nativeFor(out) : (out * BUY) / QUOTED;
         },
         // What `nativeIn` buys, at the same rate.
         quote_price_exact_tokens_for_tokens: async (_a: unknown, _b: unknown, nativeIn: bigint) =>
@@ -887,7 +895,7 @@ function scriptedPsmWorld(
     query: {
       AssetConversion: {
         Pools: {
-          getEntries: async () => {
+          getValues: async () => {
             throw new Error("pool discovery on the psm tier");
           },
         },
@@ -1147,12 +1155,10 @@ function scriptedStableWorld(
   const api = {
     query: {
       AssetConversion: {
-        Pools: {
-          getEntries: async () => [
-            { keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] },
-            { keyArgs: [[NATIVE_LOC, token.location]] },
-          ],
-        },
+        Pools: poolTable([
+          [NATIVE_LOC, UNDERLYING_LOC],
+          [NATIVE_LOC, token.location],
+        ]),
       },
       System: {
         Number: chain.Number,
@@ -3462,68 +3468,32 @@ describe("quoteNativeInMax", () => {
 });
 
 describe("discoverPool", () => {
-  const apiWith = (entries: unknown[]) =>
-    ({ query: { AssetConversion: { Pools: { getEntries: async () => entries } } } }) as never;
+  const apiWith = (keys: unknown[]) =>
+    ({ query: { AssetConversion: { Pools: poolTable(keys) } } }) as never;
+  /** The underlying's GeneralIndex under a location that is not the underlying's. */
+  const lookalike = {
+    parents: 1,
+    interior: {
+      type: "X3",
+      value: [{ type: "Parachain", value: 2000 }, ...UNDERLYING_LOC.interior.value],
+    },
+  };
 
-  it("finds the pool from either key order", async () => {
-    const flipped = await discoverPool(
-      apiWith([{ keyArgs: [[UNDERLYING_LOC, NATIVE_LOC]] }]),
+  it("reads the pool under its exact key and returns those locations", async () => {
+    const pool = await discoverPool(
+      apiWith([
+        [NATIVE_LOC, lookalike],
+        [NATIVE_LOC, UNDERLYING_LOC],
+      ]),
       50_000_413,
     );
-    expect(flipped).toEqual({ native: NATIVE_LOC, underlying: UNDERLYING_LOC });
+    expect(pool).toEqual({ native: NATIVE_LOC, underlying: UNDERLYING_LOC });
   });
 
-  it("throws when no pool exists or none pairs the underlying with the native", async () => {
-    await expect(discoverPool(apiWith([]), 50_000_413)).rejects.toThrow(
-      /no native AssetConversion pool/,
+  it("throws when the pool does not exist, whatever else carries its GeneralIndex", async () => {
+    await expect(discoverPool(apiWith([[NATIVE_LOC, lookalike]]), 50_000_413)).rejects.toThrow(
+      /no native AssetConversion pool found for underlying asset 50000413/,
     );
-    // an underlying/underlying pool (counter-side not interior-Here) must not match
-    await expect(
-      discoverPool(apiWith([{ keyArgs: [[UNDERLYING_LOC, UNDERLYING_LOC]] }]), 50_000_413),
-    ).rejects.toThrow(/no native AssetConversion pool/);
-    // a pool for a different GeneralIndex must not match
-    await expect(
-      discoverPool(
-        apiWith([
-          {
-            keyArgs: [
-              [
-                NATIVE_LOC,
-                {
-                  parents: 0,
-                  interior: {
-                    type: "X2",
-                    value: [
-                      { type: "PalletInstance", value: 50 },
-                      { type: "GeneralIndex", value: 999n },
-                    ],
-                  },
-                },
-              ],
-            ],
-          },
-        ]),
-        50_000_413,
-      ),
-    ).rejects.toThrow(/no native AssetConversion pool/);
-  });
-
-  it("matches GeneralIndex regardless of number/bigint decoding", async () => {
-    const numericLoc = {
-      parents: 0,
-      interior: {
-        type: "X2",
-        value: [
-          { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413 }, // number, not bigint
-        ],
-      },
-    };
-    const found = await discoverPool(
-      apiWith([{ keyArgs: [[NATIVE_LOC, numericLoc]] }]),
-      50_000_413,
-    );
-    expect(found.underlying).toBe(numericLoc);
   });
 });
 
