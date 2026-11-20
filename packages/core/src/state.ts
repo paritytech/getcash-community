@@ -13,6 +13,8 @@ export type SourceId =
   | "eth-arbitrum"
   | "usdc-arbitrum"
   | "usdt-arbitrum"
+  | "bnb-bsc"
+  | "usdt-bsc"
   | "sol-solana"
   | "usdc-solana"
   | "usdt-solana"

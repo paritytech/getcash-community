@@ -1,6 +1,8 @@
 // The on-ramp catalog: the direct Polkadot network in front of the Chainflip ones, the Chainflip
 // catalog unchanged for the withdraw side and the floors, and the two source id maps agreeing.
 
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DIRECT_SOURCE_IDS,
@@ -13,6 +15,7 @@ import {
   sourcePairFor,
 } from "~~/lib/config";
 import { isCryptoSourceId } from "~~/app/funding/source-ids";
+import { networkIcon, tokenIcon } from "~~/app/utils/icons";
 import { railProviderOf, routeOf } from "~~/app/funding/requests/model";
 
 describe("the funding catalog", () => {
@@ -33,8 +36,31 @@ describe("the funding catalog", () => {
       "Ethereum",
       "Solana",
       "Tron",
+      "Bsc",
+      "Arbitrum",
     ]);
     expect(SOURCE_CHAINS.some((chain) => (chain.chain as string) === "Polkadot")).toBe(false);
+    // Each network's own coin.
+    expect(SOURCE_CHAINS.map((chain) => chain.native)).toEqual([
+      "BTC",
+      "ETH",
+      "SOL",
+      "TRX",
+      "BNB",
+      "ETH",
+    ]);
+  });
+
+  it("has an icon file of its own for every network and token", () => {
+    const icons = FUNDING_CHAINS.flatMap((chain) => [
+      networkIcon(chain.chain),
+      ...chain.assets.map(tokenIcon),
+    ]);
+    expect(icons).not.toContain("/icons/add-money.svg");
+    for (const icon of new Set(icons)) {
+      const file = fileURLToPath(new URL(`../public${icon}`, import.meta.url));
+      expect(existsSync(file), icon).toBe(true);
+    }
   });
 
   it("maps a pair to its source in either catalog, and back", () => {
@@ -43,11 +69,16 @@ describe("the funding catalog", () => {
     expect(sourceIdFor("Polkadot", "USDT")).toBe("usdt-assethub");
     expect(sourceIdFor("Polkadot", "USDC")).toBe("usdc-assethub");
     expect(sourceIdFor("Ethereum", "USDC")).toBe("usdc-eth");
+    expect(sourceIdFor("Arbitrum", "USDC")).toBe("usdc-arbitrum");
+    expect(sourceIdFor("Bsc", "BNB")).toBe("bnb-bsc");
+    expect(sourceIdFor("Bsc", "USDT")).toBe("usdt-bsc");
+    expect(sourceIdFor("Bsc", "USDC")).toBeUndefined();
     expect(sourceIdFor("Polkadot", "BTC")).toBeUndefined();
     expect(sourcePairFor("usdc-assethub")).toEqual({ chain: "Polkadot", asset: "USDC" });
     expect(sourcePairFor("dotusd-assethub")).toEqual({ chain: "Polkadot", asset: "dotUSD" });
     expect(sourcePairFor("dot-assethub")).toEqual({ chain: "Polkadot", asset: "DOT" });
     expect(sourcePairFor("usdt-tron")).toEqual({ chain: "Tron", asset: "USDT" });
+    expect(sourcePairFor("usdt-bsc")).toEqual({ chain: "Bsc", asset: "USDT" });
     expect(sourcePairFor("meld-card")).toBeUndefined();
   });
 
