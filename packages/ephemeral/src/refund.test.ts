@@ -15,7 +15,7 @@ const SECP256K1_ORDER = hexToBytes(
   "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141",
 );
 
-const CHAINS: RefundChain[] = ["Bitcoin", "Ethereum", "Arbitrum", "Tron", "Solana"];
+const CHAINS: RefundChain[] = ["Bitcoin", "Ethereum", "Arbitrum", "Bsc", "Tron", "Solana"];
 const seeds = [1, 2, 3, 0x7f, 0xfe].map((n) => new Uint8Array(32).fill(n));
 
 describe("deriveRefundKey", () => {
@@ -40,8 +40,11 @@ describe("deriveRefundKey", () => {
     expect(key.format).toBe("hex");
   });
 
-  it("Arbitrum shares the Ethereum address for one seed", () => {
-    expect(deriveRefundKey("Arbitrum", ONE).address).toBe(deriveRefundKey("Ethereum", ONE).address);
+  it("Arbitrum and BNB Chain share the Ethereum address and secret for one seed", () => {
+    const ethereum = deriveRefundKey("Ethereum", ONE);
+    for (const chain of ["Arbitrum", "Bsc"] as const) {
+      expect(deriveRefundKey(chain, ONE)).toEqual({ ...ethereum, chain });
+    }
   });
 
   it("Tron: base58check of 0x41 || the EVM address bytes, bare hex secret", () => {
@@ -69,7 +72,9 @@ describe("deriveRefundKey", () => {
       expect(addresses.size).toBe(seeds.length);
     }
     const oneSeed = new Set(
-      CHAINS.filter((c) => c !== "Arbitrum").map((c) => deriveRefundKey(c, ONE).address),
+      CHAINS.filter((c) => c !== "Arbitrum" && c !== "Bsc").map(
+        (c) => deriveRefundKey(c, ONE).address,
+      ),
     );
     expect(oneSeed.size).toBe(4);
   });

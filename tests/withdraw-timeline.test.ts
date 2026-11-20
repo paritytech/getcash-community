@@ -74,6 +74,7 @@ function record(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
 /** A Chainflip withdrawal to Ethereum, its channel open. */
 function chainflip(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
   return record({
+    ref: requestRefOf("wd:usdc-eth", 3),
     destination: {
       chain: "Ethereum",
       asset: "USDC",
@@ -925,6 +926,26 @@ describe("what a withdrawal delivered", () => {
   it("is the quote's figure, approximate, where a provider pays out its own", () => {
     expect(receivedText(chainflip({ status: sent }))).toBe("≈ 24.44 USDC");
     expect(receivedText(sale({ status: sent }))).toBe("≈ €24.20");
+  });
+
+  it("reads the token off the destination's id, whatever the screens call its network", () => {
+    // BNB Chain is the screens' name for the network Chainflip calls Bsc, and its USDT counts
+    // 18 decimals.
+    const bnbChain = chainflip({
+      ref: requestRefOf("wd:usdt-bsc", 3),
+      status: sent,
+      destination: { ...chainflip().destination, chain: "BNB Chain", asset: "USDT" },
+      handoff: {
+        ...chainflip().handoff,
+        channel: { ...chainflip().handoff.channel!, expectedEgress: "24440000000000000000" },
+      },
+    });
+    expect(receivedText(bnbChain)).toBe("≈ 24.44 USDT");
+    expect(withdrawalJourneyRows(bnbChain, { feesAvailable: false })[0]).toEqual({
+      label: "You'll receive",
+      value: "≈ 24.44 USDT",
+      fees: false,
+    });
   });
 
   it("is unknown before the worker reported it, and the screen keeps what left the balance", () => {

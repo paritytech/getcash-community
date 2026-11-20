@@ -89,6 +89,11 @@ const LEARNED = new Map<SourceId, SourceFloorResult>([
   ["eth", floor("eth", 10n ** 16n, 25n)], // 25 DOT: fine
   ["usdc-eth", { kind: "unavailable", reason: "Quoting is currently unavailable" }],
   ["usdt-eth", floor("usdt-eth", 20_000_000n, 5n)],
+  ["eth-arbitrum", floor("eth-arbitrum", 3_900_000_000_000_000n, 150n)],
+  ["usdc-arbitrum", { kind: "unavailable", reason: "Quoting is currently unavailable" }],
+  ["usdt-arbitrum", floor("usdt-arbitrum", 10_000_000n, 300n)],
+  ["bnb-bsc", floor("bnb-bsc", 2n * 10n ** 16n, 250n)],
+  ["usdt-bsc", floor("usdt-bsc", 10n * 10n ** 18n, 20n)], // 10 USDT in 18 decimals, 20 DOT: fine
   ["sol-solana", floor("sol-solana", 68_000_000n, 200n)],
   ["usdc-solana", floor("usdc-solana", 10_000_000n, 300n)],
   ["usdt-solana", floor("usdt-solana", 10_000_000n, 400n)],
@@ -154,7 +159,7 @@ describe("offers store", () => {
     const offers = useOffersStore();
     sized(session, 100n * DOT);
     expect(swapNetworks(offers).every((n) => n.checking && !n.available)).toBe(true);
-    expect(offers.offeredNetworks).toHaveLength(5); // still worth showing, as pending
+    expect(offers.offeredNetworks).toHaveLength(7); // still worth showing, as pending
     expect(offers.awaitingNetworks).toBe(true);
     expect(offers.paused).toBe(false);
   });
@@ -165,9 +170,11 @@ describe("offers store", () => {
     sized(session, 100n * DOT);
     offers.floors = LEARNED;
 
-    expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot", "Ethereum"]);
+    expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot", "Ethereum", "Bsc"]);
     expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
     expect(offers.offeredTokens("Bitcoin")).toEqual([]);
+    expect(offers.offeredTokens("Arbitrum")).toEqual([]);
+    expect(offers.offeredTokens("Bsc").map((t) => t.asset)).toEqual(["USDT"]);
     expect(offers.paused).toBe(false);
 
     const eth = offers.offeredTokens("Ethereum")[0]!.offer;
@@ -178,6 +185,14 @@ describe("offers store", () => {
     expect(eth.offer.sendBaseUnits).toBe(40_301_507_537_688_443n);
     expect(eth.offer.sendFormatted).toBe("0.040302");
     expect(eth.offer.etaSeconds).toBe(600);
+
+    // USDT on BNB Chain counts in 18 decimals: 100 DOT at 10 USDT per 20 DOT = 50 USDT,
+    // buffered the same way: 50 x 1.0025 / 0.995 = 50.376884..., rounded up at 6 places.
+    const usdt = offers.offeredTokens("Bsc")[0]!.offer;
+    expect(usdt.state).toBe("available");
+    if (usdt.state !== "available") return;
+    expect(usdt.offer.sendBaseUnits).toBe(50_376_884_422_110_552_764n);
+    expect(usdt.offer.sendFormatted).toBe("50.376885");
   });
 
   it("says how small is too small, in CASH", () => {
@@ -215,6 +230,8 @@ describe("offers store", () => {
       "Bitcoin",
       "Ethereum",
       "Solana",
+      "Bsc",
+      "Arbitrum",
     ]);
     expect(offers.offeredTokens("Bitcoin")[0]!.offer).toEqual({ state: "ungated" });
     // Chainflip's own no is still a no.
@@ -280,7 +297,7 @@ describe("offers store", () => {
         .every((t) => t.offer.state === "rail-off"),
     ).toBe(true);
     offers.floors = LEARNED; // whatever Chainflip said, no swap route is pickable
-    expect(offers.networks).toHaveLength(5);
+    expect(offers.networks).toHaveLength(7);
     expect(swapNetworks(offers).every((n) => !n.available && !n.checking)).toBe(true);
     expect(
       swapNetworks(offers)

@@ -95,7 +95,11 @@ const ASSET_HUB_DESTINATIONS: readonly WithdrawDestination[] = Object.freeze([
 
 /** The Chainflip destinations, one per source the on-ramp knows, each checked with the same
  *  validator the on-ramp applies to a refund address on that chain. */
-function chainflipDestinations(chain: string, assets: readonly string[]): ProviderDestination[] {
+function chainflipDestinations(
+  chain: string,
+  label: string,
+  assets: readonly string[],
+): ProviderDestination[] {
   return assets.flatMap((asset) => {
     const sourceId = sourceIdFor(chain, asset);
     const config = sourceId === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(sourceId);
@@ -104,7 +108,7 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Provid
       Object.freeze({
         id: config.sourceId,
         chain,
-        chainLabel: chain,
+        chainLabel: label,
         asset,
         rail: "chainflip" as const,
         validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
@@ -126,7 +130,7 @@ export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([
       chain,
       label,
       icon: networkIcon(chain),
-      destinations: Object.freeze(chainflipDestinations(chain, assets)),
+      destinations: Object.freeze(chainflipDestinations(chain, label, assets)),
     }),
   ),
 ]);

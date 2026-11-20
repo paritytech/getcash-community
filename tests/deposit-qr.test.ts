@@ -24,6 +24,14 @@ describe("depositQrValue", () => {
     expect(exact("usdt-tron", "TDeposit", "250000000")).toBe("TDeposit");
   });
 
+  it("keeps the bare address on Arbitrum and BNB Chain, whose URI a common wallet misreads", () => {
+    expect(exact("eth-arbitrum", "0xabc", "10000000000000000")).toBe("0xabc");
+    expect(exact("usdc-arbitrum", "0xabc", "25500000")).toBe("0xabc");
+    expect(exact("usdt-arbitrum", "0xabc", "25500000")).toBe("0xabc");
+    expect(exact("bnb-bsc", "0xabc", "50000000000000000")).toBe("0xabc");
+    expect(exact("usdt-bsc", "0xabc", "25500000000000000000")).toBe("0xabc");
+  });
+
   it("keeps the bare address when the figure is only an estimate", () => {
     expect(
       depositQrValue({ sourceId: "btc", address: "bc1q", amount: "250000", exact: false }),
