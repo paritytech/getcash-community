@@ -67,8 +67,11 @@ vi.mock("../lib/host-chain", () => ({
   }),
 }));
 
-/** Chainflip, answering per destination asset and Asset Hub source from a script. */
-const script: { quote: (asset: string, amount: string, from: string) => unknown } = {
+/** Chainflip, answering per destination asset, Asset Hub source and destination chain from a
+ *  script. */
+const script: {
+  quote: (asset: string, amount: string, from: string, chain: string) => unknown;
+} = {
   quote: () => ({}),
 };
 const asked: { asset: string; from: string; amount: string }[] = [];
@@ -78,7 +81,7 @@ vi.mock("../lib/chainflip-backend", () => ({
   mainnetSdk: async (): Promise<SwapSdkLike> => ({
     getQuoteV2: async (args) => {
       asked.push({ asset: args.destAsset, from: args.srcAsset, amount: args.amount });
-      const quote = script.quote(args.destAsset, args.amount, args.srcAsset);
+      const quote = script.quote(args.destAsset, args.amount, args.srcAsset, args.destChain);
       if (quote instanceof Error) throw quote;
       return { quotes: [quote] };
     },
@@ -242,6 +245,37 @@ describe("quoting the provider destinations for an amount", () => {
     });
     // A quote naming no fees offers no split; the summary keeps its plain caption.
     expect(offers.get("btc")).not.toHaveProperty("fees");
+  });
+
+  it("prices a fee in the token sold by the quote's rate, when the destination shares its name", async () => {
+    reset([PSM, POOL]);
+    // USDT sold from Asset Hub, six decimals, for USDT on BNB Chain, eighteen. One for one, so
+    // the 0.015524 USDT taken on Asset Hub is the same figure on BNB Chain.
+    script.quote = (asset, amount, _from, chain) =>
+      chain === "Bsc" && asset === "USDT"
+        ? {
+            type: "REGULAR",
+            egressAmount: `${amount}000000000000`,
+            estimatedDurationSeconds: 600,
+            depositAmount: amount,
+            includedFees: [
+              { chain: "Assethub", asset: "USDT", amount: "15524", type: "INGRESS" },
+              { chain: "Bsc", asset: "USDT", amount: "6141000000000000", type: "EGRESS" },
+            ],
+          }
+        : { type: "REGULAR", egressAmount: "123456", estimatedDurationSeconds: null };
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
+    expect(offers.get("usdt-bsc")).toMatchObject({
+      state: "available",
+      formatted: "49.177875 USDT",
+      fees: {
+        // 0.015524 and 0.006141, at the cents every stable's fees read in.
+        rows: [{ label: "Network fee", value: "0.03 USDT" }],
+        total: "0.03 USDT",
+        equivalent: "≈ 49.19954 USDT",
+        receive: "49.177875 USDT",
+      },
+    });
   });
 
   it("states what lands the same way on the summary and in the fee drill-in", async () => {

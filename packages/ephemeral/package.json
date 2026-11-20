@@ -21,9 +21,9 @@
     "polkadot-api": "2.2.2"
   },
   "devDependencies": {
-    "@chainflip/bitcoin": "2.2.0",
-    "@chainflip/solana": "2.2.5",
-    "@chainflip/utils": "2.2.0",
+    "@chainflip/bitcoin": "2.3.1",
+    "@chainflip/solana": "2.3.1",
+    "@chainflip/utils": "2.3.3",
     "@getsome/chainflip": "workspace:*"
   }
 }

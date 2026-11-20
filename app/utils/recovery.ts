@@ -4,11 +4,13 @@
 import type { RefundProgress } from "@getsome/core";
 import type { RefundChain, RefundKey } from "@getsome/ephemeral";
 import { shortAddress } from "./address";
+import { chainLabel } from "~~/lib/config";
 
 const NATIVE_COIN: Record<RefundChain, string> = {
   Bitcoin: "BTC",
   Ethereum: "ETH",
   Arbitrum: "ETH",
+  Bsc: "BNB",
   Tron: "TRX",
   Solana: "SOL",
 };
@@ -34,17 +36,18 @@ export function recoveryNotes(
 ): RecoveryNotes {
   const native = NATIVE_COIN[chain];
   const gas = SUGGESTED_GAS[chain];
+  const network = chainLabel(chain);
   return {
     secretLabel:
       format === "wif" ? "Private key (WIF)" : format === "base58" ? "Secret key" : "Private key",
     gasNote:
       native === asset
         ? null
-        : `${asset} on ${chain} can't move without ${native}. Send a small amount to this ` +
+        : `${asset} on ${network} can't move without ${native}. Send a small amount to this ` +
           `address first${gas ? `, around ${gas} is enough` : ""}. If you don't have ${native}, ` +
           `you can buy it on any exchange.`,
-    importNote: `Import this key into any wallet that supports ${chain}.`,
-    transferNote: `Transfer your ${asset} to any ${chain} address you control`,
+    importNote: `Import this key into any wallet that supports ${network}.`,
+    transferNote: `Transfer your ${asset} to any ${network} address you control`,
   };
 }
 

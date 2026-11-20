@@ -16,6 +16,7 @@ import { useSessionStore } from "../../stores/session";
 import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
 import RecoveryGuide, { type RecoveryStep } from "../ui/RecoveryGuide.vue";
+import { chainLabel } from "~~/lib/config";
 import { devLog } from "~~/lib/log";
 
 const props = defineProps<{
@@ -70,6 +71,8 @@ const chain = computed(() => {
   const c = source.value?.chain;
   return c !== undefined && isRefundChain(c) ? c : null;
 });
+/** The chain as the screen names it. */
+const network = computed(() => (chain.value === null ? "" : chainLabel(chain.value)));
 
 /**
  * "50 USDT" once the poll has sized the refund, the bare ticker before that.
@@ -152,7 +155,7 @@ const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
     title="Refund info"
     :steps="steps"
     :address="address"
-    :address-label="`Address on ${chain}`"
+    :address-label="`Address on ${network}`"
     :secret-label="notes.secretLabel"
     :secret="secret"
     :masked="masked"
