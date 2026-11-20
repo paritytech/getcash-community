@@ -62,6 +62,7 @@ const OVERHEAD = DISPATCH + PAYFEES;
 const KEEP = OVERHEAD;
 /** An over-funded burner. */
 const FUND = QUOTED + MAX_IN + KEEP;
+const EXISTENTIAL_DEPOSIT = 100_000n;
 const EARMARK = destinationEarmark(BUY, BUFFER);
 const SIGN_OPTIONS = { at: "0xbest" };
 const ASSET_HUB_PARA = 1500;
@@ -167,6 +168,8 @@ const exchangeOf = (args: ExecuteArgs) =>
     want: Fungible[];
     maximal: boolean;
   };
+const withdrawOf = (args: ExecuteArgs) =>
+  (instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value;
 type Transfer = { remote_fees: { value: { value: Fungible[] } }; remote_xcm: Instruction[] };
 const transferOf = (args: ExecuteArgs) => instruction(args, "InitiateTransfer") as Transfer;
 
@@ -507,6 +510,10 @@ function scriptedWorld(
      *  10_000 is the rate the deposit was sized at, 10_300 is 3% dearer. */
     priceBps: 10_000n,
     nativeAh: 0n,
+    /** Consumer references on the burner: with any, the runtime keeps the existential deposit. */
+    consumers: 0,
+    /** The same at inclusion, when it differs from what the reads and the dry runs saw. */
+    consumersAtSubmit: undefined as number | undefined,
     underlyingPeople: 0n,
     inFlight: 0n,
     arrivalIn: 0, // best People reads remaining until the in-flight amount credits
@@ -537,6 +544,8 @@ function scriptedWorld(
   /** Underlying `nativeIn` buys at the current price. */
   const underlyingFor = (nativeIn: bigint) =>
     (((nativeIn * BUY) / QUOTED) * 10_000n) / state.priceBps;
+  const mayWithdraw = (withdraw: bigint, fee: bigint, consumers: number) =>
+    consumers === 0 || state.nativeAh - fee - withdraw >= EXISTENTIAL_DEPOSIT;
   // The program as a dry run sees it: at the current price, without the debit, and without the
   // scripted rejection or the price move at inclusion, which only the real submit meets. A dry
   // run at a block that does not hold the deposit cannot withdraw it, as on the chain.
@@ -554,6 +563,9 @@ function scriptedWorld(
     });
     if (opts.assetHubDryRunError) return rejected(3, opts.assetHubDryRunError);
     if (at !== "best" && state.unfinalCredit > 0n) return rejected(0, "FailedToTransactAsset");
+    if (!mayWithdraw(withdrawOf(args), 0n, state.consumers)) {
+      return rejected(0, "FailedToTransactAsset");
+    }
     const out = underlyingFor(give);
     if (out < want) return rejected(2, "NoDeal");
     return {
@@ -582,7 +594,7 @@ function scriptedWorld(
       const watch: WatchLog = { open: false, finalityReported: false };
       state.txs.push({ call: "swap", args, options, watch });
       const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
-      const withdraw = (instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value;
+      const withdraw = withdrawOf(args);
       const exchange = exchangeOf(args);
       const give = exchange.give.value[0]!.fun.value;
       const want = exchange.want[0]!.fun.value;
@@ -592,6 +604,10 @@ function scriptedWorld(
           rejectLeft -= 1;
           state.nativeAh -= DISPATCH;
           return { ok: false, dispatchError: incomplete(3, "FeesNotMet") };
+        }
+        if (!mayWithdraw(withdraw, DISPATCH, state.consumersAtSubmit ?? state.consumers)) {
+          state.nativeAh -= DISPATCH;
+          return { ok: false, dispatchError: incomplete(0, "FailedToTransactAsset") };
         }
         if (state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
         const out = underlyingFor(give);
@@ -651,11 +667,17 @@ function scriptedWorld(
             const unfinal =
               options?.at === "finalized" ? state.unfinalDebit - state.unfinalCredit : 0n;
             const free = state.nativeAh + unfinal;
-            return { data: { free }, nonce: chain.nonce.latest };
+            return {
+              nonce: chain.nonce.latest,
+              consumers: state.consumers,
+              providers: free > 0n ? 1 : 0,
+              data: { free, reserved: 0n, frozen: 0n },
+            };
           },
         },
       },
     },
+    constants: { Balances: { ExistentialDeposit: async () => EXISTENTIAL_DEPOSIT } },
     apis: {
       AccountNonceApi: chain.AccountNonceApi,
       AssetConversionApi: {
@@ -1618,6 +1640,40 @@ describe("tickOnce", () => {
     expect(retry.steps).toEqual(["swap"]);
     expect(state.xcmSubmitted).toBe(true);
     expect(world.state.nativeAh).toBe(0n);
+  });
+
+  it("converts a burner the chain will not close, and leaves the existential deposit on it", async () => {
+    const world = scriptedWorld({ arrivalAfterReads: 1 });
+    world.state.nativeAh = MAX_IN + KEEP + EXISTENTIAL_DEPOSIT;
+    world.state.consumers = 1;
+    const run = await drive(world, 3);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(withdrawOf(world.state.txs[0]!.args)).toBe(MAX_IN + KEEP - DISPATCH);
+    expect(world.state.nativeAh).toBe(EXISTENTIAL_DEPOSIT);
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+    expect(run.transients).toEqual([]);
+  });
+
+  it("leaves the existential deposit once the chain refused the withdrawal, whatever the burner shows", async () => {
+    // The reference is taken after the tick's read and its dry run, and is gone again by the next
+    // read: every read shows a burner the program may empty, and the chain will not close it.
+    const world = scriptedWorld({ arrivalAfterReads: 1 });
+    world.state.nativeAh = ASK + KEEP;
+    world.state.consumersAtSubmit = 1;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(
+      /funding program dispatch rejected: WithdrawAsset failed with FailedToTransactAsset/,
+    );
+    expect(withdrawOf(world.state.txs[0]!.args)).toBe(ASK + KEEP - DISPATCH);
+    expect(state.rejections).toBe(1);
+
+    const retry = await drive(world, 2, state);
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(withdrawOf(world.state.txs[1]!.args)).toBe(
+      ASK + KEEP - DISPATCH - EXISTENTIAL_DEPOSIT - DISPATCH,
+    );
+    expect(world.state.nativeAh).toBe(EXISTENTIAL_DEPOSIT);
   });
 });
 

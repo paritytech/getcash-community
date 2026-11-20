@@ -11,6 +11,7 @@ import { bestBlockWatch } from "@getsome/testing";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   estimateDirectFeesCash,
+  readKeyOnPeople,
   SWAP_HEADROOM_PCT,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
@@ -185,6 +186,8 @@ function scriptedWorld(
   const state = {
     keyCash: KEY_CASH,
     keyPas: 0n,
+    /** Consumer references on the key: with any, the chain keeps the existential deposit on it. */
+    keyConsumers: 0,
     dustLost: 0n,
     submits: [] as Submit[],
     dryRuns: 0,
@@ -226,6 +229,13 @@ function scriptedWorld(
     (message.value[1]!.value as { asset: Fungible }).asset.fun.value;
   const withdrawnOf = (message: Message) => message.value[0]!.value as Fungible[];
   const assetsCount = (message: Message) => (message.value[2]!.value as Fungible[]).length;
+  const withdrawable = (message: Message) => {
+    const [pasWithdrawn, cashWithdrawn] = withdrawnOf(message);
+    const pasLeft = state.keyPas - pasWithdrawn!.fun.value;
+    return (
+      pasLeft >= (state.keyConsumers > 0 ? ED : 0n) && cashWithdrawn!.fun.value <= state.keyCash
+    );
+  };
 
   /** What People forwards for an XCM whose allowance leaves `pasLeft`. */
   function forwardedFor(message: Message): Message {
@@ -313,8 +323,7 @@ function scriptedWorld(
         }
         state.keyPas -= XCM_TX_FEE_PAS;
         const [pasWithdrawn, cashWithdrawn] = withdrawnOf(args.message);
-        const short =
-          pasWithdrawn!.fun.value > state.keyPas || cashWithdrawn!.fun.value > state.keyCash;
+        const short = !withdrawable(args.message);
         if (short || opts.rejectXcm) {
           return {
             ok: false,
@@ -351,9 +360,15 @@ function scriptedWorld(
     query: {
       System: {
         Account: {
-          getValue: async (who: string) => ({
-            data: { free: who === PASEO_PEOPLE_POOL_ACCOUNT ? RESERVES.pas : state.keyPas },
-          }),
+          getValue: async (who: string) => {
+            const pool = who === PASEO_PEOPLE_POOL_ACCOUNT;
+            const free = pool ? RESERVES.pas : state.keyPas;
+            return {
+              consumers: pool ? 0 : state.keyConsumers,
+              providers: free > 0n ? 1 : 0,
+              data: { free, reserved: 0n, frozen: 0n },
+            };
+          },
         },
         Number: {
           getValue: async ({ at }: { at: string }) =>
@@ -371,8 +386,13 @@ function scriptedWorld(
       },
       Assets: {
         Account: {
-          getValue: async (_asset: unknown, who: string) => ({
-            balance: who === PASEO_PEOPLE_POOL_ACCOUNT ? RESERVES.cash : state.keyCash,
+          getValue: async (_asset: unknown, who: string, { at }: { at: string }) => ({
+            balance:
+              who === PASEO_PEOPLE_POOL_ACCOUNT
+                ? RESERVES.cash
+                : at === "finalized"
+                  ? (state.keyCashFinalized ?? state.keyCash)
+                  : state.keyCash,
           }),
         },
       },
@@ -394,8 +414,7 @@ function scriptedWorld(
         dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) => {
           state.dryRuns += 1;
           const message = call.value.value.message;
-          const [pasWithdrawn, cashWithdrawn] = withdrawnOf(message);
-          if (pasWithdrawn!.fun.value > state.keyPas || cashWithdrawn!.fun.value > state.keyCash) {
+          if (!withdrawable(message)) {
             return rejectedExecution(incomplete(0, "FailedToTransactAsset"));
           }
           const forwarded = forwardedFor(message);
@@ -658,13 +677,7 @@ async function drive(
         transfer: "teleport",
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
-        readKeyOnPeople: async (_ss58, at) => ({
-          cash:
-            at === "finalized"
-              ? (world.state.keyCashFinalized ?? world.state.keyCash)
-              : world.state.keyCash,
-          pas: world.state.keyPas,
-        }),
+        readKeyOnPeople: (ss58, at) => readKeyOnPeople(world.peopleApi as never, ss58, at),
         readKeyOnAssetHub: world.readKeyOnAssetHub,
         readDestinationOnAssetHub: world.readDestinationOnAssetHub,
         assetHubAnchor: async () => ({
@@ -1633,10 +1646,25 @@ describe("withdrawTickOnce", () => {
     world.state.keyPas = ED;
     const run = await drive(world, 3);
     expect(run.steps).toEqual(["swap", "convert", "done"]);
-    expect(run.transients[0]).toMatch(/the key holds .* PAS and the XCM needs/);
+    expect(run.transients[0]).toMatch(/the key can send .* PAS and the XCM needs/);
     expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
     expect(world.state.keyCash).toBe(0n);
     expect(world.state.keyPas).toBe(0n);
+  });
+
+  it("swaps once more for a key the chain will not close, and leaves the existential deposit on it", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state);
+    world.state.keyConsumers = 1;
+    const run = await drive(world, 3, state);
+    expect(run.steps).toEqual(["swap", "convert", "done"]);
+    expect(run.transients[0]).toMatch(/the key can send .* PAS and the XCM needs/);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "swap", "execute"]);
+    expect(world.state.keyCash).toBe(0n);
+    // The second swap's deposit travels with the XCM; the first's stays, with the unspent fee.
+    expect(sentXcm(world).pasTravelling).toBe(ED + RESERVE - LOCAL - DELIVERY[2]);
+    expect(world.state.keyPas).toBe(ED + RESERVE - XCM_TX_FEE_PAS);
   });
 
   it("names the failing instruction on a rejected XCM, retries with fresh sizing, and gives up after the cap", async () => {
@@ -1673,6 +1701,20 @@ describe("withdrawTickOnce", () => {
     const later = await drive(world, 2, state);
     expect(later.steps).toEqual(["await-arrival", "done"]);
     expect(state.submitted).toBe(true);
+  });
+
+  it("finishes when the XCM's answer was lost and the chain kept the key open: its CASH gone, the existential deposit still on it", async () => {
+    const world = scriptedWorld({ loseXcmAnswer: true });
+    world.state.keyPas = ED;
+    world.state.keyConsumers = 1;
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state);
+    await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+    expect(world.state.keyCash).toBe(0n);
+    expect(world.state.keyPas).toBe(ED + RESERVE - XCM_TX_FEE_PAS);
+    const later = await drive(world, 2, state);
+    expect(later.steps).toEqual(["await-arrival", "done"]);
   });
 
   it("does not take an empty key for a landed XCM when none was signed: a best block that dropped the payment", async () => {

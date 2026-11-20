@@ -15,6 +15,7 @@ export {
   estimateDirectFeesCash,
   NeedsSwapError,
   priceSale,
+  readKeyOnPeople,
   readPoolReserves,
   redeemAmountOf,
   sizeSwap,
@@ -81,7 +82,7 @@ export type {
   RailLegState,
   RailStep,
 } from "./rail-leg";
-export { buildSweep, freshSweepState, sweepOnce } from "./sweep";
+export { buildSweep, freshSweepState, readUnswept, sweepOnce } from "./sweep";
 export type { SweepInput, SweepState } from "./sweep";
 export {
   exactPaymentFloor,

@@ -222,12 +222,12 @@ describe("the worker's rail leg", () => {
       expect.objectContaining({ sessionId: "s-1" }),
       seen,
       expect.any(Function),
-      { unknownStands: true },
+      { unknownStands: true, readKey: expect.any(Function) },
     );
     // The sweep's effect: one was sent, and the key holds none of the token.
-    const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (key: object) => boolean;
-    expect(shows({ nonce: 0, free: 0n })).toBe(true);
-    expect(shows({ nonce: 0, free: 1n })).toBe(false);
+    const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (unswept: bigint) => boolean;
+    expect(shows(0n)).toBe(true);
+    expect(shows(1n)).toBe(false);
     expect(mocks.submits).toHaveLength(1);
     expect(storedJob()).toMatchObject({ phase: "follow", leg: { paid: true, sweep: { seen } } });
 

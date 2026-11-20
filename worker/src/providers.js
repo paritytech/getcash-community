@@ -22,7 +22,7 @@ import {
   finalizedChainOf,
   payExactOnce,
   readAssetHubAccount,
-  readDestinationBalance,
+  readUnswept,
   settleBlock,
   sweepOnce,
 } from "@getsome/withdraw";
@@ -253,11 +253,17 @@ export async function exactPaymentOut(record, amount, exact) {
  * is not past that block, or while the payment shows only at the best head; "gone" when it shows
  * nowhere, and the key pays again. A block that was replaced, or one too old for the chain to
  * name, says nothing of the payment itself, which usually landed in the block that took its
- * place: `shows(key)` reads its effect on the key, its balance in the sale's token and its nonce.
- * With `unknownStands`, a block too old to name stands without that read: a sweep empties the key
- * and a swap's refund can fill it again, so the key could not tell a sweep never left.
+ * place: `shows(key)` reads its effect on the key as `readKey` returns it, by default its balance
+ * in the sale's token and its nonce. With `unknownStands`, a block too old to name stands without
+ * that read: a sweep empties the key and a swap's refund can fill it again, so the key could not
+ * tell a sweep never left.
  */
-export async function paymentOutcome(record, seen, shows, { unknownStands = false } = {}) {
+export async function paymentOutcome(
+  record,
+  seen,
+  shows,
+  { unknownStands = false, readKey = readAssetHubAccount } = {},
+) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -271,7 +277,7 @@ export async function paymentOutcome(record, seen, shows, { unknownStands = fals
     const token = depositTokenOf(recordedRoute(record));
     const read = (at) =>
       bounded(
-        readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token, { at }),
+        readKey(assetHubApi, record.keyPublicKeyHex, token, { at }),
         DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         `key read on asset hub (${at})`,
       );
@@ -307,8 +313,7 @@ export async function payRail(record, handoff, sweep, hooks = {}) {
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
         signOptions: { ...feeOptions, ...(await signOptionsFor(client)) },
-        readKeyOnAssetHub: () =>
-          readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId),
+        readKeyOnAssetHub: () => readUnswept(assetHubApi, record.keyPublicKeyHex, token),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },

@@ -113,6 +113,7 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
       Assets: { Account: { getValue: async () => ({ balance: 0n }) } },
       System: { Account: { getValue: async () => ({ data: { free: 0n } }) } },
     },
+    constants: { Balances: { ExistentialDeposit: async () => 1_000_000_000n } },
   };
   return {
     ...actual,
