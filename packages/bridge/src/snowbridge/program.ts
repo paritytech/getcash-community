@@ -8,10 +8,8 @@
 // TODO: add the program for a token sent as itself (USDT, USDC) once a forwarder and a relayer
 // carry it.
 
+import { ASSET_HUB, HYDRATION, sibling } from "./chain";
 import type { XcmInstruction, XcmValue } from "./codec";
-
-const ASSET_HUB = 1000;
-const HYDRATION = 2034;
 
 /** Ethereum as the Polkadot chains name it. */
 export const ETHEREUM = {
@@ -34,11 +32,6 @@ const USDT_ON_HYDRATION = {
     ],
   },
 };
-
-const parachain = (id: number) => ({
-  parents: 1,
-  interior: { type: "X1", value: { type: "Parachain", value: id } },
-});
 
 const fungible = (id: unknown, amount: bigint) => ({
   id,
@@ -86,7 +79,7 @@ const depositOnAssetHub = (account: string): XcmInstruction[] => [
 const backToAssetHub = (asset: unknown, fee: bigint, account: string): XcmInstruction => ({
   type: "InitiateTransfer",
   value: {
-    destination: parachain(ASSET_HUB),
+    destination: sibling(ASSET_HUB),
     remote_fees: {
       type: "ReserveWithdraw",
       value: { type: "Definite", value: [fungible(asset, fee)] },
@@ -135,7 +128,7 @@ export function snowbridgeProgram(input: SnowbridgeProgramInput): XcmInstruction
     {
       type: "InitiateTransfer",
       value: {
-        destination: parachain(HYDRATION),
+        destination: sibling(HYDRATION),
         remote_fees: {
           type: "ReserveDeposit",
           value: { type: "Definite", value: [fungible(ETHER, input.hydrationFeeEther)] },

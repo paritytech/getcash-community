@@ -31,6 +31,12 @@ export type {
   BridgeRoute,
   DeclinedRoute,
 } from "./route";
+export { sizeSnowbridgeTopUp } from "./snowbridge/amounts";
+export type { SnowbridgeCosts, SnowbridgeSizing } from "./snowbridge/amounts";
+export { chainReader, dryRunXcm, SnowbridgeReadError } from "./snowbridge/chain";
+export type { ChainEvent, ChainReader, UntypedApi, XcmDryRun } from "./snowbridge/chain";
+export { readSnowbridgeCosts } from "./snowbridge/costs";
+export type { SnowbridgeChains, SnowbridgeTrial } from "./snowbridge/costs";
 export { decodeXcm, encodeXcm } from "./snowbridge/codec";
 export type { XcmInstruction, XcmValue } from "./snowbridge/codec";
 export { ETHER, ETHEREUM, snowbridgeProgram } from "./snowbridge/program";
