@@ -1,6 +1,18 @@
+export {
+  abiAddress,
+  abiBytes,
+  abiBytesList,
+  abiUint,
+  abiWord,
+  addressBytes,
+  encodeCall,
+  selector,
+  wordAt,
+} from "./evm-abi";
+export type { AbiArgument } from "./evm-abi";
 export { createEvmRpc, EvmRpcError, EvmRpcUnreachable } from "./evm-rpc";
 export type { EvmCall, EvmLog, EvmReceipt, EvmRpc, FetchLike } from "./evm-rpc";
-export { addressBytes, evmAddressOf, integerBytes, rlpEncode, signEvmTransaction } from "./evm-tx";
+export { evmAddressOf, integerBytes, rlpEncode, signEvmTransaction } from "./evm-tx";
 export type { EvmTransaction, RlpItem, SignedEvmTransaction } from "./evm-tx";
 export {
   bridgeRouteOrder,

@@ -5,7 +5,6 @@
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 import {
-  addressBytes,
   evmAddressOf,
   integerBytes,
   rlpEncode,
@@ -84,20 +83,6 @@ describe("rlpEncode", () => {
     const encoded = rlpEncode(new Uint8Array(1024));
     expect(hex(encoded.subarray(0, 3))).toBe("0xb90400");
     expect(encoded.length).toBe(1027);
-  });
-});
-
-describe("addressBytes", () => {
-  it("reads an address in either case", () => {
-    expect(hex(addressBytes("0xF39Fd6e51aad88F6F4ce6aB8827279cffFb92266"))).toBe(KEYS[0].address);
-  });
-
-  it.each([
-    "f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
-    "0xf39f",
-    "0xzz9fd6e51aad88f6f4ce6ab8827279cfffb92266",
-  ])("refuses %s", (address) => {
-    expect(() => addressBytes(address)).toThrow("not an Ethereum address");
   });
 });
 

@@ -6,6 +6,7 @@
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, concatBytes, hexToBytes } from "@noble/hashes/utils.js";
+import { addressBytes } from "./evm-abi";
 
 /** What RLP encodes: bytes, or a list of such items. */
 export type RlpItem = Uint8Array | RlpItem[];
@@ -34,12 +35,6 @@ export function rlpEncode(item: RlpItem): Uint8Array {
   }
   const body = concatBytes(...item.map(rlpEncode));
   return concatBytes(lengthPrefix(body.length, 0xc0), body);
-}
-
-/** The 20 bytes of an address written as 0x and 40 hex digits. */
-export function addressBytes(address: string): Uint8Array {
-  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error(`not an Ethereum address: ${address}`);
-  return hexToBytes(address.slice(2));
 }
 
 /** The address of a private key, in lower case. */
