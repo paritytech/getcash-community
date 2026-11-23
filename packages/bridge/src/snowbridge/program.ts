@@ -13,14 +13,14 @@ import type { XcmInstruction, XcmValue } from "./codec";
 const ASSET_HUB = 1000;
 const HYDRATION = 2034;
 
-/** Ether as Asset Hub and Hydration name it: the native token of Ethereum. */
-export const ETHER = {
-  parents: 2,
-  interior: {
-    type: "X1",
-    value: { type: "GlobalConsensus", value: { type: "Ethereum", value: { chain_id: 1n } } },
-  },
+/** Ethereum as the Polkadot chains name it. */
+export const ETHEREUM = {
+  type: "GlobalConsensus",
+  value: { type: "Ethereum", value: { chain_id: 1n } },
 };
+
+/** Ether as Asset Hub and Hydration name it: the native token of Ethereum. */
+export const ETHER = { parents: 2, interior: { type: "X1", value: ETHEREUM } };
 
 /** The USDT of Asset Hub as Hydration names it. */
 const USDT_ON_HYDRATION = {

@@ -33,6 +33,8 @@ export type {
 } from "./route";
 export { decodeXcm, encodeXcm } from "./snowbridge/codec";
 export type { XcmInstruction, XcmValue } from "./snowbridge/codec";
-export { ETHER, snowbridgeProgram } from "./snowbridge/program";
+export { ETHER, ETHEREUM, snowbridgeProgram } from "./snowbridge/program";
 export type { SnowbridgeProgramInput } from "./snowbridge/program";
+export { deliveredProgram, snowbridgeTopic } from "./snowbridge/wrapper";
+export type { SnowbridgeMessage } from "./snowbridge/wrapper";
 export { lessTolerance } from "./tolerance";
