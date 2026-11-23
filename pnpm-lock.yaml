@@ -136,6 +136,8 @@ importers:
         specifier: ^2.1.10
         version: 2.2.12(typescript@5.9.3)
 
+  packages/bridge: {}
+
   packages/chainflip:
     dependencies:
       '@chainflip/sdk':
