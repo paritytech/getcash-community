@@ -14,6 +14,9 @@ importers:
       '@chainflip/sdk':
         specifier: 2.3.1
         version: 2.3.1(@types/node@26.4.1)(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@getsome/bridge':
+        specifier: workspace:*
+        version: link:packages/bridge
       '@getsome/chainflip':
         specifier: workspace:*
         version: link:packages/chainflip
@@ -136,7 +139,14 @@ importers:
         specifier: ^2.1.10
         version: 2.2.12(typescript@5.9.3)
 
-  packages/bridge: {}
+  packages/bridge:
+    dependencies:
+      '@noble/curves':
+        specifier: ^2.3.0
+        version: 2.3.0
+      '@noble/hashes':
+        specifier: ^2.3.0
+        version: 2.3.0
 
   packages/chainflip:
     dependencies:
