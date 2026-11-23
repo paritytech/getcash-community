@@ -31,4 +31,8 @@ export type {
   BridgeRoute,
   DeclinedRoute,
 } from "./route";
+export { decodeXcm, encodeXcm } from "./snowbridge/codec";
+export type { XcmInstruction, XcmValue } from "./snowbridge/codec";
+export { ETHER, snowbridgeProgram } from "./snowbridge/program";
+export type { SnowbridgeProgramInput } from "./snowbridge/program";
 export { lessTolerance } from "./tolerance";
