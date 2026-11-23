@@ -55,6 +55,10 @@ export interface EvmTransaction {
   data: Uint8Array;
 }
 
+/** What a transaction does: the account or contract it calls, the wei it sends and the call data.
+ *  The sender adds the chain, the nonce, the fees and the gas. */
+export type EvmTransactionCall = Pick<EvmTransaction, "to" | "value" | "data">;
+
 export interface SignedEvmTransaction {
   /** The bytes a node takes. */
   raw: Uint8Array;

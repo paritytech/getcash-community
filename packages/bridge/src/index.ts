@@ -1,3 +1,6 @@
+export { BASE_CHAIN_ID, BASE_USDC } from "./base/chain";
+export { baseDataFee } from "./base/data-fee";
+export { ethToUsdcSwap, quoteEthIn, quoteUsdcOut } from "./base/swap";
 export {
   abiAddress,
   abiBytes,
@@ -13,7 +16,7 @@ export type { AbiArgument } from "./evm-abi";
 export { createEvmRpc, EvmRpcError, EvmRpcUnreachable } from "./evm-rpc";
 export type { EvmCall, EvmLog, EvmReceipt, EvmRpc, FetchLike } from "./evm-rpc";
 export { evmAddressOf, integerBytes, rlpEncode, signEvmTransaction } from "./evm-tx";
-export type { EvmTransaction, RlpItem, SignedEvmTransaction } from "./evm-tx";
+export type { EvmTransaction, EvmTransactionCall, RlpItem, SignedEvmTransaction } from "./evm-tx";
 export {
   bridgeRouteOrder,
   chooseBridgeRoute,
@@ -28,3 +31,4 @@ export type {
   BridgeRoute,
   DeclinedRoute,
 } from "./route";
+export { lessTolerance } from "./tolerance";
