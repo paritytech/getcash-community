@@ -4,15 +4,15 @@
 // chain charges, where the run must pass, and to a little less, where it must stop.
 //   VERIFY_BRIDGE_SNOWBRIDGE=1 pnpm vitest run tests/verify-bridge-snowbridge-amounts.test.ts
 
-import { AccountId, createClient } from "polkadot-api";
+import { createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  accountClaimer,
   chainReader,
-  deliveredProgram,
-  dryRunXcm,
   ETHER,
   readSnowbridgeCosts,
+  runSnowbridgeHops,
   sizeSnowbridgeTopUp,
   snowbridgeProgram,
   type ChainReader,
@@ -31,17 +31,8 @@ const HYDRATION = "wss://rpc.hydradx.cloud";
 
 /** An account that holds nothing, as the account of a new request does. */
 const ACCOUNT = `0x${"42".repeat(32)}`;
-const ACCOUNT_NAME = AccountId(0).dec(new Uint8Array(32).fill(0x42));
 const SENDER = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
 const SWAP = 50_000_000_000_000_000n;
-
-const claimer = {
-  parents: 0,
-  interior: {
-    type: "X1",
-    value: { type: "AccountId32", value: { network: { type: "Polkadot" }, id: ACCOUNT } },
-  },
-};
 
 const message = (
   program: SnowbridgeProgramInput,
@@ -52,7 +43,7 @@ const message = (
   nonce: 2000n,
   value: program.swapEther + program.hydrationFeeEther + kept,
   executionFee,
-  claimer,
+  claimer: accountClaimer(ACCOUNT),
   program: snowbridgeProgram(program),
 });
 
@@ -67,18 +58,18 @@ const TRIAL: SnowbridgeProgramInput = {
 };
 const TRIAL_EXECUTION_FEE = 1_000_000_000_000_000n;
 
-/** The amounts a dry run moved, by the events that name them. */
-const sum = (run: XcmDryRun, pallet: string, name: string, field: string, to?: string): bigint =>
+/** The ether a run swapped for its fees on Asset Hub. */
+const feeSwaps = (run: XcmDryRun): bigint =>
   run.events
-    .filter((e) => e.pallet === pallet && e.name === name)
-    .filter((e) => to === undefined || e.fields.who === to)
-    .reduce((total, e) => total + (e.fields[field] as bigint), 0n);
-const feeSwaps = (run: XcmDryRun) => sum(run, "AssetConversion", "SwapCreditExecuted", "amount_in");
-const usdtToAccount = (run: XcmDryRun) => sum(run, "Assets", "Deposited", "amount", ACCOUNT_NAME);
-const etherToAccount = (run: XcmDryRun) =>
-  sum(run, "ForeignAssets", "Deposited", "amount", ACCOUNT_NAME);
-const traps = (run: XcmDryRun) =>
-  run.events.filter((e) => e.pallet === "PolkadotXcm" && e.name === "AssetsTrapped").length;
+    .filter((e) => e.pallet === "AssetConversion" && e.name === "SwapCreditExecuted")
+    .reduce((total, e) => total + (e.fields.amount_in as bigint), 0n);
+
+/** The amounts in the traps of a run. */
+const trapped = (run: XcmDryRun): bigint[] =>
+  run.events
+    .filter((e) => e.pallet === "PolkadotXcm" && e.name === "AssetsTrapped")
+    .flatMap((e) => (e.fields.assets as { value: { fun: { value: bigint } }[] }).value)
+    .map((asset) => asset.fun.value);
 
 describe.runIf(ON)("the amounts of a Snowbridge top-up, on the live chains", () => {
   const clients: { destroy(): void }[] = [];
@@ -107,19 +98,15 @@ describe.runIf(ON)("the amounts of a Snowbridge top-up, on the live chains", () 
   }, 120_000);
   afterAll(() => clients.forEach((client) => client.destroy()));
 
-  /** The three hops of a message. A hop is missing when the hop before it sent nothing on. */
-  async function hops(program: SnowbridgeProgramInput, executionFee: bigint, kept: bigint) {
-    const delivered = deliveredProgram(message(program, executionFee, kept));
-    const first = await dryRunXcm(chains.assetHub, 1002, delivered);
-    const toHydration = first.forwardedTo(2034);
-    const second = toHydration ? await dryRunXcm(chains.hydration, 1000, toHydration) : null;
-    const back = second?.forwardedTo(1000) ?? null;
-    const third = back ? await dryRunXcm(chains.assetHub, 2034, back) : null;
-    return { first, second, third };
-  }
+  const hops = (program: SnowbridgeProgramInput, executionFee: bigint, kept: bigint) =>
+    runSnowbridgeHops(chains, message(program, executionFee, kept), ACCOUNT);
 
   const sized = (minimumUsdt = (usdtOut * 99n) / 100n) =>
     sizeSnowbridgeTopUp({ costs, account: ACCOUNT, swapEther: SWAP, minimumUsdt });
+
+  /** What the sized message uses of its execution fee. */
+  const used = async (): Promise<bigint> =>
+    feeSwaps((await hops(sized().program, sized().executionFee, costs.etherMinimum)).assetHub);
 
   it("reads a cost from each chain", async () => {
     console.log("costs", costs, "USDT for 0.05 ETH", usdtOut);
@@ -134,53 +121,59 @@ describe.runIf(ON)("the amounts of a Snowbridge top-up, on the live chains", () 
   it("runs the sized message to its end on every hop, and the account gets the USDT", async () => {
     const sizing = sized();
     console.log("sizing", sizing, "ether on top of the swap", sizing.total - SWAP);
-    const { first, second, third } = await hops(
-      sizing.program,
-      sizing.executionFee,
-      costs.etherMinimum,
-    );
-    expect(first.failure).toBeNull();
-    expect(traps(first)).toBe(0);
-    expect(second?.failure).toBeNull();
-    expect(third?.failure).toBeNull();
-    expect(traps(third!)).toBe(0);
+    const run = await hops(sizing.program, sizing.executionFee, costs.etherMinimum);
+    expect(run.assetHub.failure).toBeNull();
+    expect(trapped(run.assetHub)).toEqual([]);
+    expect(run.hydration?.failure).toBeNull();
+    expect(run.deposit?.failure).toBeNull();
+    expect(trapped(run.deposit!)).toEqual([]);
     // The account gets the swap less what the deposit cost, and that cost is the price read.
-    expect(usdtToAccount(third!)).toBe(usdtOut - costs.depositUsdt);
+    expect(run.usdt).toBe(usdtOut - costs.depositUsdt);
     // On Asset Hub the account keeps the minimum balance and the unused part of the fee.
-    expect(etherToAccount(first)).toBe(sizing.executionFee - feeSwaps(first) + costs.etherMinimum);
+    expect(run.etherKept).toBe(sizing.executionFee - feeSwaps(run.assetHub) + costs.etherMinimum);
     // On Hydration the unused part of the fee stays in a trap.
-    expect(traps(second!)).toBe(1);
+    expect(trapped(run.hydration!)).toHaveLength(1);
   }, 60_000);
 
   it("stops on Asset Hub when the execution fee is one wei under what the message uses", async () => {
     const { program } = sized();
-    const used = feeSwaps((await hops(program, sized().executionFee, costs.etherMinimum)).first);
+    const fee = await used();
     // The two reads miss the real figure by very little: the first fee moves the pool's price
     // before the second fee is taken.
     const read = costs.assetHubExecution + costs.hydrationDelivery;
-    expect(used).toBeGreaterThanOrEqual(read);
-    expect(used - read).toBeLessThan(read / 1000n);
+    expect(fee).toBeGreaterThanOrEqual(read);
+    expect(fee - read).toBeLessThan(read / 1000n);
 
-    const exact = await hops(program, used, costs.etherMinimum);
-    expect(exact.first.failure).toBeNull();
-    expect(etherToAccount(exact.first)).toBe(costs.etherMinimum);
-    expect(exact.third?.failure).toBeNull();
+    const exact = await hops(program, fee, costs.etherMinimum);
+    expect(exact.assetHub.failure).toBeNull();
+    expect(exact.etherKept).toBe(costs.etherMinimum);
+    expect(exact.deposit?.failure).toBeNull();
 
-    const short = await hops(program, used - 1n, costs.etherMinimum);
-    expect(short.first.failure).toMatchObject({ error: "NotHoldingFees" });
-    expect(short.second).toBeNull();
-    expect(traps(short.first)).toBe(1);
+    // The fee pays for the message and not for its delivery. All the ether goes into one trap.
+    const short = await hops(program, fee - 1n, costs.etherMinimum);
+    expect(short.assetHub.failure).toMatchObject({ error: "NotHoldingFees" });
+    expect(short.hydration).toBeNull();
+    expect(trapped(short.assetHub)).toHaveLength(1);
+    expect(trapped(short.assetHub)[0]).toBeGreaterThan(SWAP);
+  }, 60_000);
+
+  it("credits none of the ether when the execution fee is under the price of the message", async () => {
+    const { program } = sized();
+    const short = await hops(program, costs.assetHubExecution - 1n, costs.etherMinimum);
+    expect(short.assetHub.failure).toMatchObject({ index: 4, error: "TooExpensive" });
+    expect(short.hydration).toBeNull();
+    // The message stops before Asset Hub credits what it carries. The trap holds the fee alone.
+    expect(trapped(short.assetHub)).toEqual([costs.assetHubExecution - 1n]);
   }, 60_000);
 
   it("leaves a trap on Asset Hub when less than the minimum balance stays there", async () => {
     const { program } = sized();
-    const used = feeSwaps((await hops(program, sized().executionFee, costs.etherMinimum)).first);
-    const short = await hops(program, used, costs.etherMinimum - 1n);
-    expect(short.first.failure).toMatchObject({ error: "FailedToTransactAsset" });
-    expect(traps(short.first)).toBe(1);
+    const short = await hops(program, await used(), costs.etherMinimum - 1n);
+    expect(short.assetHub.failure).toMatchObject({ error: "FailedToTransactAsset" });
+    expect(trapped(short.assetHub)).toHaveLength(1);
     // The ether had left for Hydration before, so the top-up still arrives.
-    expect(short.third?.failure).toBeNull();
-    expect(usdtToAccount(short.third!)).toBeGreaterThan(0n);
+    expect(short.deposit?.failure).toBeNull();
+    expect(short.usdt).toBeGreaterThan(0n);
   }, 60_000);
 
   it("stops on Hydration when its fee is under its price, and the swap ether is in no trap", async () => {
@@ -189,19 +182,15 @@ describe.runIf(ON)("the amounts of a Snowbridge top-up, on the live chains", () 
       hops({ ...sizing.program, hydrationFeeEther }, sizing.executionFee, costs.etherMinimum);
 
     const exact = await run(costs.hydrationExecution);
-    expect(exact.second?.failure).toBeNull();
-    expect(exact.third?.failure).toBeNull();
+    expect(exact.hydration?.failure).toBeNull();
+    expect(exact.deposit?.failure).toBeNull();
 
-    const short = await run((costs.hydrationExecution * 998n) / 1000n);
-    expect(short.second?.failure).toMatchObject({ index: 1, error: "TooExpensive" });
-    expect(short.third).toBeNull();
+    const low = (costs.hydrationExecution * 998n) / 1000n;
+    const short = await run(low);
+    expect(short.hydration?.failure).toMatchObject({ index: 1, error: "TooExpensive" });
+    expect(short.deposit).toBeNull();
     // The one trap holds the fee alone.
-    const trapped = short.second!.events.filter((e) => e.name === "AssetsTrapped");
-    expect(trapped).toHaveLength(1);
-    const assets = (trapped[0]!.fields.assets as { value: { fun: { value: bigint } }[] }).value;
-    expect(assets.map((asset) => asset.fun.value)).toEqual([
-      (costs.hydrationExecution * 998n) / 1000n,
-    ]);
+    expect(trapped(short.hydration!)).toEqual([low]);
   }, 60_000);
 
   it("stops the deposit when its fee is one unit under its price", async () => {
@@ -210,26 +199,26 @@ describe.runIf(ON)("the amounts of a Snowbridge top-up, on the live chains", () 
       hops({ ...sizing.program, assetHubFeeUsdt }, sizing.executionFee, costs.etherMinimum);
 
     const exact = await run(costs.depositUsdt);
-    expect(exact.third?.failure).toBeNull();
-    expect(usdtToAccount(exact.third!)).toBe(usdtOut - costs.depositUsdt);
+    expect(exact.deposit?.failure).toBeNull();
+    expect(exact.usdt).toBe(usdtOut - costs.depositUsdt);
 
     const short = await run(costs.depositUsdt - 1n);
-    expect(short.third?.failure).toMatchObject({ index: 1, error: "TooExpensive" });
-    expect(usdtToAccount(short.third!)).toBe(0n);
+    expect(short.deposit?.failure).toMatchObject({ index: 1, error: "TooExpensive" });
+    expect(short.usdt).toBe(0n);
   }, 60_000);
 
   it("swaps at the exact minimum, and sends the ether back at one unit more", async () => {
     const exact = await hops(sized(usdtOut).program, sized().executionFee, costs.etherMinimum);
-    expect(exact.second?.failure).toBeNull();
-    expect(usdtToAccount(exact.third!)).toBe(usdtOut - costs.depositUsdt);
+    expect(exact.hydration?.failure).toBeNull();
+    expect(exact.usdt).toBe(usdtOut - costs.depositUsdt);
 
     const sizing = sized(usdtOut + 1n);
     const failed = await hops(sizing.program, sizing.executionFee, costs.etherMinimum);
-    expect(failed.second?.failure).toMatchObject({ error: "NoDeal" });
-    expect(failed.third?.failure).toBeNull();
-    expect(usdtToAccount(failed.third!)).toBe(0n);
+    expect(failed.hydration?.failure).toMatchObject({ error: "NoDeal" });
+    expect(failed.deposit?.failure).toBeNull();
+    expect(failed.usdt).toBe(0n);
     // The account gets the ether of the swap back, less what its deposit cost.
-    expect(etherToAccount(failed.third!)).toBe(SWAP - costs.depositEther);
+    expect(failed.ether).toBe(SWAP - costs.depositEther);
   }, 60_000);
 
   it("stops the way back of the ether when its fee is one wei under its price", async () => {
@@ -238,11 +227,11 @@ describe.runIf(ON)("the amounts of a Snowbridge top-up, on the live chains", () 
       hops({ ...sizing.program, assetHubFeeEther }, sizing.executionFee, costs.etherMinimum);
 
     const exact = await run(costs.depositEther);
-    expect(exact.third?.failure).toBeNull();
-    expect(etherToAccount(exact.third!)).toBe(SWAP - costs.depositEther);
+    expect(exact.deposit?.failure).toBeNull();
+    expect(exact.ether).toBe(SWAP - costs.depositEther);
 
     const short = await run(costs.depositEther - 1n);
-    expect(short.third?.failure).toMatchObject({ index: 1, error: "TooExpensive" });
-    expect(etherToAccount(short.third!)).toBe(0n);
+    expect(short.deposit?.failure).toMatchObject({ index: 1, error: "TooExpensive" });
+    expect(short.ether).toBe(0n);
   }, 60_000);
 });

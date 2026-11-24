@@ -27,9 +27,12 @@ export interface SnowbridgeCosts {
 /** The execution fee is three times what Asset Hub charges. A fee that is too low stops the
  *  message on Asset Hub. Snowbridge's relayers run a message there in a dry run first, and they
  *  do not relay one that stops: they try again for 4 hours and then drop it. If such a message is
- *  relayed all the same, all its ether goes into a trap that the account can claim. Asset Hub
- *  prices the fee through a pool that holds less than 1 ETH, so one trade by another account
- *  moves that price far. The unused part of the fee goes to the account as ether. */
+ *  relayed all the same, there are two cases. A fee that pays for the message and not for its
+ *  delivery to Hydration leaves all the ether in a trap that the account can claim. A fee under
+ *  the price of the message itself loses the ether: Asset Hub stops before it credits what the
+ *  message carries. Asset Hub prices the fee through a pool that holds less than 1 ETH, so one
+ *  trade by another account moves that price far. The unused part of the fee goes to the
+ *  account as ether. */
 const EXECUTION_MARGIN = 3n;
 
 /** The Hydration fee is twice what Hydration charges. A fee that is too low loses the ether of
