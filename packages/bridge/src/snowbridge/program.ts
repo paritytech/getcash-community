@@ -49,21 +49,20 @@ const accountOf = (account: string, network?: XcmValue) => ({
   interior: { type: "X1", value: { type: "AccountId32", value: { network, id: account } } },
 });
 
-/** Names `account` as the claimer of what a failure leaves in the holding. The location names
- *  the Polkadot network, because a claim looks a trap up by the signed origin of the claimant. */
-const claimerHint = (account: string): XcmInstruction => ({
+/** `account` as the claimer of what a failure leaves in a holding. The location names the
+ *  Polkadot network, because a claim looks a trap up by the signed origin of the claimant. */
+export const accountClaimer = (account: string) => accountOf(account, { type: "Polkadot" });
+
+/** Names `location` as the claimer. */
+export const claimerHint = (location: unknown): XcmInstruction => ({
   type: "SetHints",
-  value: {
-    hints: [
-      { type: "AssetClaimer", value: { location: accountOf(account, { type: "Polkadot" }) } },
-    ],
-  },
+  value: { hints: [{ type: "AssetClaimer", value: { location } }] },
 });
 
 /** What Asset Hub runs when an asset comes back from Hydration: the unused fee returns to the
  *  holding, and the one asset there goes to `account`. */
 const depositOnAssetHub = (account: string): XcmInstruction[] => [
-  claimerHint(account),
+  claimerHint(accountClaimer(account)),
   { type: "RefundSurplus" },
   {
     type: "DepositAsset",
@@ -141,7 +140,7 @@ export function snowbridgeProgram(input: SnowbridgeProgramInput): XcmInstruction
           },
         ],
         remote_xcm: [
-          claimerHint(account),
+          claimerHint(accountClaimer(account)),
           // A failed swap leaves the ether in the holding. It goes back instead of into a trap.
           {
             type: "SetErrorHandler",

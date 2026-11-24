@@ -7,10 +7,13 @@ export {
   abiBytesList,
   abiUint,
   abiWord,
+  addressAt,
   addressBytes,
+  bytesAt,
   encodeCall,
   selector,
   wordAt,
+  wordsFrom,
 } from "./evm-abi";
 export type { AbiArgument } from "./evm-abi";
 export { createEvmRpc, EvmRpcError, EvmRpcUnreachable } from "./evm-rpc";
@@ -39,7 +42,18 @@ export { readSnowbridgeCosts } from "./snowbridge/costs";
 export type { SnowbridgeChains, SnowbridgeTrial } from "./snowbridge/costs";
 export { decodeXcm, encodeXcm } from "./snowbridge/codec";
 export type { XcmInstruction, XcmValue } from "./snowbridge/codec";
-export { ETHER, ETHEREUM, snowbridgeProgram } from "./snowbridge/program";
+export {
+  ACCEPTED_TOPIC,
+  acceptedMessage,
+  claimerBytes,
+  claimerLocation,
+  ETHEREUM_CHAIN_ID,
+  gatewaySend,
+  readAccepted,
+  SNOWBRIDGE_GATEWAY,
+} from "./snowbridge/message";
+export type { AcceptedMessage } from "./snowbridge/message";
+export { accountClaimer, ETHER, ETHEREUM, snowbridgeProgram } from "./snowbridge/program";
 export type { SnowbridgeProgramInput } from "./snowbridge/program";
 export { deliveredProgram, snowbridgeTopic } from "./snowbridge/wrapper";
 export type { SnowbridgeMessage } from "./snowbridge/wrapper";

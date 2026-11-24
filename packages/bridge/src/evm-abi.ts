@@ -1,10 +1,11 @@
-// The ABI encoding of a contract call, and the reading of what a call returns. It covers the
-// argument kinds the bridge routes use: single words, bytes and lists of bytes. The reads of the
-// route checks need numbers and addresses only. The bytes, the lists of bytes and the 32 byte
-// values serve the transactions getcash signs itself, which it does on purpose so that a top-up
-// needs no forwarder contract and no relayer.
-// TODO: remove the bytes, the lists of bytes and the 32 byte values once a forwarder and a
-// relayer send the transactions.
+// The ABI encoding of a contract call, and the reading of what a call returns or an event carries.
+// It covers the argument kinds the bridge routes use: single words, bytes and lists of bytes. The
+// reads of the route checks need numbers and addresses only, and the reading of an event needs
+// bytes too. The encoding of bytes, of lists of bytes and of 32 byte values serves the
+// transactions getcash signs itself, which it does on purpose so that a top-up needs no forwarder
+// contract and no relayer.
+// TODO: remove the encoding of bytes, of lists of bytes and of 32 byte values once a forwarder
+// and a relayer send the transactions.
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
@@ -110,4 +111,31 @@ export function wordAt(returned: Uint8Array, index: number): bigint {
     throw new Error(`the call returned no word at position ${index}`);
   }
   return BigInt(`0x${bytesToHex(returned.subarray(start, start + WORD))}`);
+}
+
+/** The position, in words, that the word at `index` points to. It holds a count of bytes from
+ *  the start of the word at position `from`, as the encoding of bytes and lists does. */
+export function wordsFrom(returned: Uint8Array, from: number, index: number): number {
+  const offset = wordAt(returned, index);
+  if (offset % BigInt(WORD) !== 0n || offset > BigInt(returned.length)) {
+    throw new Error(`the word at position ${index} points to no word`);
+  }
+  return from + Number(offset) / WORD;
+}
+
+/** The bytes whose length is the word at position `index`. They follow that word. */
+export function bytesAt(returned: Uint8Array, index: number): Uint8Array {
+  const length = wordAt(returned, index);
+  const start = (index + 1) * WORD;
+  if (length > BigInt(returned.length - start)) {
+    throw new Error(`the bytes at position ${index} end after what was returned`);
+  }
+  return returned.subarray(start, start + Number(length));
+}
+
+/** The address in the word at position `index`, in lower case. */
+export function addressAt(returned: Uint8Array, index: number): string {
+  const word = wordAt(returned, index);
+  if (word >> 160n !== 0n) throw new Error(`the word at position ${index} is not an address`);
+  return `0x${word.toString(16).padStart(40, "0")}`;
 }

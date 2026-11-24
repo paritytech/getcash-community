@@ -9,10 +9,13 @@ import {
   abiBytesList,
   abiUint,
   abiWord,
+  addressAt,
   addressBytes,
+  bytesAt,
   encodeCall,
   selector,
   wordAt,
+  wordsFrom,
   type AbiArgument,
 } from "./evm-abi";
 
@@ -152,5 +155,49 @@ describe("wordAt", () => {
   it("refuses a return that ends inside the word", () => {
     expect(() => wordAt(returned.subarray(0, 63), 1)).toThrow("returned no word");
     expect(() => wordAt(new Uint8Array(0), 0)).toThrow("returned no word");
+  });
+});
+
+describe("the reading of bytes", () => {
+  const word = (value: bigint | number) => BigInt(value).toString(16).padStart(64, "0");
+  // What a function that returns (uint256, bytes) gives for 7 and the bytes aabbcc: the number,
+  // where the bytes start, their length, and the bytes filled up to a whole word.
+  const returned = bytes(word(7) + word(64) + word(3) + "aabbcc".padEnd(64, "0"));
+
+  it("finds the bytes a word points to, and reads them", () => {
+    expect(wordsFrom(returned, 0, 1)).toBe(2);
+    expect(hex(bytesAt(returned, 2))).toBe("0xaabbcc");
+  });
+
+  it("counts the words from the position it is given", () => {
+    expect(wordsFrom(bytes(word(0) + word(32) + word(0)), 1, 1)).toBe(2);
+  });
+
+  it("reads bytes of no length", () => {
+    expect(bytesAt(bytes(word(0)), 0)).toHaveLength(0);
+  });
+
+  it("refuses a word that points between two words, or past the end", () => {
+    expect(() => wordsFrom(bytes(word(33)), 0, 0)).toThrow("points to no word");
+    expect(() => wordsFrom(bytes(word(64)), 0, 0)).toThrow("points to no word");
+  });
+
+  it("refuses bytes that end after what was returned", () => {
+    expect(() => bytesAt(bytes(word(33) + word(0)), 0)).toThrow("end after");
+    expect(hex(bytesAt(bytes(word(32) + word(5)), 0))).toBe(`0x${word(5)}`);
+  });
+});
+
+describe("addressAt", () => {
+  it("reads an address in lower case, with the zeros it starts with", () => {
+    const returned = bytes(`${"0".repeat(24)}F39Fd6e51aad88F6F4ce6aB8827279cffFb92266`);
+    expect(addressAt(returned, 0)).toBe(ACCOUNT);
+    expect(addressAt(bytes(`${"0".repeat(63)}1`), 0)).toBe(`0x${"0".repeat(39)}1`);
+  });
+
+  it("refuses a word too large for an address", () => {
+    expect(() => addressAt(bytes(`${"0".repeat(23)}1${"0".repeat(40)}`), 0)).toThrow(
+      "not an address",
+    );
   });
 });

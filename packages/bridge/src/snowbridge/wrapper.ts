@@ -11,7 +11,7 @@
 import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
 import type { XcmInstruction } from "./codec";
-import { ETHER, ETHEREUM } from "./program";
+import { claimerHint, ETHER, ETHEREUM } from "./program";
 
 /** The pallet of Bridge Hub that receives the messages from Ethereum. */
 const INBOUND_QUEUE_PALLET = 91;
@@ -99,10 +99,7 @@ export function deliveredProgram(message: SnowbridgeMessage): XcmInstruction[] {
     { type: "ReserveAssetDeposited", value: [fee] },
     // The claimer is named before the fee is paid, so that it can claim even a message whose fee
     // is too low.
-    {
-      type: "SetHints",
-      value: { hints: [{ type: "AssetClaimer", value: { location: message.claimer } }] },
-    },
+    claimerHint(message.claimer),
     { type: "PayFees", value: { asset: fee } },
     ...(assets.length > 0 ? [{ type: "ReserveAssetDeposited", value: assets }] : []),
     // From here the program runs as the account that called the Gateway. Bridge Hub leaves this
