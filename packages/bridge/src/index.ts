@@ -2,6 +2,17 @@ export { BASE_CHAIN_ID, BASE_USDC } from "./base/chain";
 export { baseDataFee } from "./base/data-fee";
 export { ethToUsdcSwap, quoteEthIn, quoteUsdcOut } from "./base/swap";
 export {
+  approveVault,
+  BASE_VAULT,
+  DEPOSITED_TOPIC,
+  HOLLAR_FACILITATOR,
+  readVault,
+  vaultDeposit,
+  vaultDeposited,
+  vaultRefusal,
+} from "./base/vault";
+export type { VaultDeposited, VaultState } from "./base/vault";
+export {
   abiAddress,
   abiBytes,
   abiBytesList,
