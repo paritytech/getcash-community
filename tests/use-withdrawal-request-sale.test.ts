@@ -53,9 +53,6 @@ vi.mock("../lib/withdraw-live", () => ({
   }),
   requestKeyPayment: vi.fn(async () => {}),
   nudgeWithdrawTicks: () => {},
-  openWithdrawChannelFor: vi.fn(async () => {
-    throw new Error("a sale never opens a Chainflip channel");
-  }),
   sendWithdrawHandoff: vi.fn(async () => {}),
   cancelWithdrawJob: vi.fn(async () => ({})),
   probeWithdrawKey: vi.fn(async () => ({ address: KEY_ADDRESS, cash: 0n })),

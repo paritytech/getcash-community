@@ -1,45 +1,35 @@
 <script setup lang="ts">
-// The crypto withdrawal package: network, token, address and summary, then the journey once the
-// purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
-// record. The record and the worker carry on when this screen is left.
+// The crypto withdrawal package: token, address and summary, then the journey once the purse was
+// asked. Opened from the list with `topUp`, it goes straight to the journey of that record. The
+// record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { depositTokenOf, PSM_EXTERNAL, type ConversionRoute } from "@getsome/funding";
+import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import { useDrillIn } from "../../../composables/useDrillIn";
 import { useScreen } from "../../../composables/useScreen";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
-import { cryptoBelowMinimum } from "../../../funding/out-of-range";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { CASH_DECIMALS } from "@getsome/people";
 import { useRequestsStore } from "../../../stores/requests";
-import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
-import { cashAmount, fmtCash, groupAmountDigits, toCashBase } from "../../../utils/cash";
+import { cashAmount, fmtCash, toCashBase } from "../../../utils/cash";
 import { previewStage } from "../../../utils/dev-preview-stage";
 import { isDemoBuild } from "../../../utils/demo";
 import { requestRefKey, type RequestRef } from "../../../utils/request-index";
 import {
+  ASSET_HUB_NETWORK,
   formatLanding,
   landingAccountHex,
-  withdrawNetwork,
   type WithdrawDestination,
-  type WithdrawNetwork,
 } from "../../../withdraw/destinations";
-import {
-  rowState,
-  sameSale,
-  type WithdrawFeeView,
-  type WithdrawOffer,
-} from "../../../withdraw/offers";
+import { sameSale, type WithdrawFeeView } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
-import AmountOutOfRange from "../../funding/AmountOutOfRange.vue";
 import ScreenShell from "../../ui/ScreenShell.vue";
 import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
 import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
-import WithdrawNetworkScreen from "../WithdrawNetworkScreen.vue";
 import WithdrawReturnFundsScreen from "../WithdrawReturnFundsScreen.vue";
 import WithdrawSummaryScreen from "../WithdrawSummaryScreen.vue";
 import WithdrawTokenScreen from "../WithdrawTokenScreen.vue";
@@ -62,15 +52,13 @@ const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
 useStateDirector();
 
-type Step =
-  "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel" | "return-funds";
-const step = ref<Step>(props.topUp ? "journey" : "network");
+type Step = "token" | "address" | "summary" | "fees" | "journey" | "cancel" | "return-funds";
+const step = ref<Step>(props.topUp ? "journey" : "token");
 useScreen(() => (step.value === "fees" ? "fees" : (`withdraw.${step.value}` as const)));
 /** The fee breakdown and where it was opened from, so back returns there. */
 const { from: feesFrom, open: openFees } = useDrillIn<"summary" | "journey">("summary", () => {
   step.value = "fees";
 });
-const network = ref<WithdrawNetwork | null>(null);
 const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
 /** What arrives, formatted; null while quoting; undefined without a quote. */
@@ -80,12 +68,6 @@ const fees = ref<WithdrawFeeView | null>(null);
 /** The sale on Asset Hub the estimate was made for, frozen into the hand-off at confirm; null
  *  until the quote decided it. */
 const sale = ref<ConversionRoute | null>(null);
-/** What the estimate says lands on the key in the sale's token; what a provider's channel is
- *  quoted with at confirm. */
-const expectedLanding = ref<bigint | null>(null);
-/** The provider's minimum for the token, in CASH base units, while the amount is under it: the
- *  summary gives way to the out-of-range screen. */
-const belowMinimum = ref<bigint | null>(null);
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
@@ -95,33 +77,12 @@ const poolFigure = ref<string | null>(null);
 
 const record = computed(() => requests.foregroundWithdrawal);
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
-/** The amount in base units; null while the shell's string cannot be read. */
-const amountBase = computed(() => toCashBase(amount.value));
-const offers = useWithdrawOffersStore();
 /** A withdrawal opened from the list whose record the store no longer has. */
 const unavailable = computed(() => {
   if (!props.topUp || record.value !== null) return false;
   const ref = withdrawalRequestRef(props.topUp.id);
   return ref === null || !requests.has(ref);
 });
-
-/** Demo Skip: the provider's channel is real on a test network but can never be paid there, so
- *  the swap is taken as delivered by hand and the walk can reach its end. */
-const canSkipRail = computed(
-  () =>
-    isDemoBuild() &&
-    step.value === "journey" &&
-    record.value?.status.kind === "sending" &&
-    record.value.rail.provider !== "direct",
-);
-
-function onSkipRail() {
-  const current = record.value;
-  if (current === null || busy.value) return;
-  void withdrawal.skipRail(current.ref).catch((error: unknown) => {
-    notice.value = error instanceof Error ? error.message : String(error);
-  });
-}
 
 /** Demo Skip on the summary: a simulated journey plays conversion, sending and sent, without a
  *  purse or a provider — the walkthrough a plain browser can give. */
@@ -142,8 +103,6 @@ async function onSkipSummary() {
 
 const toolbar = computed<{ title?: string; back: boolean }>(() => {
   switch (step.value) {
-    case "network":
-      return { title: "Select network", back: true };
     case "token":
       return { title: "Select token", back: true };
     case "fees":
@@ -173,18 +132,10 @@ function onBack() {
     case "address":
       step.value = "token";
       return;
-    case "token":
-      step.value = "network";
-      return;
     default:
       // Leaving the journey leaves the withdrawal running; the list keeps it.
       emit("back");
   }
-}
-
-function pickNetwork(picked: WithdrawNetwork) {
-  network.value = picked;
-  step.value = "token";
 }
 
 function pickToken(picked: WithdrawDestination) {
@@ -199,51 +150,17 @@ function directRate(units: bigint, decimals: number, base: bigint, asset: string
   return `${cashAmount("1")} ≈ ${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)} ${asset}`;
 }
 
-/** What the summary shows for a destination and keeps for confirm, or why it cannot be sent. */
-type Estimate =
-  | {
-      kind: "priced";
-      sale: ConversionRoute;
-      expectedLanding: bigint | null;
-      /** Undefined when the sale stands but its figure could not be priced. */
-      receive: string | undefined;
-      fees: WithdrawFeeView | null;
-    }
-  | { kind: "too-small"; minimumCash: bigint }
-  | { kind: "declined"; reason: string };
+/** What the summary shows for a destination and keeps for confirm. */
+interface Estimate {
+  sale: ConversionRoute;
+  /** Undefined when the sale stands but its figure could not be priced. */
+  receive: string | undefined;
+  fees: WithdrawFeeView | null;
+}
 
-/** The sale `picked` takes for `base` CASH and what it lands. A provider's offer is the pickers'
- *  quote, or asked again of that destination alone when `recheck`; Asset Hub's sale is always
- *  decided on the chain as it stands. Throws when the chain cannot be read. */
-async function estimate(
-  picked: WithdrawDestination,
-  base: bigint,
-  recheck: boolean,
-): Promise<Estimate> {
-  if (picked.rail !== "direct") {
-    // A provider's offer carries the sale picked for the destination, frozen at confirm, and
-    // what it was quoted for in the sale's token, the figure the channel is opened for.
-    const reserved = psmReserved(requests.openWithdrawals, PSM_EXTERNAL);
-    let offer: WithdrawOffer;
-    if (recheck) {
-      offer = await offers.requote(picked, base, reserved);
-    } else {
-      await offers.learn(base, reserved);
-      offer = offers.offerFor(picked);
-    }
-    if (offer.state === "too-small") return { kind: "too-small", minimumCash: offer.minimumCash };
-    if (offer.state !== "available") {
-      const reason = rowState(picked, offer).subtitle ?? "This destination cannot take the amount.";
-      return { kind: "declined", reason };
-    }
-    return {
-      kind: "priced",
-      sale: offer.sale,
-      expectedLanding: offer.sellable,
-      receive: offer.formatted,
-      fees: offer.fees ?? null,
-    };
-  }
+/** The sale `picked` takes for `base` CASH, decided on the chain as it stands, and what it lands.
+ *  Throws when the chain cannot be read. */
+async function estimate(picked: WithdrawDestination, base: bigint): Promise<Estimate> {
   const live = await import("~~/lib/withdraw-live");
   // The PSM's room this app's own redeems have spoken for, against the stable the destination
   // lands; the native and dotUSD read no PSM.
@@ -253,8 +170,8 @@ async function estimate(
       : psmReserved(requests.openWithdrawals, picked.landing);
   const sale = await live.chooseWithdrawRoute(base, picked.landing, reserved);
   try {
-    // What the sale lands on Asset Hub in the token's decimals: the direct rail lands exactly
-    // that. Its fees are taken in CASH before the sale, so the drill-in shows them as CASH.
+    // What the sale lands on Asset Hub in the token's decimals. Its fees are taken in CASH before
+    // the sale, so the drill-in shows them as CASH.
     const [units, feesCash] = await Promise.all([
       live.quoteDirectReceive(base, sale),
       live.directFeesCash(sale),
@@ -262,9 +179,7 @@ async function estimate(
     const landing = depositTokenOf(sale);
     const receive = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
     return {
-      kind: "priced",
       sale,
-      expectedLanding: null,
       receive,
       fees: {
         rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
@@ -276,15 +191,14 @@ async function estimate(
     // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
     // always did, and does not hold the withdrawal back.
     devLog("withdraw", "receive estimate unavailable", error, "warn");
-    return { kind: "priced", sale, expectedLanding: null, receive: undefined, fees: null };
+    return { sale, receive: undefined, fees: null };
   }
 }
 
-function showEstimate(priced: Extract<Estimate, { kind: "priced" }>) {
-  sale.value = priced.sale;
-  expectedLanding.value = priced.expectedLanding;
-  receive.value = priced.receive;
-  fees.value = priced.fees;
+function showEstimate(estimated: Estimate) {
+  sale.value = estimated.sale;
+  receive.value = estimated.receive;
+  fees.value = estimated.fees;
 }
 
 /** Whether the summary moved on from `picked`: the user went back, or picked another token. */
@@ -294,11 +208,9 @@ const leftSummary = (picked: WithdrawDestination) =>
 async function onAddress(entered: string) {
   address.value = entered;
   startError.value = null;
-  belowMinimum.value = null;
   step.value = "summary";
   const picked = destination.value;
   const base = toCashBase(amount.value);
-  expectedLanding.value = null;
   fees.value = null;
   sale.value = null;
   if (picked === null || base === null) {
@@ -307,15 +219,11 @@ async function onAddress(entered: string) {
   }
   receive.value = null;
   try {
-    const estimated = await estimate(picked, base, false);
+    const estimated = await estimate(picked, base);
     // A chain answer that lands after the user went back and picked another token is for nobody:
     // the summary must still show the destination this run was started for.
     if (leftSummary(picked)) return;
-    if (estimated.kind === "too-small") {
-      belowMinimum.value = estimated.minimumCash;
-      receive.value = undefined;
-    } else if (estimated.kind === "declined") receive.value = undefined;
-    else showEstimate(estimated);
+    showEstimate(estimated);
   } catch (error: unknown) {
     devLog("withdraw", "receive estimate unavailable", error, "warn");
     receive.value = undefined;
@@ -334,21 +242,12 @@ async function confirm() {
     // The sale is frozen next, so it is decided again on the chain as it stands: the PSM may have
     // filled up since the summary. Nothing starts on a sale the summary did not show.
     const [fresh, landingHex] = await Promise.all([
-      estimate(picked, base, true),
-      landingAccountHex(picked, address.value, async (h160) =>
+      estimate(picked, base),
+      landingAccountHex(address.value, async (h160) =>
         (await import("~~/lib/withdraw-live")).readH160Account(h160),
       ),
     ]);
     if (leftSummary(picked) || sale.value !== shown) return;
-    // Under the minimum on every sale: the summary gives way to the out-of-range screen.
-    if (fresh.kind === "too-small") {
-      belowMinimum.value = fresh.minimumCash;
-      return;
-    }
-    if (fresh.kind === "declined") {
-      startError.value = fresh.reason;
-      return;
-    }
     if (shown === null || !sameSale(shown, fresh.sale)) {
       showEstimate(fresh);
       startError.value = "The estimate has changed. Review it and confirm again.";
@@ -359,9 +258,7 @@ async function confirm() {
       amount: base,
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex,
-      rail: picked.rail,
       sale: shown,
-      ...(expectedLanding.value === null ? {} : { expectedLanding: expectedLanding.value }),
     });
     if (outcome.ref === null) {
       startError.value = outcome.reason;
@@ -375,15 +272,6 @@ async function confirm() {
     starting.value = false;
   }
 }
-
-/** The out-of-range screen's way on: the shell takes the minimum as the amount, and the summary
- *  quotes it afresh when it lands. */
-function useAmount(cash: string) {
-  emit("useAmount", cash);
-}
-watch(amount, () => {
-  if (step.value === "summary" && address.value !== "") void onAddress(address.value);
-});
 
 async function confirmCancel() {
   const current = record.value;
@@ -468,9 +356,8 @@ watch(
   { immediate: true },
 );
 
-// The preview deck drives the step and the pickers' skeletons through the stage; a production
-// build never has one. Immediate: the deck may have staged this package before it mounted.
-const previewSkeleton = ref(false);
+// The preview deck drives the step through the stage; a production build never has one.
+// Immediate: the deck may have staged this package before it mounted.
 const previewSecret = ref<string | undefined>(undefined);
 watch(
   previewStage,
@@ -478,18 +365,13 @@ watch(
     if (stage?.kind !== "withdraw-package" || (stage.route ?? "crypto") !== "crypto") return;
     // The fiat routes' own steps never reach this package.
     if (stage.step === "quote" || stage.step === "region") return;
-    const staged = withdrawNetwork(stage.chain ?? "Ethereum") ?? null;
-    network.value = staged;
     // The address step needs a destination; the section's frames show USDC.
-    destination.value =
-      staged?.destinations.find((d) => d.asset === "USDC") ?? staged?.destinations[0] ?? null;
+    destination.value = ASSET_HUB_NETWORK.destinations.find((d) => d.asset === "USDC") ?? null;
     address.value = stage.address ?? "";
     receive.value = stage.receive;
     fees.value = stage.fees ?? null;
     previewSecret.value = stage.secret;
-    belowMinimum.value = stage.belowMinimum === undefined ? null : toCashBase(stage.belowMinimum);
     step.value = stage.step;
-    previewSkeleton.value = stage.skeleton === true;
   },
   { immediate: true },
 );
@@ -508,43 +390,25 @@ onUnmounted(() => {
 
 <template>
   <ScreenShell :title="toolbar.title" :back="toolbar.back" @back="onBack">
-    <template v-if="canSkipRail || canSkipSummary" #trailing>
+    <template v-if="canSkipSummary" #trailing>
       <button
         type="button"
         class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-        @click="canSkipRail ? onSkipRail() : onSkipSummary()"
+        @click="onSkipSummary"
       >
         Skip
       </button>
     </template>
 
-    <WithdrawNetworkScreen
-      v-if="step === 'network'"
-      :amount="amountBase"
-      :skeleton="previewSkeleton"
-      @pick="pickNetwork"
-    />
-    <WithdrawTokenScreen
-      v-else-if="step === 'token' && network"
-      :network="network"
-      :skeleton="previewSkeleton"
-      @pick="pickToken"
-    />
+    <WithdrawTokenScreen v-if="step === 'token'" :network="ASSET_HUB_NETWORK" @pick="pickToken" />
     <!-- Keyed so a staged address replaces the screen's own typing state. -->
     <WithdrawAddressScreen
-      v-else-if="step === 'address' && network && destination"
+      v-else-if="step === 'address' && destination"
       :key="address"
-      :network="network"
+      :network="ASSET_HUB_NETWORK"
       :destination="destination"
       :initial="address"
       @next="onAddress"
-    />
-    <AmountOutOfRange
-      v-else-if="step === 'summary' && destination && belowMinimum !== null"
-      :amount="groupAmountDigits(amount)"
-      :words="cryptoBelowMinimum(belowMinimum)"
-      @change-amount="emit('changeAmount')"
-      @use-amount="useAmount"
     />
     <WithdrawSummaryScreen
       v-else-if="step === 'summary' && destination"

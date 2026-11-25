@@ -11,8 +11,8 @@ A prototype funding surface for Polkadot App mobile hosts. It receives an inboun
 fiat-sourced, on an ephemeral account on Asset Hub, converts it into CASH on the People chain,
 and hands the result to the host. The same surface runs the other way at `#/withdraw`: it takes
 CASH out of the host's purse and delivers DOT, dotUSD, USDT or USDC to an Asset Hub address, or
-carries it on through Chainflip or Meld. The prototype consists of a static Nuxt 4 single-page
-app plus a background worker, both published to bulletin/DotNS.
+carries it on through Meld. The prototype consists of a static Nuxt 4 single-page app plus a
+background worker, both published to bulletin/DotNS.
 
 ## Architecture
 
@@ -91,10 +91,7 @@ credited one asset.
 The sale is decided at quote time, from the token the user picks for Asset Hub or, for a Meld
 destination, from the candidates the off-ramp catalog routes for the region, in this build's lane
 order (USDT on Asset Hub, then PAS, then the Chainflip lanes): a USDT candidate only when the PSM
-can serve it, and the first a provider quotes wins. For a Chainflip destination the chain ranks USDT through the PSM, when it can
-serve, then PAS through the pool, and each destination takes the first of those Chainflip can
-quote for the amount, its minimum included: an amount under Chainflip's minimum for USDT sells
-PAS, and one under the minimum on both shows the smaller. The PSM serves when it has room for the
+can serve it, and the first a provider quotes wins. The PSM serves when it has room for the
 amount plus a tenth of it, 20 CASH at the least, once the app's own open PSM withdrawals are
 counted against that room. Confirm decides the sale again, fresh: when it is no longer the one the
 summary showed, the summary takes the new figure and nothing starts until the user confirms that.
@@ -130,10 +127,8 @@ the program, the sizing, the redeem and the tick; `worker/src/withdraw-engine.js
 Withdrawals are a second record kind in the same request store as the top-ups, moved by the
 same observations and the same reconcile.
 
-A withdrawal to a Chainflip network or through Meld lands the sale's token on the key's own Asset
-Hub account and pays the provider from there. For Chainflip the page opens the channel for USDT
-or DOT on Asset Hub, whichever the sale lands, and the worker sweeps the key into it once the
-token is there.
+A withdrawal through Meld lands the sale's token on the key's own Asset Hub account and pays the
+provider from there.
 
 A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact figure in
 the sale's token, sized from what the sale lands, on the pool tier under its floor with room for

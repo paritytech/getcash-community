@@ -1,42 +1,27 @@
-// Where a withdrawal can go: the networks the picker lists, the tokens on each, and for each
+// Where a withdrawal can go: the network the picker shows, the tokens on it, and for each
 // destination how an address is checked, what the CASH lands as on Asset Hub, and where. Asset
-// Hub itself is the direct destination, reached by the XCM alone, in any of the tokens the
-// on-ramp takes from Polkadot. The Chainflip networks are listed as the design shows them;
-// whether a row can be picked for an amount is the floor store's call.
+// Hub is the one network, reached by the XCM alone, in any of the tokens the on-ramp takes from
+// Polkadot.
 
 import { AccountId } from "polkadot-api";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { DepositAsset } from "@getsome/funding";
-import type { WithdrawalRailState } from "../funding/requests/model";
 import { elideMiddle } from "../utils/address";
 import { networkIcon, tokenIcon } from "../utils/icons";
-import { POLKADOT_CHAIN, SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { POLKADOT_CHAIN } from "~~/lib/config";
 
-interface DestinationBase {
-  /** The destination's id, the tail of the withdrawal's source id: `usdc-assethub`, `btc`. */
+/** A token on Asset Hub, reached by the XCM alone. */
+export interface WithdrawDestination {
+  /** The destination's id, the tail of the withdrawal's source id: `usdc-assethub`. */
   id: string;
-  /** The network as Chainflip and the icon set name it. */
+  /** The network as the icon set names it. */
   chain: string;
   chainLabel: string;
   asset: string;
+  /** What the CASH lands as, named as the on-ramp names a deposit, from which the sale is decided
+   *  at quote time. */
+  landing: DepositAsset;
   validateAddress(address: string): boolean;
 }
-
-/** Asset Hub itself, reached by the XCM alone. `landing` is what the CASH lands as there, named as
- *  the on-ramp names a deposit, from which the sale is decided at quote time. */
-export interface DirectDestination extends DestinationBase {
-  rail: "direct";
-  landing: DepositAsset;
-}
-
-/** A destination a provider carries. It names no landing: it takes from the key whatever the sale
- *  its quote picked lands there, the PSM's external or the native. */
-export interface ProviderDestination extends DestinationBase {
-  rail: Exclude<WithdrawalRailState["provider"], "direct">;
-  landing?: undefined;
-}
-
-export type WithdrawDestination = DirectDestination | ProviderDestination;
 
 export interface WithdrawNetwork {
   chain: string;
@@ -73,13 +58,16 @@ export function assetHubAccountHex(address: string): `0x${string}` {
  *  the runtime keeps that rule in one place. */
 export type H160AccountReader = (h160: `0x${string}`) => Promise<string>;
 
-const assetHubDestination = (id: string, asset: string, landing: DepositAsset): DirectDestination =>
+const assetHubDestination = (
+  id: string,
+  asset: string,
+  landing: DepositAsset,
+): WithdrawDestination =>
   Object.freeze({
     id,
     chain: POLKADOT_CHAIN.chain,
     chainLabel: POLKADOT_CHAIN.label,
     asset,
-    rail: "direct",
     landing,
     validateAddress: isAssetHubAddress,
   });
@@ -93,47 +81,16 @@ const ASSET_HUB_DESTINATIONS: readonly WithdrawDestination[] = Object.freeze([
   assetHubDestination("usdc-assethub", "USDC", "USDC"),
 ]);
 
-/** The Chainflip destinations, one per source the on-ramp knows, each checked with the same
- *  validator the on-ramp applies to a refund address on that chain. */
-function chainflipDestinations(
-  chain: string,
-  label: string,
-  assets: readonly string[],
-): ProviderDestination[] {
-  return assets.flatMap((asset) => {
-    const sourceId = sourceIdFor(chain, asset);
-    const config = sourceId === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(sourceId);
-    if (config === undefined) return [];
-    return [
-      Object.freeze({
-        id: config.sourceId,
-        chain,
-        chainLabel: label,
-        asset,
-        rail: "chainflip" as const,
-        validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
-      }),
-    ];
-  });
-}
+/** Asset Hub, the one network a withdrawal goes to. */
+export const ASSET_HUB_NETWORK: WithdrawNetwork = Object.freeze({
+  chain: POLKADOT_CHAIN.chain,
+  label: POLKADOT_CHAIN.label,
+  icon: networkIcon(POLKADOT_CHAIN.chain),
+  destinations: ASSET_HUB_DESTINATIONS,
+});
 
-/** The networks in picker order: Asset Hub first, then the Chainflip networks. */
-export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([
-  Object.freeze({
-    chain: POLKADOT_CHAIN.chain,
-    label: POLKADOT_CHAIN.label,
-    icon: networkIcon(POLKADOT_CHAIN.chain),
-    destinations: ASSET_HUB_DESTINATIONS,
-  }),
-  ...SOURCE_CHAINS.map(({ chain, label, assets }) =>
-    Object.freeze({
-      chain,
-      label,
-      icon: networkIcon(chain),
-      destinations: Object.freeze(chainflipDestinations(chain, label, assets)),
-    }),
-  ),
-]);
+/** The networks a withdrawal can go to. */
+export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([ASSET_HUB_NETWORK]);
 
 export const withdrawNetwork = (chain: string): WithdrawNetwork | undefined =>
   WITHDRAW_NETWORKS.find((network) => network.chain === chain);
@@ -146,15 +103,12 @@ export const withdrawDestination = (id: string): WithdrawDestination | undefined
 export const destinationTokenIcon = (destination: WithdrawDestination): string =>
   tokenIcon(destination.asset);
 
-/** The Asset Hub account the funds land on for a destination: the address itself for Asset Hub,
- *  an H160 read on the chain first. Null for a provider destination: the sale's token lands on
- *  the withdrawal's own key, which then pays the provider and is where a refund comes back to. */
+/** The Asset Hub account the funds land on: the address itself, an H160 read on the chain
+ *  first. */
 export async function landingAccountHex(
-  destination: WithdrawDestination,
   address: string,
   readH160Account: H160AccountReader,
-): Promise<`0x${string}` | null> {
-  if (destination.rail !== "direct") return null;
+): Promise<`0x${string}`> {
   if (!isH160Address(address)) return assetHubAccountHex(address);
   const h160 = address.trim().toLowerCase() as `0x${string}`;
   return assetHubAccountHex(await readH160Account(h160));
@@ -168,17 +122,6 @@ export function formatLanding(units: bigint, decimals: number): string {
   const fraction = ((units % unit) * 10_000n) / unit;
   const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
   return digits === "" ? whole.toString() : `${whole}.${digits}`;
-}
-
-/** Whether some other network's rule accepts the address: picks the wrong-network error over
- *  the plain malformed one. */
-export function matchesOtherNetwork(network: WithdrawNetwork, address: string): boolean {
-  const trimmed = address.trim();
-  return WITHDRAW_NETWORKS.some(
-    (other) =>
-      other.chain !== network.chain &&
-      other.destinations.some((destination) => destination.validateAddress(trimmed)),
-  );
 }
 
 /** The address as the withdrawal frames elide it: five each end, against the six `shortAddress`

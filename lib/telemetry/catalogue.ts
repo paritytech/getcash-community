@@ -115,7 +115,6 @@ export const SCREENS = [
   "withdraw.amount",
   "withdraw.pending",
   "withdraw.history",
-  "withdraw.network",
   "withdraw.token",
   "withdraw.address",
   "withdraw.summary",

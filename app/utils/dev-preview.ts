@@ -42,18 +42,15 @@ import { devLog } from "~~/lib/log";
 type Session = ReturnType<typeof useSessionStore>;
 type Flow = ReturnType<typeof useFlowStore>;
 
-/** The withdraw summary/fees scenes' canned quote, as the section's design frames draw it. */
+/** The withdraw summary/fees scenes' canned estimate: the fee in CASH, taken before the sale. */
 const WITHDRAW_PREVIEW_FEES = {
-  rows: [
-    { label: "Network fee", value: "0.31 USDC" },
-    { label: "Swap fee", value: "0.21 USDC" },
-    { label: "Service fee", value: "0.04 USDC" },
-  ],
-  total: "0.56 USDC",
-  equivalent: "≈ 24.75 USDC",
-  receive: "24.19 USDC",
-  rate: "$1 CASH ≈ 0.99 USDC",
+  rows: [{ label: "Network fee", value: "$0.45 CASH" }],
+  receive: "24.44 USDC",
+  rate: "$1 CASH ≈ 0.98 USDC",
 };
+
+/** The Asset Hub account the withdraw scenes send to. */
+const WITHDRAW_PREVIEW_ADDRESS = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 
 /** The card withdrawal's canned quote for $25 to the United Kingdom, as its frames draw it: the
  *  provider's line in GBP, the exact PAS the key would pay, and the CASH held back for the price
@@ -556,7 +553,7 @@ async function previewWithdrawal(
       : {
           chain: "Polkadot",
           asset: "DOT",
-          address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+          address: WITHDRAW_PREVIEW_ADDRESS,
         });
   const record: WithdrawalRecord = {
     schema: 2,
@@ -2893,76 +2890,40 @@ export const SCENES: Scene[] = [
     },
   },
 
-  // ——— The withdrawal package's pickers, staged by `#/withdraw`. The stage carries everything —
-  // the step on screen and the skeletons — and the screens read static data, so `base` only
-  // clears what a neighbouring scene seeded.
+  // ——— The withdrawal package's entry steps, staged by `#/withdraw`. The stage carries
+  // everything and the screens read static data, so `base` only clears what a neighbouring scene
+  // seeded.
   {
-    name: "withdrawal / crypto / network: loaded",
-    stage: { kind: "withdraw-package", step: "network" },
+    name: "withdrawal / crypto / token",
+    stage: { kind: "withdraw-package", step: "token" },
     apply: (s, f) => base(s, f),
   },
-  {
-    name: "withdrawal / crypto / network: skeleton",
-    stage: { kind: "withdraw-package", step: "network", skeleton: true },
-    apply: (s, f) => base(s, f),
-  },
-  {
-    name: "withdrawal / crypto / token: loaded",
-    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum" },
-    apply: (s, f) => base(s, f),
-  },
-  {
-    name: "withdrawal / crypto / token: skeleton",
-    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum", skeleton: true },
-    apply: (s, f) => base(s, f),
-  },
-  // The address step's four states: empty, an address another network would take, one no network
-  // takes, and a valid one. The screen itself judges the seeded address.
+  // The address step's three states: empty, an address Asset Hub does not take, and a valid one.
+  // The screen itself judges the seeded address.
   {
     name: "withdrawal / crypto / address: empty",
-    stage: { kind: "withdraw-package", step: "address", chain: "Ethereum" },
-    apply: (s, f) => base(s, f),
-  },
-  {
-    name: "withdrawal / crypto / address: wrong network",
-    stage: {
-      kind: "withdraw-package",
-      step: "address",
-      chain: "Ethereum",
-      address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
-    },
+    stage: { kind: "withdraw-package", step: "address" },
     apply: (s, f) => base(s, f),
   },
   {
     name: "withdrawal / crypto / address: incorrect",
-    stage: {
-      kind: "withdraw-package",
-      step: "address",
-      chain: "Ethereum",
-      address: "1BvBMSEYstWetq",
-    },
+    stage: { kind: "withdraw-package", step: "address", address: "1BvBMSEYstWetq" },
     apply: (s, f) => base(s, f),
   },
   {
     name: "withdrawal / crypto / address: entered",
-    stage: {
-      kind: "withdraw-package",
-      step: "address",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-    },
+    stage: { kind: "withdraw-package", step: "address", address: WITHDRAW_PREVIEW_ADDRESS },
     apply: (s, f) => base(s, f),
   },
-  // The summary and its fee drill-in, on the section's canned quote: the route never asks
-  // Chainflip while the stage carries the estimate.
+  // The summary and its fee drill-in, on the section's canned estimate: the route never asks the
+  // chain while the stage carries it.
   {
     name: "withdrawal / crypto / summary",
     stage: {
       kind: "withdraw-package",
       step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      receive: "24.44 USDC",
+      address: WITHDRAW_PREVIEW_ADDRESS,
+      receive: WITHDRAW_PREVIEW_FEES.receive,
       fees: WITHDRAW_PREVIEW_FEES,
     },
     apply: (s, f) => base(s, f),
@@ -2972,9 +2933,8 @@ export const SCENES: Scene[] = [
     stage: {
       kind: "withdraw-package",
       step: "fees",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      receive: "24.44 USDC",
+      address: WITHDRAW_PREVIEW_ADDRESS,
+      receive: WITHDRAW_PREVIEW_FEES.receive,
       fees: WITHDRAW_PREVIEW_FEES,
     },
     apply: (s, f) => base(s, f),
@@ -2985,10 +2945,9 @@ export const SCENES: Scene[] = [
     stage: {
       kind: "withdraw-package",
       step: "fees",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      receive: "24.034843 USDC",
-      fees: { ...WITHDRAW_PREVIEW_FEES, receive: "24.034843 USDC" },
+      address: WITHDRAW_PREVIEW_ADDRESS,
+      receive: "24.4375 USDC",
+      fees: { ...WITHDRAW_PREVIEW_FEES, receive: "24.4375 USDC" },
     },
     apply: (s, f) => base(s, f),
   },
@@ -2997,33 +2956,14 @@ export const SCENES: Scene[] = [
     stage: {
       kind: "withdraw-package",
       step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      address: WITHDRAW_PREVIEW_ADDRESS,
       receive: null,
     },
     apply: (s, f) => base(s, f),
   },
   {
     name: "withdrawal / crypto / summary: no quote",
-    stage: {
-      kind: "withdraw-package",
-      step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-    },
-    apply: (s, f) => base(s, f),
-  },
-  // The provider's minimum for the token is over the amount: the summary gives way to the
-  // out-of-range screen, the minimum offered as the amount.
-  {
-    name: "withdrawal / crypto / summary: below minimum",
-    stage: {
-      kind: "withdraw-package",
-      step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      belowMinimum: "50",
-    },
+    stage: { kind: "withdraw-package", step: "summary", address: WITHDRAW_PREVIEW_ADDRESS },
     apply: (s, f) => base(s, f),
   },
   // ——— The journey and the refund guide, on a hand-made record; see `previewWithdrawal`.

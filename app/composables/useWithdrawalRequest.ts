@@ -27,7 +27,6 @@ import {
   requestsNow,
   saleBeforePurse,
   type WithdrawalChannel,
-  type WithdrawalRailState,
   type WithdrawalRecord,
 } from "../funding/requests/model";
 import { paymentIdFor } from "../funding/requests/payment-id";
@@ -58,20 +57,15 @@ const SWAP_REUSE_MARGIN_MS = PAYMENT_WINDOW_MS + CHANNEL_EXPIRY_MARGIN_MS;
 const cancelsUnderWay = new Set<string>();
 
 export interface WithdrawalStart {
-  /** The destination's id, the tail of the source id: `usdc-assethub`, `btc`. */
+  /** The destination's id, the tail of the source id: `usdc-assethub`. */
   destinationId: string;
   /** The CASH to withdraw, base units. */
   amount: bigint;
   destination: WithdrawalRecord["destination"];
-  /** The Asset Hub account the funds land on: the destination itself, or null for the
-   *  withdrawal's own key when a provider carries the sale's token on. */
-  landingHex: string | null;
-  rail: WithdrawalRailState["provider"];
+  /** The Asset Hub account the funds land on. */
+  landingHex: string;
   /** The sale the worker makes on Asset Hub, as the quote decided it for the destination. */
   sale: ConversionRoute;
-  /** What the summary estimated will land on the key in the sale's token, base units: what a
-   *  provider's channel is quoted for. Required for every rail but `direct`. */
-  expectedLanding?: bigint;
 }
 
 export type WithdrawalStartOutcome =
@@ -153,8 +147,8 @@ export function useWithdrawalRequest() {
 
   const foreground = computed(() => requests.foregroundWithdrawal);
 
-  /** Creates the record, prompts the purse, and hands the worker the request. Puts the record on
-   *  screen as soon as it exists. */
+  /** Starts a withdrawal to Asset Hub: creates the record, prompts the purse, and hands the worker
+   *  the request. Puts the record on screen as soon as it exists. */
   async function start(input: WithdrawalStart): Promise<WithdrawalStartOutcome> {
     if (!isHosted()) {
       return {
@@ -177,28 +171,6 @@ export function useWithdrawalRequest() {
     );
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
-    // A provider destination gets its channel now, while the user is here and with the quote
-    // they were shown. Nothing is created when the provider cannot open one.
-    let channel: WithdrawalChannel | undefined;
-    if (input.rail !== "direct") {
-      if (input.expectedLanding === undefined) {
-        return { ok: false, ref: null, reason: "The estimate is not available right now." };
-      }
-      try {
-        channel = await live.openWithdrawChannelFor({
-          amount: input.expectedLanding,
-          destination: { id: input.destinationId, ...input.destination },
-          keyPublicKeyHex: key.publicKeyHex,
-          sale: input.sale,
-        });
-      } catch (e: unknown) {
-        return {
-          ok: false,
-          ref: null,
-          reason: `The provider could not be reached: ${messageOf(e)}`,
-        };
-      }
-    }
     const startedAt = requestsNow();
     const paymentExpiresAt = startedAt + PAYMENT_WINDOW_MS;
     const handoff = live.withdrawHandoff({
@@ -207,11 +179,10 @@ export function useWithdrawalRequest() {
       key,
       amount: input.amount,
       destination: input.destination,
-      landingHex: input.landingHex ?? key.publicKeyHex,
-      rail: input.rail,
+      landingHex: input.landingHex,
+      rail: "direct",
       sale: input.sale,
       paymentExpiresAt,
-      ...(channel === undefined ? {} : { channel }),
     });
     const record: WithdrawalRecord = {
       schema: 2,
@@ -228,7 +199,7 @@ export function useWithdrawalRequest() {
       deadline: { paymentExpiresAt },
       handoff,
       status: { kind: "awaiting-payment" },
-      rail: { provider: input.rail, stage: "waiting", updatedAt: startedAt },
+      rail: { provider: "direct", stage: "waiting", updatedAt: startedAt },
       witnesses: {},
     };
     // a create that throws ends the withdrawal here, so its journey starts once the record exists
@@ -603,42 +574,21 @@ export function useWithdrawalRequest() {
     return { ok: true };
   }
 
-  /** A user retry: a failed payment is prompted again under a fresh attempt; a failed swap gets
-   *  a fresh channel for what the provider refunded to the key, in the sale's token; a failed
-   *  conversion is handed to the worker again. */
+  /** A user retry: a failed payment is prompted again under a fresh attempt; a failed conversion
+   *  is handed to the worker again. A Chainflip send that failed is refused. */
   async function retry(ref: RequestRef): Promise<boolean> {
     const record = requests.get(ref);
     if (record === undefined || record.kind !== "withdrawal") return false;
-    // Checked here as well as in the store's own retry: the send step opens a provider channel
-    // before it gets there, and a record that cannot be retried must not have one opened for it.
-    if (record.status.kind !== "failed" || !record.status.recoverable) return false;
     const step = record.failure?.step;
-    const live = await import("~~/lib/withdraw-live");
-    // A fiat sale keeps its one order: the key pays the channel it has, which the worker checks
-    // against the provider again. Only Chainflip opens a fresh channel for what came back.
-    if (step === "send" && record.rail.provider === "chainflip") {
-      // The channel first, so a provider that cannot be reached leaves the record as it was; then
-      // stamped on the record, so the hand-off the store's retry re-sends carries it.
-      const sale = recordedRoute(record.handoff);
-      const channel = await live.openWithdrawChannelFor({
-        amount: await live.readWithdrawKeyBalanceOnAssetHub(record.key.publicKeyHex, sale),
-        destination: { id: withdrawDestinationIdOf(record), ...record.destination },
-        keyPublicKeyHex: record.key.publicKeyHex,
-        sale,
-      });
-      await requests.observe(ref, {
-        source: "user",
-        at: requestsNow(),
-        event: "channel-opened",
-        channel,
-      });
-      return requests.retryWithdrawal(ref);
-    }
+    // No channel is opened for a failed Chainflip send. A fiat sale keeps its one order: the key
+    // pays the channel it has, which the worker checks against the provider again.
+    if (step === "send" && record.rail.provider === "chainflip") return false;
     if (!(await requests.retryWithdrawal(ref))) return false;
     if (step !== "payment") return true;
     // A sale is priced again before the purse is asked again, by its route, which follows the
     // record back to waiting for its payment.
     if (record.sale !== undefined) return true;
+    const live = await import("~~/lib/withdraw-live");
     const prompted = await prompt(ref, live);
     if (prompted.ok) await handOff(ref, live);
     return prompted.ok;
@@ -663,10 +613,6 @@ export function useWithdrawalRequest() {
     const symbol = record.rail.provider === "direct" ? record.destination.asset : token.symbol;
     return `${formatLanding(units, token.decimals)} ${symbol}`;
   }
-
-  /** The destination's id is the tail of the withdrawal's source id. */
-  const withdrawDestinationIdOf = (record: WithdrawalRecord): string =>
-    (record.ref.sourceId ?? "").slice(WITHDRAW_SOURCE_PREFIX.length);
 
   /** Cancels a withdrawal nothing was paid for, after the store's last look at the key and the
    *  host. Tells the worker on success. */

@@ -1,36 +1,26 @@
 <script setup lang="ts">
 // The token picker's reminder of the network already picked: its label and icon on the design's
-// container bar. `skeleton` renders the bar as an empty loading placeholder.
+// container bar.
 withDefaults(
   defineProps<{
     /** The bar's own word, before the network's. */
     caption?: string;
-    label?: string;
-    icon?: string;
-    skeleton?: boolean;
+    label: string;
+    icon: string;
   }>(),
-  {
-    caption: "Network selected",
-    label: "",
-    icon: "",
-    skeleton: false,
-  },
+  { caption: "Network selected" },
 );
 </script>
 
 <template>
   <div
     class="recap-bar flex h-10 shrink-0 items-center justify-between bg-surface-container px-3 text-body-m text-fg-primary"
-    :class="{ 'animate-pulse': skeleton }"
-    :aria-hidden="skeleton || undefined"
   >
-    <template v-if="!skeleton">
-      <span>{{ caption }}</span>
-      <span class="flex items-center gap-2">
-        {{ label }}
-        <img :src="icon" alt="" class="size-6 rounded-full" />
-      </span>
-    </template>
+    <span>{{ caption }}</span>
+    <span class="flex items-center gap-2">
+      {{ label }}
+      <img :src="icon" alt="" class="size-6 rounded-full" />
+    </span>
   </div>
 </template>
 
