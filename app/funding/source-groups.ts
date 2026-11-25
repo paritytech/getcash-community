@@ -1,9 +1,8 @@
-// The deposit pickers' wording: the line under a row that cannot take the amount on screen, and
-// the token picker's two labelled groups. The network picker's order is OptionList's. Pure, so
-// both screens share one wording.
+// The pickers' wording: the line under a row that cannot take the amount on screen, and the
+// token picker's two labelled groups. Pure, so every picker shares one wording.
 
 import { CASH_DECIMALS } from "@getsome/people";
-import { isPickable, type NetworkRow, type TokenOffer, type TokenRow } from "../stores/offers";
+import { isPickable, type TokenOffer, type TokenRow } from "../stores/offers";
 import { cashAmount } from "../utils/cash";
 
 export interface PickerGroup<T> {
@@ -21,17 +20,6 @@ export const wholeCashCeil = (base: bigint): string =>
  *  "Minimum for this network is $80 CASH". */
 export const minimumLine = (of: "token" | "network", base: bigint): string =>
   `Minimum for this ${of} is ${cashAmount(wholeCashCeil(base))}`;
-
-/** The smallest purchase any of these tokens would take, in CASH base units; null when none
- *  reported one. */
-export function smallestMinimumCash(tokens: readonly { offer: TokenOffer }[]): bigint | null {
-  let smallest: bigint | null = null;
-  for (const { offer } of tokens) {
-    if (offer.state !== "too-small" || offer.minimumCashBase === null) continue;
-    if (smallest === null || offer.minimumCashBase < smallest) smallest = offer.minimumCashBase;
-  }
-  return smallest;
-}
 
 /** The line under a token row: why it cannot be picked, nothing when it can. A token still being
  *  answered says nothing either, since the picker draws a skeleton row in its place. */
@@ -51,18 +39,6 @@ export function tokenSubtitle(offer: TokenOffer): string | undefined {
     case "checking":
       return undefined;
   }
-}
-
-/** A network that can be picked says nothing, as does one still being answered; one that cannot
- *  says why, by its tokens. */
-export function networkSubtitle(network: NetworkRow): string | undefined {
-  if (network.available || network.checking) return undefined;
-  const states = new Set(network.tokens.map((t) => t.offer.state));
-  if (states.has("rail-off")) return "Not available yet";
-  const minimum = smallestMinimumCash(network.tokens);
-  if (minimum !== null) return minimumLine("network", minimum);
-  if (states.has("too-small")) return "Amount too small";
-  return "Not available right now";
 }
 
 function split<T>(

@@ -14,7 +14,7 @@ import type { WithdrawFeeView } from "../withdraw/offers";
 export type PreviewStage =
   /** The shell's own screens: the top-ups list, history, the amount screen. */
   | { kind: "shell" }
-  /** A route package's entry flow (network, token, the deposit). */
+  /** A route package's entry flow (token, the deposit). */
   | { kind: "package"; route: FundingRoute }
   /** The journey. `topUpId` opens it as a top-up from the list; without one it reads as a
    *  package handoff. */

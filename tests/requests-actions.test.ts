@@ -156,10 +156,10 @@ describe("requests store: foreground, clock and user actions", () => {
       const session = useSessionStore();
       const requests = useRequestsStore();
       session.setAmount("1");
-      await session.fetchQuote("Bitcoin", "BTC");
+      await session.fetchQuote("Polkadot", "DOT");
       await session.start();
 
-      const ref = requestRefOf("btc", 1);
+      const ref = requestRefOf("dot-assethub", 1);
       expect(requests.foregroundRecord?.ref).toEqual(ref);
       expect(requests.get(ref)?.status.kind).toBe("awaiting-deposit");
       expect(requests.phase).toBe("awaiting-deposit");
@@ -409,9 +409,9 @@ describe("requests store: foreground, clock and user actions", () => {
     const session = useSessionStore();
     const requests = useRequestsStore();
     session.setAmount("1");
-    await session.fetchQuote("Bitcoin", "BTC");
+    await session.fetchQuote("Polkadot", "DOT");
     await session.start();
-    const ref = requestRefOf("btc", 1);
+    const ref = requestRefOf("dot-assethub", 1);
     expect(requests.get(ref)?.status.kind).toBe("awaiting-deposit");
 
     await requests.observe(ref, providerReceiving(Date.now()));

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Chainflip route: pick network and token, then show where to send until the deposit is seen. Hands
-// off to the journey once funds are seen or the deposit window lapses.
+// Crypto route: pick the token, then show where to send until the deposit is seen. Hands off to
+// the journey once funds are seen or the deposit window lapses.
 import { computed, onMounted, onUnmounted } from "vue";
 import { isDemoBuild } from "../../../utils/demo";
 import { previewStage } from "../../../utils/dev-preview-stage";
@@ -30,7 +30,7 @@ useVisibilityReconcile();
 useStateDirector();
 const { handedOff } = useChainflipHandoff(emit);
 
-/** A price that could not be had takes the pickers' place, in the two steps every quote screen
+/** A price that could not be had takes the picker's place, in the two steps every quote screen
  *  shows: a retry, then a change of amount. The rail cannot be swapped for itself. */
 const quoteFailed = computed(
   () => flow.screen === "entry" && session.quoteError !== null && !session.loading,
@@ -41,7 +41,7 @@ useScreen(() => {
     if (flow.confirmingCancel) return "top-up.cancel";
     return flow.recoveringDeposit ? "top-up.recover-deposit" : "top-up.deposit";
   }
-  return flow.step === "token" ? "top-up.token" : "top-up.network";
+  return "top-up.token";
 });
 
 const toolbar = computed<{
@@ -60,13 +60,9 @@ const toolbar = computed<{
       trailing: session.canSkipDeposit && !requests.claiming && isDemoBuild() ? "skip" : null,
     };
   }
-  // The failed quote takes the pickers' place; the title names the action it failed.
+  // The failed quote takes the picker's place; the title names the action it failed.
   if (quoteFailed.value) return { back: true, title: "Add funds via Crypto", trailing: null };
-  return {
-    back: true,
-    title: flow.step === "token" ? "Select token" : "Select network",
-    trailing: null,
-  };
+  return { back: true, title: "Select token", trailing: null };
 });
 
 function onBack() {
@@ -75,14 +71,7 @@ function onBack() {
     flow.recoveringDeposit = false;
     return;
   }
-  if (
-    flow.screen === "journey" ||
-    flow.step === "network" ||
-    flow.step === "method" ||
-    flow.step === "amount"
-  )
-    emit("back");
-  else flow.back();
+  emit("back");
 }
 
 /** Performs the cancel. One that went through leaves for the selector; a declined one returns to
@@ -111,7 +100,6 @@ onMounted(async () => {
   if (previewStage.value?.kind === "package") return;
   flow.startOver();
   session.setAmount(props.selection.amount);
-  flow.step = "network";
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   if (!active) return;
   // Open requests carry on converting; none of them takes the screen. The pickers learn which
@@ -157,9 +145,6 @@ onUnmounted(() => {
         @keep="flow.confirmingCancel = false"
       />
       <DepositScreen v-else-if="flow.screen === 'journey'" @cancel="flow.confirmingCancel = true" />
-      <NetworkScreen
-        v-else-if="flow.step === 'network' || flow.step === 'amount' || flow.step === 'method'"
-      />
       <TokenScreen v-else />
     </template>
   </ScreenShell>

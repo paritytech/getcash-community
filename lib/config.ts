@@ -72,13 +72,13 @@ export const POLKADOT_CHAIN = {
   label: "Polkadot",
 } as const;
 
-/** The on-ramp's networks in picker order: the direct one first, then the Chainflip ones. */
-export const FUNDING_CHAINS = [POLKADOT_CHAIN, ...SOURCE_CHAINS] as const;
+/** The on-ramp's networks: the direct one alone. */
+export const FUNDING_CHAINS = [POLKADOT_CHAIN] as const;
 export type FundingChain = (typeof FUNDING_CHAINS)[number];
 
 /** A network as the screens name it, from the name Chainflip and the records give it. */
 export const chainLabel = (chain: string): string =>
-  FUNDING_CHAINS.find((candidate) => candidate.chain === chain)?.label ?? chain;
+  [POLKADOT_CHAIN, ...SOURCE_CHAINS].find((candidate) => candidate.chain === chain)?.label ?? chain;
 
 // The destination is always CASH; this app has no other destination assets.
 

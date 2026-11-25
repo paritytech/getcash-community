@@ -48,14 +48,14 @@ describe("session store: quote failures in a row", () => {
   it("counts crypto quote failures and clears them on a quote that lands", async () => {
     const store = useSessionStore();
     store.setAmount("1");
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
     expect(store.quoteError).toBe("the rate could not be read");
     expect(store.quoteFailures).toBe(1);
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
     expect(store.quoteFailures).toBe(2);
 
     fault.error = null;
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
     expect(store.quoteError).toBeNull();
     expect(store.quoted).not.toBeNull();
     expect(store.quoteFailures).toBe(0);
@@ -64,16 +64,16 @@ describe("session store: quote failures in a row", () => {
   it("a new amount or another source starts the count over", async () => {
     const store = useSessionStore();
     store.setAmount("1");
-    await store.fetchQuote("Bitcoin", "BTC");
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
+    await store.fetchQuote("Polkadot", "DOT");
     expect(store.quoteFailures).toBe(2);
 
     store.setAmount("2");
     expect(store.quoteFailures).toBe(0);
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
     expect(store.quoteFailures).toBe(1);
 
-    await store.fetchQuote("Ethereum", "ETH");
+    await store.fetchQuote("Polkadot", "USDT");
     expect(store.quoteFailures).toBe(1);
   });
 
@@ -148,11 +148,11 @@ describe("session store: quote failures reported", () => {
     store.setAmount("1");
 
     // When
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
 
     // Then
     expect(reported).toEqual([
-      { reason: "crypto:error", context: { chain: "Bitcoin", asset: "BTC" } },
+      { reason: "crypto:error", context: { chain: "Polkadot", asset: "DOT" } },
     ]);
     expect(isExpected("quote-failed", reported[0]!.reason)).toBe(false);
   });
@@ -212,7 +212,7 @@ describe("session store: quote failures reported", () => {
     store.setAmount("1");
 
     // When
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote("Polkadot", "DOT");
 
     // Then
     expect(reported.map((r) => r.reason)).toEqual(["crypto:offline"]);

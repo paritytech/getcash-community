@@ -1,5 +1,5 @@
-// The on-ramp catalog: the direct Polkadot network in front of the Chainflip ones, the Chainflip
-// catalog unchanged for the withdraw side and the floors, and the two source id maps agreeing.
+// The on-ramp catalog: the direct Polkadot network alone, the Chainflip catalog unchanged for the
+// withdraw side and the floors, and the two source id maps agreeing.
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -19,15 +19,14 @@ import { networkIcon, tokenIcon } from "~~/app/utils/icons";
 import { railProviderOf, routeOf } from "~~/app/funding/requests/model";
 
 describe("the funding catalog", () => {
-  it("lists Polkadot first with DOT, dotUSD, USDT and USDC, then the Chainflip networks", () => {
-    expect(FUNDING_CHAINS[0]).toBe(POLKADOT_CHAIN);
+  it("lists Polkadot alone, with DOT, dotUSD, USDT and USDC", () => {
+    expect(FUNDING_CHAINS).toEqual([POLKADOT_CHAIN]);
     expect(POLKADOT_CHAIN).toMatchObject({
       chain: "Polkadot",
       native: "DOT",
       assets: ["DOT", "dotUSD", "USDT", "USDC"],
       label: "Polkadot",
     });
-    expect(FUNDING_CHAINS.slice(1)).toEqual(SOURCE_CHAINS);
   });
 
   it("keeps the Chainflip catalog as it was, which the withdraw side and the floors read", () => {
@@ -52,7 +51,7 @@ describe("the funding catalog", () => {
   });
 
   it("has an icon file of its own for every network and token", () => {
-    const icons = FUNDING_CHAINS.flatMap((chain) => [
+    const icons = [...FUNDING_CHAINS, ...SOURCE_CHAINS].flatMap((chain) => [
       networkIcon(chain.chain),
       ...chain.assets.map(tokenIcon),
     ]);

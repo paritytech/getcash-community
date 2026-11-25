@@ -45,11 +45,11 @@ token and the worker signs one `Utility.batch_all` that mints the CASH and sends
 The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
 takes over whenever the PSM cannot serve a request (i.e.: no instance open for the pair, minting
 paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
-delivers the native token and one XCM swaps and sends it instead. A Chainflip pick takes the
-pool too when Chainflip cannot quote the swap into USDT for it, and a card or bank top-up when no
-provider buys USDT for the region and amount or the quote for it times out. Which tier a request
-takes is decided at quote time, before the provider is told what to send, and recorded on the request
-with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
+delivers the native token and one XCM swaps and sends it instead. A card or bank top-up takes the
+pool too when no provider buys USDT for the region and amount or the quote for it times out.
+Which tier a request takes is decided at quote time, before the provider is told what to send,
+and recorded on the request with the fee rate it was quoted; the worker runs the tier it is
+handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
 for PAS and PAS for CASH inside the holding and sends the CASH on, every fee paid in the stable,
@@ -165,13 +165,13 @@ whose chain state contradicts the payment stops the job for a person.
 meet: reverse-quote a target amount, open a deposit channel to the ephemeral, report status,
 probe liquidity, and list its sources. Two packages implement it, and one source needs none:
 
-- `@getsome/chainflip` for crypto deposits, over the Chainflip SDK. Sources are BTC, ETH,
-  USDC and the other Chainflip assets.
+- `@getsome/chainflip` for swaps from other networks, over the Chainflip SDK. The top-up offers
+  none of its sources.
 - `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
   route's deposit asset to the ephemeral; from there the flow is identical to a crypto deposit.
-- Polkadot directly: the buyer sends DOT, dotUSD, USDT or USDC from any wallet to the ephemeral
-  on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail port, one source
-  id per token, and the deposit screen shows the account as a QR at once.
+- Polkadot directly, the crypto top-up: the buyer sends DOT, dotUSD, USDT or USDC from any wallet
+  to the ephemeral on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail
+  port, one source id per token, and the deposit screen shows the account as a QR at once.
 
 The core session does not know which rail it is running. The surface picks one per route.
 
@@ -289,8 +289,8 @@ Being a prototype, parts of the tree exist to keep a demo moving and are not wha
 deployment would do. Each is marked `TODO(production)` at its definition:
 
 - the faucet (`lib/faucet.ts`, `app/utils/demo.ts`), which on Skip sends the burner what the
-  Chainflip channel would deliver, in the route's deposit asset, and the `estimateSourceFromCash`
-  helper behind the `≈` amounts of the browser world
+  buyer or the provider would deliver, in the route's deposit asset, and the
+  `estimateSourceFromCash` helper behind the `≈` amounts of the browser world
 
 ## Deploy
 

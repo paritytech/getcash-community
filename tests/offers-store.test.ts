@@ -1,12 +1,12 @@
-// The offers store projects the learned floors and the amount on screen into the networks and
-// tokens to show. These seed the floors directly; the one learn they let through is faked.
+// The offers store lists the direct network's tokens and learns the swap floors for the amount on
+// screen. These seed the floors directly; the one learn they let through is faked.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import { TOKENS, type SourceId } from "@getsome/core";
 import { egressFor, type SourceFloorResult } from "@getsome/chainflip";
-import { useOffersStore, type TokenOffer } from "../app/stores/offers";
+import { useOffersStore } from "../app/stores/offers";
 import { useSessionStore } from "../app/stores/session";
 import { learnSourceFloors } from "../lib/source-floors";
 
@@ -57,19 +57,6 @@ function sized(session: ReturnType<typeof useSessionStore>, nativeAmount: bigint
   };
 }
 
-/** The same purchase quoted as a direct USDC deposit: no figure in any asset the floors know. */
-function sizedInUsdc(session: ReturnType<typeof useSessionStore>) {
-  session.setAmount("50");
-  session.loading = false;
-  session.quoted = {
-    send: "50",
-    symbol: "USDC",
-    nativeAmount: null,
-    sourceAsset: "USDC",
-    sourceChain: "Polkadot",
-  };
-}
-
 /** The same purchase on the PSM tier: 50 CASH sized at 50 USDT. */
 function sizedInUsdt(session: ReturnType<typeof useSessionStore>) {
   session.setAmount("50");
@@ -108,10 +95,6 @@ describe("offers store", () => {
     hosted.value = false;
   });
 
-  /** The Chainflip networks: everything but the direct one. */
-  const swapNetworks = (offers: ReturnType<typeof useOffersStore>) =>
-    offers.networks.filter((n) => n.chain !== "Polkadot");
-
   it("offers the Polkadot tokens as direct deposits with no floor, before any floors and with the rail off", () => {
     const session = useSessionStore();
     const offers = useOffersStore();
@@ -135,109 +118,6 @@ describe("offers store", () => {
     expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot"]);
   });
 
-  it("offers the swap rows as they are while a direct stable quote is on screen", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sizedInUsdc(session);
-    offers.floors = LEARNED;
-    // The quote names no figure the floors can be held against, so nothing is awaited: the rows
-    // are open, and the quote after a pick is what judges them. Chainflip's own no stays a no.
-    expect(offers.awaitingNetworks).toBe(false);
-    expect(offers.tokensOf("Ethereum").map((t) => t.offer.state)).toEqual([
-      "ungated",
-      "unavailable",
-      "ungated",
-    ]);
-    expect(offers.networks[0]!.tokens.every((t) => t.offer.state === "direct")).toBe(true);
-    // A quote back in the native prices the rows again.
-    sized(session, 100n * DOT);
-    expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
-  });
-
-  it("is checking every swap network until the floors are learned", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sized(session, 100n * DOT);
-    expect(swapNetworks(offers).every((n) => n.checking && !n.available)).toBe(true);
-    expect(offers.offeredNetworks).toHaveLength(7); // still worth showing, as pending
-    expect(offers.awaitingNetworks).toBe(true);
-    expect(offers.paused).toBe(false);
-  });
-
-  it("offers only the networks with a token that clears its floor, tokens likewise", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sized(session, 100n * DOT);
-    offers.floors = LEARNED;
-
-    expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot", "Ethereum", "Bsc"]);
-    expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
-    expect(offers.offeredTokens("Bitcoin")).toEqual([]);
-    expect(offers.offeredTokens("Arbitrum")).toEqual([]);
-    expect(offers.offeredTokens("Bsc").map((t) => t.asset)).toEqual(["USDT"]);
-    expect(offers.paused).toBe(false);
-
-    const eth = offers.offeredTokens("Ethereum")[0]!.offer;
-    expect(eth.state).toBe("available");
-    if (eth.state !== "available") return;
-    // 100 DOT at 0.01 ETH per 25 DOT = 0.04 ETH, buffered for a half-point channel:
-    // 0.04 x 1.0025 / 0.995 = 0.0403015..., shown rounded up at 6 places.
-    expect(eth.offer.sendBaseUnits).toBe(40_301_507_537_688_443n);
-    expect(eth.offer.sendFormatted).toBe("0.040302");
-    expect(eth.offer.etaSeconds).toBe(600);
-
-    // USDT on BNB Chain counts in 18 decimals: 100 DOT at 10 USDT per 20 DOT = 50 USDT,
-    // buffered the same way: 50 x 1.0025 / 0.995 = 50.376884..., rounded up at 6 places.
-    const usdt = offers.offeredTokens("Bsc")[0]!.offer;
-    expect(usdt.state).toBe("available");
-    if (usdt.state !== "available") return;
-    expect(usdt.offer.sendBaseUnits).toBe(50_376_884_422_110_552_764n);
-    expect(usdt.offer.sendFormatted).toBe("50.376885");
-  });
-
-  it("says how small is too small, in CASH", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sized(session, 100n * DOT);
-    offers.floors = LEARNED;
-    const bitcoin = offers.networks.find((n) => n.chain === "Bitcoin")!;
-    expect(bitcoin.available).toBe(false);
-    expect(bitcoin.checking).toBe(false);
-    const btc = bitcoin.tokens[0]!.offer;
-    expect(btc.state).toBe("too-small");
-    // 50 CASH bought 100 DOT and the floor is worth 160 DOT: the smallest purchase is 80 CASH.
-    if (btc.state === "too-small") expect(btc.minimumCashBase).toBe(80_000_000n);
-  });
-
-  it("keeps a source Chainflip could not answer for out of the offer, with its reason", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sized(session, 100n * DOT);
-    offers.floors = LEARNED;
-    const usdc = offers.networks
-      .find((n) => n.chain === "Ethereum")!
-      .tokens.find((t) => t.asset === "USDC")!.offer;
-    expect(usdc).toEqual({ state: "unavailable", reason: "Quoting is currently unavailable" });
-  });
-
-  it("offers everything ungated when the pool could not size the purchase", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sized(session, null);
-    offers.floors = LEARNED;
-    expect(offers.offeredNetworks.map((n) => n.chain)).toEqual([
-      "Polkadot",
-      "Bitcoin",
-      "Ethereum",
-      "Solana",
-      "Bsc",
-      "Arbitrum",
-    ]);
-    expect(offers.offeredTokens("Bitcoin")[0]!.offer).toEqual({ state: "ungated" });
-    // Chainflip's own no is still a no.
-    expect(offers.offeredTokens("Tron")).toEqual([]);
-  });
-
   it("is paused when Chainflip answered for nothing", () => {
     const session = useSessionStore();
     const offers = useOffersStore();
@@ -250,67 +130,7 @@ describe("offers store", () => {
     expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot"]);
   });
 
-  it("still lists every token on a network, the greyed ones included", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    sized(session, 100n * DOT);
-    offers.floors = LEARNED;
-    expect(offers.tokensOf("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDC", "USDT"]);
-    expect(offers.tokensOf("Bitcoin").map((t) => t.offer.state)).toEqual(["too-small"]);
-    expect(offers.tokensOf("Mars")).toEqual([]);
-  });
-
-  it("has the pickers wait while the floors are being learned or the quote is sizing", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    expect(offers.awaitingNetworks).toBe(true); // rail on, nothing learned yet
-    offers.railEnabled = false;
-    expect(offers.awaitingNetworks).toBe(false); // nothing will be asked: show the greyed rows
-    offers.railEnabled = true;
-    offers.floors = LEARNED;
-    expect(offers.awaitingNetworks).toBe(true); // learned, but no quote has sized the amount
-    expect(offers.awaitingTokens("Polkadot")).toBe(false); // the direct rows never wait
-    expect(offers.awaitingTokens("Ethereum")).toBe(true);
-    sized(session, 100n * DOT);
-    expect(offers.awaitingNetworks).toBe(false);
-    expect(offers.awaitingTokens("Ethereum")).toBe(false);
-    // A re-quote clears the quote on hand: the rows wait for the new one.
-    session.quoted = null;
-    session.loading = true;
-    expect(offers.awaitingNetworks).toBe(true);
-    // A quote that failed is an answer: the rows show, as they are.
-    session.loading = false;
-    session.quoteError = "down";
-    expect(offers.awaitingNetworks).toBe(false);
-  });
-
-  it("greys every route while the build does not move money through Chainflip", () => {
-    const session = useSessionStore();
-    const offers = useOffersStore();
-    offers.railEnabled = false; // a hosted build without the broker key
-    sized(session, 100n * DOT);
-    // Nothing is ever learned in this build; the swap rows still say so.
-    expect(offers.awaitingNetworks).toBe(false);
-    expect(
-      swapNetworks(offers)
-        .flatMap((n) => n.tokens)
-        .every((t) => t.offer.state === "rail-off"),
-    ).toBe(true);
-    offers.floors = LEARNED; // whatever Chainflip said, no swap route is pickable
-    expect(offers.networks).toHaveLength(7);
-    expect(swapNetworks(offers).every((n) => !n.available && !n.checking)).toBe(true);
-    expect(
-      swapNetworks(offers)
-        .flatMap((n) => n.tokens)
-        .every((t) => t.offer.state === "rail-off"),
-    ).toBe(true);
-    // The direct deposit is the one route such a build moves money through.
-    expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot"]);
-    expect(offers.offeredTokens("Ethereum")).toEqual([]);
-    expect(offers.paused).toBe(false);
-  });
-
-  it("compares a PSM-tier quote against floors worth in its own asset, kept apart from the pool's", () => {
+  it("keeps the floors a PSM-tier quote is held against apart from the pool's", () => {
     const session = useSessionStore();
     const offers = useOffersStore();
     sized(session, 100n * DOT);
@@ -318,17 +138,11 @@ describe("offers store", () => {
 
     sizedInUsdt(session);
     expect(offers.floors).toBeNull(); // nothing learned in USDT yet
-    offers.floors = new Map<SourceId, SourceFloorResult>([
-      ["btc", floor("btc", 40_000n, 160n, USDT)], // needs 160 USDT: too small for 50
-      ["eth", floor("eth", 10n ** 16n, 25n, USDT)], // 25 USDT: fine
+    const inUsdt = new Map<SourceId, SourceFloorResult>([
+      ["eth", floor("eth", 10n ** 16n, 25n, USDT)],
     ]);
-    const eth = offers.offeredTokens("Ethereum")[0]!.offer;
-    expect(eth.state).toBe("available");
-    // 50 USDT at 0.01 ETH per 25 USDT = 0.02 ETH, buffered for a half-point channel.
-    if (eth.state === "available") expect(eth.offer.sendBaseUnits).toBe(20_150_753_768_844_222n);
-    const btc = offers.networks.find((n) => n.chain === "Bitcoin")!.tokens[0]!.offer;
-    // 50 CASH bought 50 USDT and the floor is worth 160 USDT: the smallest purchase is 160 CASH.
-    expect(btc).toEqual({ state: "too-small", minimumCashBase: 160_000_000n });
+    offers.floors = inUsdt;
+    expect(offers.floors).toBe(inUsdt);
 
     sized(session, 100n * DOT); // back on the pool tier: its floors were kept
     expect(offers.floors).toBe(LEARNED);
@@ -346,76 +160,6 @@ describe("offers store", () => {
     await useOffersStore().learn();
     expect(learnSourceFloors).toHaveBeenLastCalledWith({ egress: egressFor(TOKENS.PAS) });
   });
-
-  const NO_ETH: SourceFloorResult = { kind: "unavailable", reason: "No ETH -> USDT quote" };
-  /** What Chainflip said for the USDT egress: ETH's answer, and BTC's so it is not paused. */
-  const onScreen = (eth: SourceFloorResult, btc = floor("btc", 40_000n, 10n, USDT)) =>
-    new Map<SourceId, SourceFloorResult>([
-      ["eth", eth],
-      ["btc", btc],
-    ]);
-  it.each<{
-    name: string;
-    primary: ReadonlyMap<SourceId, SourceFloorResult>;
-    /** The DOT egress's answer for ETH, never asked when null. */
-    alternate: SourceFloorResult | "pending" | null;
-    offer: Partial<TokenOffer>;
-  }>([
-    {
-      name: "answered on screen, the alternate never asked",
-      primary: onScreen(floor("eth", 10n ** 16n, 25n, USDT)),
-      alternate: null,
-      offer: { state: "available" },
-    },
-    {
-      name: "a floor on the alternate only, offered as it is",
-      primary: onScreen(NO_ETH),
-      alternate: floor("eth", 10n ** 16n, 25n),
-      offer: { state: "ungated" },
-    },
-    {
-      name: "the alternate still answering",
-      primary: onScreen(NO_ETH),
-      alternate: "pending",
-      offer: { state: "checking" },
-    },
-    {
-      name: "unavailable on both",
-      primary: onScreen(NO_ETH),
-      alternate: { kind: "unavailable", reason: "No ETH -> DOT quote" },
-      offer: { state: "unavailable", reason: "No ETH -> USDT quote" },
-    },
-    {
-      name: "Chainflip paused, the alternate never asked",
-      primary: onScreen(NO_ETH, NO_ETH),
-      alternate: null,
-      offer: { state: "unavailable" },
-    },
-  ])(
-    "judges a hosted source on the other route too: $name",
-    async ({ primary, alternate, offer }) => {
-      hosted.value = true;
-      const session = useSessionStore();
-      const offers = useOffersStore();
-      sizedInUsdt(session);
-      const learn = vi.mocked(learnSourceFloors);
-      if (alternate !== null) {
-        learn.mockReturnValue(
-          alternate === "pending"
-            ? new Promise<never>(() => {})
-            : Promise.resolve(new Map([["eth", alternate]])),
-        );
-      }
-      offers.floors = primary;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(learn.mock.calls.map(([args]) => args)).toEqual(
-        alternate === null ? [] : [{ egress: egressFor(TOKENS.PAS), sourceIds: ["eth"] }],
-      );
-      expect(offers.tokensOf("Ethereum").find((t) => t.asset === "ETH")!.offer).toMatchObject(
-        offer,
-      );
-    },
-  );
 
   it("drops an answer for floors that were seeded while it was in flight", async () => {
     const session = useSessionStore();
@@ -452,7 +196,6 @@ describe("offers store", () => {
     await offers.learn(); // joins the load in flight
     expect(offers.learning).toBe(false);
     expect(offers.floors).toBe(usdtFloors);
-    expect(offers.offeredTokens("Ethereum")[0]!.offer.state).toBe("available");
     // The pool tier's floors, already learned, are not asked for again.
     sized(session, 100n * DOT);
     await nextTick();
@@ -464,10 +207,8 @@ describe("offers store", () => {
     const offers = useOffersStore();
     sized(session, 100n * DOT);
     offers.floors = LEARNED;
-    const eth = () => offers.tokensOf("Ethereum").find((t) => t.asset === "ETH")!.offer.state;
-    expect(eth()).toBe("available");
     // ETH's floor moved past this purchase since the rows learned it; Chainflip said so on the
-    // quote, and the fresh floors say so on the row.
+    // quote.
     const moved = new Map<SourceId, SourceFloorResult>([
       ...LEARNED,
       ["eth", floor("eth", 10n ** 17n, 250n)],
@@ -489,6 +230,5 @@ describe("offers store", () => {
     await fresh;
     await nextTick();
     expect(offers.floors).toBe(moved);
-    expect(eth()).toBe("too-small");
   });
 });

@@ -20,12 +20,7 @@ import {
   type Subscription,
   type TokenSpec,
 } from "@getsome/core";
-import {
-  chainflipTokenOf,
-  createChainflipRail,
-  egressFor,
-  SOURCE_CONFIG_BY_ID,
-} from "@getsome/chainflip";
+import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import {
   deriveKeypairWithSecret,
   deriveRefundKey,
@@ -74,7 +69,7 @@ import {
   type FakeHandoff,
   type Harness,
 } from "@getsome/testing";
-import { mainnetSdk, NETWORK } from "./chainflip-backend";
+import { NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import { devLog } from "./log";
 
@@ -1067,14 +1062,13 @@ export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
   };
 }
 
-/** The rail a source runs on: Chainflip's, delivering the route's deposit token to the burner,
- *  for a swap source; the manual rail, a direct deposit of that token, for every other. */
-export async function railFor(sourceId: SourceId, route: ConversionRoute): Promise<ChainflipRail> {
-  const token = depositTokenOf(route);
-  if (!SOURCE_CONFIG_BY_ID.has(sourceId)) return createManualRail({ token });
-  const delivered = chainflipTokenOf(token);
-  if (delivered === undefined) throw new Error(`Chainflip cannot deliver ${token.symbol}`);
-  return createChainflipRail({ sdk: await mainnetSdk(), egress: egressFor(delivered) });
+/** The rail a source runs on: the manual rail, a direct deposit of the route's deposit token to
+ *  the burner. Throws for a swap source, which no rail serves. */
+export function railFor(sourceId: SourceId, route: ConversionRoute): ChainflipRail {
+  if (SOURCE_CONFIG_BY_ID.has(sourceId)) {
+    throw new Error(`no rail serves swap source '${sourceId}'`);
+  }
+  return createManualRail({ token: depositTokenOf(route) });
 }
 
 export async function createCoinageSession(
@@ -1090,18 +1084,13 @@ export async function createCoinageSession(
   },
 ): Promise<CoinageWorld> {
   // The live world serves the sources that land the route's deposit token on the burner: the
-  // manual rail, one source per token, the Chainflip swap sources, and the Meld rails.
-  const LIVE_SOURCES = new Set<SourceId>([
-    ...MANUAL_SOURCE_IDS,
-    ...SOURCE_CONFIG_BY_ID.keys(),
-    "meld-card",
-    "meld-bank",
-  ]);
+  // manual rail, one source per token, and the Meld rails.
+  const LIVE_SOURCES = new Set<SourceId>([...MANUAL_SOURCE_IDS, "meld-card", "meld-bank"]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }
   // The Meld rail when the fiat route injected one; the source's own rail otherwise.
-  const chainflip = args.rail ?? (await railFor(args.sourceId, args.route));
+  const chainflip = args.rail ?? railFor(args.sourceId, args.route);
   const { connectChain, evictChains, PEOPLE, ASSET_HUB } = await import("./host-chain");
   await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
   const peoplePort = resilientPeoplePort();

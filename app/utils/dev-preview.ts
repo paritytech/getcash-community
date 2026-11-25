@@ -1309,7 +1309,6 @@ function base(session: Session, flow: Flow) {
   useRequestsStore().leave();
   // The records too: a scene lists what it seeded, never what its neighbour did.
   useRequestsStore().clearSandbox();
-  flow.step = "amount";
   flow.confirmingCancel = false;
   flow.previewDrillIn = null;
   flow.previewMismatch = null;
@@ -1321,8 +1320,8 @@ function base(session: Session, flow: Flow) {
   session.quoteOutOfRange = null;
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
-  // Bitcoin, matching the canned quote.
-  flow.setSourceByName("Bitcoin", "BTC");
+  // The picker back on its first token.
+  flow.setSourceByName("Polkadot", "DOT");
 }
 
 /** Baseline for the direct deposit scenes: 10 CASH from a Polkadot token, quoted as the manual
@@ -1344,6 +1343,11 @@ function polkadotDeposit(
     sourceAsset: asset,
     sourceChain: "Polkadot",
   };
+}
+
+/** Baseline for the deposit scenes: a DOT deposit. */
+function dotDeposit(session: Session, flow: Flow) {
+  polkadotDeposit(session, flow, "DOT", "0.59");
 }
 
 /** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
@@ -1431,7 +1435,7 @@ const PREVIEW_MELD_IDS = [
   "e9b3f7a4-1c58-4d20-97af-63d2b8e4c015",
 ] as const;
 
-/** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
+/** Baseline for the selection scenes: 100 CASH, floors already learned. */
 function selection(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("100");
@@ -1440,7 +1444,6 @@ function selection(session: Session, flow: Flow) {
   offers.floors = FLOORS;
   // The rail-off scene turns the rail off; every other scene gets the build's own settings.
   offers.railEnabled = true;
-  flow.setSourceByName("Ethereum", "ETH");
 }
 
 /** Baseline for the bank-journey scenes: the Meld quote and method the bank frames show. */
@@ -1612,7 +1615,6 @@ function refunded(sourceId: SourceId, send: string) {
   const amount = toBaseUnits(send, source.decimals);
   return async (s: Session, f: Flow, index: number) => {
     base(s, f);
-    f.setSourceByName(source.chain, source.asset);
     s.quoted = {
       ...QUOTED,
       send,
@@ -1721,7 +1723,6 @@ const STAGE_BY_PREFIX: readonly (readonly [string, PreviewStage])[] = [
   ["top-up / list", { kind: "shell" }],
   ["top-up / history", { kind: "shell" }],
   // The crypto package owns everything up to and including the deposit.
-  ["top-up / crypto / network", CRYPTO_PACKAGE],
   ["top-up / crypto / token", CRYPTO_PACKAGE],
   ["top-up / crypto / deposit", CRYPTO_PACKAGE],
   ["top-up / crypto / resume spinner", CRYPTO_PACKAGE],
@@ -1915,73 +1916,21 @@ export const SCENES: Scene[] = [
     }),
   },
   {
-    name: "top-up / crypto / network",
-    apply: (s, f) => {
-      selection(s, f);
-      f.step = "network";
-    },
+    name: "top-up / crypto / token",
+    apply: (s, f) => selection(s, f),
   },
   {
-    name: "top-up / crypto / network: loading",
-    apply: (s, f) => {
-      selection(s, f);
-      useOffersStore().floors = null; // still learning: the skeleton rows
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / network: too small",
-    apply: (s, f) => {
-      selection(s, f);
-      s.setAmount("5");
-      s.quoted = { ...QUOTED }; // 0.29 DOT: under every floor
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / network: paused",
-    apply: (s, f) => {
-      selection(s, f);
-      const offers = useOffersStore();
-      offers.floors = new Map(
-        [...FLOORS.keys()].map((id) => [
-          id,
-          { kind: "unavailable", reason: "Quoting is currently unavailable due to maintenance" },
-        ]),
-      );
-      f.step = "network";
-    },
-  },
-  {
-    // A build with no channel rail: every route listed, none pickable.
-    name: "top-up / crypto / network: not available yet",
-    apply: (s, f) => {
-      selection(s, f);
-      useOffersStore().railEnabled = false;
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / network: couldn't get the rate",
+    name: "top-up / crypto / token: couldn't get the rate",
     apply: (s, f) => {
       selection(s, f);
       rateFailed(s, 1);
-      f.step = "network";
     },
   },
   {
-    name: "top-up / crypto / network: still not working",
+    name: "top-up / crypto / token: still not working",
     apply: (s, f) => {
       selection(s, f);
       rateFailed(s, 2);
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / token",
-    apply: (s, f) => {
-      selection(s, f);
-      f.step = "token";
     },
   },
   {
@@ -1995,8 +1944,8 @@ export const SCENES: Scene[] = [
   {
     name: "top-up / crypto / deposit: waiting",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
     },
   },
@@ -2004,8 +1953,8 @@ export const SCENES: Scene[] = [
     // The full-screen confirmation over an open deposit.
     name: "top-up / crypto / deposit: cancel confirm",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
       f.confirmingCancel = true;
     },
@@ -2045,8 +1994,8 @@ export const SCENES: Scene[] = [
   {
     name: "top-up / crypto / deposit: faucet sent",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
       s.faucetState = "sent";
     },
@@ -2054,8 +2003,8 @@ export const SCENES: Scene[] = [
   {
     name: "top-up / crypto / deposit: faucet failed",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
       useRequestsStore().setTransientError({
         message: "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)",
@@ -2067,9 +2016,13 @@ export const SCENES: Scene[] = [
     // The channel deadline as a ticking countdown row.
     name: "top-up / crypto / deposit: expiring",
     apply: async (s, f, i) => {
-      base(s, f);
+      dotDeposit(s, f);
       const expiresAt = Date.now() + 4 * 60_000 + 59_000;
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i, deposit: { expiresAt } });
+      const r = await previewRequest(s, {
+        sourceId: CRYPTO_SOURCE_ID,
+        index: i,
+        deposit: { expiresAt },
+      });
       await core(r, 0, awaitingDeposit(expiresAt));
     },
   },
@@ -2077,9 +2030,13 @@ export const SCENES: Scene[] = [
     // The window closed with nothing sent: the clock expires the request.
     name: "top-up / crypto / deposit: expired",
     apply: async (s, f, i) => {
-      base(s, f);
+      dotDeposit(s, f);
       const expiresAt = Date.now() - 60_000;
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i, deposit: { expiresAt } });
+      const r = await previewRequest(s, {
+        sourceId: CRYPTO_SOURCE_ID,
+        index: i,
+        deposit: { expiresAt },
+      });
       await core(r, 0, awaitingDeposit(expiresAt));
       await r.observe({ source: "clock", at: Date.now() });
     },
@@ -2891,7 +2848,7 @@ export const SCENES: Scene[] = [
     name: "top-up / crypto / failed: refunded",
     apply: async (s, f, i) => {
       base(s, f);
-      f.setSourceByName("Tron", "USDT"); // a token refund, with the gas note
+      // A token refund, with the gas note.
       s.quoted = {
         ...QUOTED,
         send: "5.02",
