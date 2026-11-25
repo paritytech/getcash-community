@@ -1,9 +1,11 @@
 // The facts the top-up timeline reads off a record. Each is kept from the read that first gave it,
-// and a later read never erases one or moves it back.
+// and a later read never erases one or moves it back, except what a fork took: the deposit's
+// block and the conversion. The deposit's block is not taken while the app holds its sighting back.
 
 import type { PaymentState, SwapProgress } from "@getsome/core";
 import type {
   ChainflipFacts,
+  ConvertedTx,
   DepositInBlock,
   ObservedFact,
   TopUpRecord,
@@ -132,16 +134,32 @@ function depositFollowed(record: TopUpRecord, seen: DepositInBlock): TopUpRecord
   };
 }
 
+const sameTx = (kept: ConvertedTx, read: ConvertedTx | undefined): boolean =>
+  read !== undefined && read.txHash === kept.txHash && read.block === kept.block;
+
 /** Folds one read of the worker's job into the facts kept so far. */
 export function workerObserved(record: TopUpRecord, job: WorkerJobView, at: number): TopUpRecord {
   const { depositSeen, conversion, claim } = job;
-  let next = depositSeen === undefined ? record : depositFollowed(record, depositSeen);
+  // The worker keeps the block it first read any money in, and drops it only for a deposit it
+  // counted: one the app took back stays gone until money is read on the account again.
+  const followed = depositSeen !== undefined && record.depositDroppedAt === undefined;
+  let next = followed ? depositFollowed(record, depositSeen) : record;
   if (conversion !== undefined && next.conversionPreparedAt === undefined) {
     next = { ...next, conversionPreparedAt: conversion.preparedAt };
   }
-  if (conversion?.converted !== undefined && next.converted === undefined) {
-    next = { ...next, converted: conversion.converted };
+  // The worker took the conversion back, or sent it again: a fork discarded its block, and the
+  // arrival went with it.
+  const converted = conversion?.converted;
+  if (
+    conversion !== undefined &&
+    next.converted !== undefined &&
+    !sameTx(next.converted, converted)
+  ) {
+    const { converted: _taken, ...rest } = next;
+    const { "cash-on-people": _arrived, ...observedAt } = rest.observedAt ?? {};
+    next = { ...rest, observedAt };
   }
+  if (converted !== undefined && next.converted === undefined) next = { ...next, converted };
   if (claim?.registeredAt !== undefined && next.claimRegisteredAt === undefined) {
     next = { ...next, claimRegisteredAt: claim.registeredAt };
   }

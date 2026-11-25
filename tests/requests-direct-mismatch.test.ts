@@ -165,6 +165,37 @@ describe("a Polkadot deposit", () => {
     }
   });
 
+  it("expires once its deposit was lost, records what is sent since, and is brought back only by the deposit", () => {
+    const job = { done: false, lastTickAt: 30, claim: null } as const;
+    const seen = reduce(record("dotusd-assethub"), reading(ASKED, 10, null));
+    const taken = reduce(seen, {
+      source: "worker",
+      at: 20,
+      job: { ...job, phase: "swap", fundsSeenAt: 15 },
+    });
+    const lost = reduce(taken, {
+      source: "worker",
+      at: 30,
+      job: {
+        ...job,
+        phase: "failed",
+        failure: "deposit-lost",
+        fundsSeenAt: null,
+        depositLeftAt: 25,
+      },
+    });
+    expect(lost.status.kind).toBe("expired");
+
+    // Less than asked, or another token, sent after it expired: recorded, for the ending to offer
+    // back, and the request stays ended.
+    const short = reduce(lost, reading(8_000_000n, 40));
+    expect(short.status.kind).toBe("expired");
+    expect(short.depositMismatch).toMatchObject({ kind: "short", amount: "8000000" });
+    const other = reduce(lost, reading(0n, 40, { asset: "USDT", amount: "5" }));
+    expect(other.depositMismatch).toMatchObject({ kind: "token", asset: "USDT" });
+    expect(reduce(lost, reading(ASKED, 40)).status.kind).toBe("deposit-seen");
+  });
+
   it("takes the accepted terms while still on the deposit, and drops the mismatch", () => {
     const short = reduce(record("dotusd-assethub"), reading(8_000_000n, 10, null));
     const terms: AcceptedDepositTerms = {

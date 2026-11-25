@@ -599,8 +599,13 @@ const FEE_GROUPS: readonly { label: string; types: readonly string[] }[] = [
   { label: "Service fee", types: ["BROKER"] },
 ];
 
-/** Stables read naturally at cents; everything else keeps the payout's own precision. */
-const feeDecimals = (config: { decimals: number }): number => (config.decimals <= 6 ? 2 : 6);
+/** The dollar tokens, by the asset Chainflip names them. */
+const STABLE_ASSETS: ReadonlySet<string> = new Set(["USDC", "USDT"]);
+
+/** Stables read naturally at cents, whatever decimals their chain counts them in; everything else
+ *  keeps the payout's own precision. */
+const feeDecimals = (config: { asset: string; decimals: number }): number =>
+  config.decimals <= 6 || STABLE_ASSETS.has(config.asset) ? 2 : 6;
 
 /** Digits a payout is stated to, on the summary and in the drill-in alike. */
 const PAYOUT_DECIMALS = 6;
@@ -634,10 +639,10 @@ function grossRate(
 }
 
 /**
- * The quote's fee split priced into the destination asset with the quote's own numbers: a DOT fee
- * at the deposit-to-egress ratio, a USDC fee at the intermediate-to-egress ratio. An estimate for
- * the drill-in, not what the swap is held to. A fee neither rule can price, or of a kind the rows
- * don't name, drops the whole view: better no split than one that does not add up.
+ * The quote's fee split priced into the destination asset with the quote's own numbers: a fee in
+ * the token sold at the deposit-to-egress ratio, a USDC fee at the intermediate-to-egress ratio.
+ * An estimate for the drill-in, not what the swap is held to. A fee neither rule can price, or of
+ * a kind the rows don't name, drops the whole view: better no split than one that does not add up.
  */
 function offerFees(
   config: { asset: string; decimals: number },
@@ -646,9 +651,11 @@ function offerFees(
   amountCash: bigint,
 ): WithdrawFeeView | undefined {
   const inDest = (fee: IncludedFee): bigint | null => {
-    if (fee.asset === config.asset) return fee.amount;
-    if (fee.asset === source.asset && quote.depositAmount > 0n)
+    // The token sold comes first: it can share the destination's name and still count other
+    // decimals, as USDT does between Asset Hub and BNB Chain.
+    if (fee.chain === source.chain && fee.asset === source.asset && quote.depositAmount > 0n)
       return (fee.amount * quote.egressAmount) / quote.depositAmount;
+    if (fee.asset === config.asset) return fee.amount;
     if (fee.asset === "USDC" && quote.intermediateAmount !== null && quote.intermediateAmount > 0n)
       return (fee.amount * quote.egressAmount) / quote.intermediateAmount;
     return null;
@@ -862,6 +869,13 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
       "warn",
     );
   }
+}
+
+/** The account Asset Hub maps an H160 to, asked of its runtime at the best block. */
+export async function readH160Account(h160: `0x${string}`): Promise<string> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  return api.apis.ReviveApi.account_id(h160, { at: "best" });
 }
 
 /** The key's balance on Asset Hub in the token `sale` lands: what a provider refunded, when the

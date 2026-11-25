@@ -32,6 +32,12 @@ const MIN_BALANCE = 70_000n;
 const DISPATCH_NATIVE = 1_000n;
 const LOCAL_FEE = 100n;
 const DELIVERY_FEE = 10n;
+/** The stable in the scripted stable pools: deep enough that no deposit here moves the price by a
+ *  whole unit of the delivery fee. */
+const STABLE_RESERVE = 1_000_000_000_000n;
+/** The delivery fee the stable pool tier carries: the runtime's quote at the price its own
+ *  exchange leaves, rounded up, so one unit more on a pool this deep. */
+const STABLE_DELIVERY_FEE = DELIVERY_FEE + 1n;
 const PSM_ROUTE: PsmRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
 const USDC_ROUTE: ConversionRoute = { tier: "pool", external: "USDC" };
 const ROUTES = { USDT: PSM_ROUTE as ConversionRoute, USDC: USDC_ROUTE };
@@ -40,13 +46,16 @@ const isNative = (loc: unknown) =>
   (loc as { parents: number; interior: { type: string } }).parents === 1 &&
   (loc as { interior: { type: string } }).interior.type === "Here";
 
-/** Asset Hub as the sizing reads it: fixed-rate quotes, one min_balance, flat fees. */
+/** Asset Hub as the sizing reads it: fixed-rate quotes, one min_balance, flat fees. With
+ *  `bestOnly`, the balances are in a best block the chain has not finalized. */
 function scriptedAssetHub(balances: {
   native?: bigint;
   usdt?: bigint;
   usdc?: bigint;
   cash?: bigint;
+  bestOnly?: boolean;
 }) {
+  const visible = (options?: { at?: string }) => !balances.bestOnly || options?.at === "best";
   const tx = (args: unknown) => ({
     decodedCall: { type: "call", value: args },
     getEstimatedFees: async () => DISPATCH_NATIVE,
@@ -56,24 +65,31 @@ function scriptedAssetHub(balances: {
       Assets: {
         Asset: { getValue: async () => ({ min_balance: MIN_BALANCE }) },
         Account: {
-          getValue: async (id: number) => {
+          getValue: async (id: number, _who: string, options?: { at?: string }) => {
             const held =
               id === TOKENS.USDT.assetHubId
                 ? balances.usdt
                 : id === TOKENS.USDC.assetHubId
                   ? balances.usdc
                   : balances.cash;
-            return held === undefined ? undefined : { balance: held };
+            return held === undefined || !visible(options) ? undefined : { balance: held };
           },
         },
       },
-      System: { Account: { getValue: async () => ({ data: { free: balances.native ?? 0n } }) } },
+      System: {
+        Account: {
+          getValue: async (_who: string, options?: { at?: string }) => ({
+            data: { free: visible(options) ? (balances.native ?? 0n) : 0n },
+          }),
+        },
+      },
     },
     apis: {
       AssetConversionApi: {
         // Native for an exact amount of CASH or a stable, or a stable for an exact native.
         quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) =>
           isNative(give) ? out * RATE : out / RATE,
+        get_reserves: async () => [STABLE_RESERVE * RATE, STABLE_RESERVE],
       },
       XcmPaymentApi: {
         query_xcm_weight: async () => ({
@@ -114,6 +130,9 @@ const sizing = (api: unknown, pools: Partial<{ pool: unknown; USDT: unknown; USD
 /** Every program's own fees in the token it pays them in: the dispatch priced through the pool,
  *  the measured execution and delivery, one cushion over all three. */
 const feesHeld = MIN_BALANCE + withFeeMargin(DISPATCH_NATIVE / RATE + LOCAL_FEE + DELIVERY_FEE);
+/** The same on the stable pool tier, whose delivery fee is priced after its own exchange. */
+const stableFeesHeld =
+  MIN_BALANCE + withFeeMargin(DISPATCH_NATIVE / RATE + LOCAL_FEE + STABLE_DELIVERY_FEE);
 
 describe("recoveryMinimums", () => {
   it("prices each token as the pipeline's gate takes it: the quote for the fee, the min_balance, the cushioned fees", async () => {
@@ -146,19 +165,19 @@ describe("recoveryMinimums", () => {
     );
     // The PSM's rate is fixed: the deposit counts at the figure shown.
     expect(sized.gates.USDT).toBe(sized.minimums.USDT);
-    // USDC through the pools: the headroomed two-hop quote, with the same; the deposit counts at
+    // USDC through the pools: the headroomed two-hop quote, with its fees; the deposit counts at
     // the plain quote with the same.
     const stableInMax = withHeadroom(TARGET, 1);
-    expect(sized.minimums.USDC).toBe(stableInMax + feesHeld);
+    expect(sized.minimums.USDC).toBe(stableInMax + stableFeesHeld);
     expect(sized.minimums.USDC).toBe(
       stableDepositNeeded(stableInMax, {
         dispatchExternal: DISPATCH_NATIVE / RATE,
         localExternal: LOCAL_FEE,
-        deliveryExternal: DELIVERY_FEE,
+        deliveryExternal: STABLE_DELIVERY_FEE,
         minBalanceExternal: MIN_BALANCE,
       }),
     );
-    expect(sized.gates.USDC).toBe(TARGET + feesHeld);
+    expect(sized.gates.USDC).toBe(TARGET + stableFeesHeld);
     expect(sized.gates.USDC).toBeLessThan(sized.minimums.USDC!);
   });
 
@@ -210,6 +229,17 @@ describe("recoveryCandidates and findRecoveryDeposit", () => {
         candidates,
       ),
     ).toEqual({ route: { tier: "pool" }, token: "PAS", held: 50n });
+  });
+
+  it("takes a deposit a best block holds, before Asset Hub finalizes it, as the pipeline's gate does", async () => {
+    const candidates = recoveryCandidates(minimums, ROUTES);
+    expect(
+      await findRecoveryDeposit(
+        scriptedAssetHub({ usdc: 80_000n, bestOnly: true }),
+        "5Burner",
+        candidates,
+      ),
+    ).toEqual({ route: USDC_ROUTE, token: "USDC", held: 80_000n });
   });
 
   it("skips a deposit the chain would not take while its balance stands, and takes a new one", async () => {

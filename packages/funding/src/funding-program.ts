@@ -35,7 +35,8 @@
 // and native to CASH, one hop each because the runtime's exchanger takes a single pair, and then
 // sends the CASH as the pool tier does. Its fees follow the PSM shape: paid in the stable,
 // cushioned once with FEE_MARGIN_BPS, the unspent part refunded to a burner kept alive by its
-// min_balance.
+// min_balance. Its delivery fee is paid through the stable's pool after the first exchange has
+// moved it, so it is priced at the price that exchange leaves.
 //
 // The dotUSD tier has a fourth shape (`buildDotUsdFundingProgram`): the burner holds the
 // underlying itself, deposited as dotUSD, so the program moves it to People with no exchange and
@@ -530,9 +531,13 @@ async function deliveryFeeOf(
   return extractFungibleAmount(df.value);
 }
 
+/** A dry run as the burner reads the best block, where its deposit is taken: the runtime's
+ *  default, the finalized block, may not hold it yet. */
+const AT_BEST = { at: "best" } as const;
+
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
- *  origin that already holds what the call withdraws. Returns null when the dry-run cannot
- *  produce it. */
+ *  origin that already holds what the call withdraws at the best block. Returns null when the
+ *  dry-run cannot produce it. */
 export async function realForwardedProgram(
   api: AssetHubApi,
   call: AssetHubCall,
@@ -540,7 +545,12 @@ export async function realForwardedProgram(
   from: string,
 ): Promise<unknown | null> {
   try {
-    const dr = await api.apis.DryRunApi.dry_run_call(signedOrigin(from) as never, call as never, 5);
+    const dr = await api.apis.DryRunApi.dry_run_call(
+      signedOrigin(from) as never,
+      call as never,
+      5,
+      AT_BEST,
+    );
     return dr.success ? forwardedTo(dr.value, peopleParaId) : null;
   } catch {
     // A runtime without the dry-run API, or one that rejects this call shape.
@@ -605,7 +615,7 @@ export async function dryRunFundingProgram(args: {
    *  Utility.batch_all, so the mint runs too and a program that completes but misbehaves is
    *  caught here, the one outcome batch_all does not revert. */
   call?: AssetHubCall;
-  /** The burner: it signs the call and holds what it withdraws. */
+  /** The burner: it signs the call and holds what it withdraws, at the best block. */
   from: string;
   beneficiaryHex: string;
   peopleParaId: number;
@@ -618,6 +628,7 @@ export async function dryRunFundingProgram(args: {
     signedOrigin(args.from) as never,
     call as never,
     5,
+    AT_BEST,
   );
   if (!dr.success) {
     throw new Error(`not submitted: Asset Hub would not dry-run the call (${dr.value.type})`);
@@ -819,7 +830,8 @@ export async function estimateFundingProgramFees(args: {
 export interface StableLegFees {
   /** Local XCM execution fee, in the stable. */
   localExternal: bigint;
-  /** Delivery fee for the forwarded program, in the stable. */
+  /** Delivery fee for the forwarded program, in the fee asset. Only the stable pool tier prices it
+   *  after its own exchange; the other tiers take the runtime's figure. */
   deliveryExternal: bigint;
   /** The allowance the program carries: the XCM's own fees with the cushion on top. */
   feeAllowanceExternal: bigint;
@@ -863,6 +875,14 @@ export async function priceDispatchFee(
   }
 }
 
+/** What `fee`, a native cost priced in the stable at a pool holding `reserve` of it, costs once
+ *  `spend` more of the stable is in the pool: ((reserve + spend) / reserve)² as much, rounded up.
+ *  `reserve` must be positive. */
+export function pricedAfterSpend(fee: bigint, reserve: bigint, spend: bigint): bigint {
+  const after = reserve + spend;
+  return (fee * after * after + reserve * reserve - 1n) / (reserve * reserve);
+}
+
 /** Every cost of the stable pool tier's program, measured against the program itself, all in the
  *  stable. Throws when the runtime declines a read or the deposit does not cover what is held
  *  back. */
@@ -874,7 +894,8 @@ export async function estimateStableProgramFees(args: {
   beneficiaryHex: string;
   peopleParaId: number;
   /** The stable the program is carved from, at its real magnitude: the dispatch fee has a
-   *  per-byte component and compact-encoded amounts change length with magnitude. */
+   *  per-byte component and compact-encoded amounts change length with magnitude. It also sizes
+   *  the delivery fee, so it must be the real deposit, not a rough figure. */
   depositStable: bigint;
   /** The native floor the first exchange will carry, at its real magnitude. The native the
    *  target is quoted at serves. */
@@ -966,13 +987,26 @@ export async function estimateStableProgramFees(args: {
       args.beneficiaryHex,
       args.transfer,
     );
-  const deliveryExternal = await deliveryFeeOf(
-    args.api,
-    args.peopleParaId,
-    forwarded,
-    stableAsset,
-    "stable program fee estimate",
-  );
+  // The runtime prices delivery at the pool as it stands. The program pays it after the dispatch
+  // fee, the local fee and the exchange have put nearly the whole deposit into the same pool.
+  const [deliveryNow, reserves] = await Promise.all([
+    deliveryFeeOf(
+      args.api,
+      args.peopleParaId,
+      forwarded,
+      stableAsset,
+      "stable program fee estimate",
+    ),
+    args.api.apis.AssetConversionApi.get_reserves(
+      args.stablePool.native,
+      args.stablePool.underlying,
+    ),
+  ]);
+  const stableReserve = reserves?.[1] ?? 0n;
+  if (stableReserve === 0n) {
+    throw new Error(`stable program fee estimate: the ${token.symbol} pool holds no reserves`);
+  }
+  const deliveryExternal = pricedAfterSpend(deliveryNow, stableReserve, args.depositStable);
 
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not

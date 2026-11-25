@@ -4,9 +4,12 @@
 
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { depositTokenOf, recordedRoute } from "@getsome/funding";
-import { sourceIdFor } from "~~/lib/config";
 import type { DetailRow } from "../../components/ui/DetailRows.vue";
-import { isWithdrawalSideExit, type WithdrawalRecord } from "../../funding/requests/model";
+import {
+  isWithdrawalSideExit,
+  WITHDRAW_SOURCE_PREFIX,
+  type WithdrawalRecord,
+} from "../../funding/requests/model";
 import { asName } from "../../funding/top-up-projection";
 import { shortRef } from "../../utils/journey";
 import { fmtFiat } from "../../utils/money";
@@ -22,12 +25,13 @@ export interface JourneyRowsContext {
 export function expectedEgressText(record: WithdrawalRecord): string | null {
   const egress = record.handoff.channel?.expectedEgress;
   if (egress === undefined) return null;
-  const { chain, asset } = record.destination;
-  const id = sourceIdFor(chain, asset);
-  const config = id === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(id);
+  // By the destination's id: the record keeps the network as the screens name it, which is not
+  // always Chainflip's name for it.
+  const id = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length);
+  const config = SOURCE_CONFIG_BY_ID.get(id as never);
   if (config === undefined) return null;
   try {
-    return `≈ ${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${asset}`;
+    return `≈ ${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${record.destination.asset}`;
   } catch {
     return null;
   }

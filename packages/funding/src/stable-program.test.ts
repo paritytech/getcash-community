@@ -1,6 +1,7 @@
 // The stable pool tier's program over a recording Asset Hub api: the seven instructions and their
-// filters, the fee estimate's asset on every read, the margin it carries and the min_balance it
-// holds back, the dry run it asks for the real forwarded program, and the reasons it refuses.
+// filters, the fee estimate's asset on every read, the delivery fee it prices after the program's
+// own exchange, the margin it carries and the min_balance it holds back, the dry run it asks for
+// the real forwarded program, and the reasons it refuses.
 
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import {
   forwardedProgramStandIn,
   FUNDING_PROGRAM_MAX_WEIGHT,
   peopleDest,
+  pricedAfterSpend,
   withFeeMargin,
   type Pool,
 } from "./funding-program";
@@ -26,6 +28,8 @@ const STABLE_POOL = { native: NATIVE_LOC, underlying: TOKENS.USDC.location } as 
 const POOL = { native: NATIVE_LOC, underlying: TOKENS.CASH.location } as unknown as Pool;
 /** USDC's min_balance on Paseo Asset Hub Next, as the scripted chain answers it. */
 const MIN_BALANCE = 70_000n;
+/** The USDC in the scripted USDC/PAS pool. */
+const STABLE_RESERVE = 20_000_000_000n;
 const PROGRAM = {
   stablePool: STABLE_POOL,
   pool: POOL,
@@ -161,6 +165,9 @@ function recordingApi(
     dispatchExternal?: bigint | undefined;
     /** What a dry run of the program forwards to People, when the burner is given. */
     forwarded?: unknown;
+    /** The stable pool's reserves, native then stable; undefined is a pool the runtime does not
+     *  know. */
+    reserves?: [bigint, bigint] | undefined;
   } = {},
 ) {
   const seen: {
@@ -171,6 +178,7 @@ function recordingApi(
     feeFrom?: unknown;
     feeOptions?: unknown;
     quote?: unknown[];
+    reserves?: unknown[];
     dryRun?: unknown[];
     assetRead?: unknown;
   } = { executed: [] };
@@ -226,6 +234,10 @@ function recordingApi(
           seen.quote = args;
           return "dispatchExternal" in opts ? opts.dispatchExternal : 70_000n;
         },
+        get_reserves: async (...args: unknown[]) => {
+          seen.reserves = args;
+          return "reserves" in opts ? opts.reserves : [10n ** 15n, STABLE_RESERVE];
+        },
       },
       DryRunApi: {
         dry_run_call: async (...args: unknown[]) => {
@@ -263,6 +275,19 @@ describe("forwardedProgramStandIn", () => {
       "DepositAsset",
       "SetTopic",
     ]);
+  });
+});
+
+describe("pricedAfterSpend", () => {
+  it("raises the fee by the square of the stable reserve's growth, rounded up", () => {
+    // No spend leaves the price as it stands.
+    expect(pricedAfterSpend(28_857n, 20_000_000_000n, 0n)).toBe(28_857n);
+    // Doubling the reserve halves the native's and so quadruples the fee, exactly.
+    expect(pricedAfterSpend(250n, 1_000n, 1_000n)).toBe(1_000n);
+    // A move under a unit still rounds up to one.
+    expect(pricedAfterSpend(10n, 1_000_000_000_000n, 1n)).toBe(11n);
+    // 5,000 USDC into a pool of 19,930.
+    expect(pricedAfterSpend(30_480n, 19_930_493_079n, 5_000_000_000n)).toBe(47_692n);
   });
 });
 
@@ -322,25 +347,45 @@ describe("estimateStableProgramFees", () => {
     expect(seen.feeFrom).toBe("5Probe");
     expect(seen.feeOptions).toEqual({ asset: TOKENS.USDC.location });
     expect(seen.quote).toEqual([TOKENS.USDC.location, TOKENS.PAS.location, 1_234n, true]);
+    // The delivery fee is priced at the stable pool the program's own exchange leaves: 5.4 USDC
+    // into 20,000 raises the quoted 28,857 to 28,873, rounded up.
+    expect(seen.reserves).toEqual([NATIVE_LOC, TOKENS.USDC.location]);
     // The dispatch probe carries the measured fees, both floors at their real magnitude and the
     // weighed weight. The fee grows with the call's length.
     const dispatchProbe = seen.executed.at(-1)!;
     expect(exchanges(dispatchProbe)[0]!.want[0]!.fun.value).toBe(input.minNativeOut);
     expect(exchanges(dispatchProbe)[1]!.want[0]!.fun.value).toBe(input.minUnderlyingOut);
     expect((instruction(dispatchProbe, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(
-      2_256n + 28_857n,
+      2_256n + 28_873n,
     );
     expect(dispatchProbe.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
     expect(fees).toEqual({
       localExternal: 2_256n,
-      deliveryExternal: 28_857n,
-      feeAllowanceExternal: withFeeMargin(2_256n + 28_857n),
+      deliveryExternal: 28_873n,
+      feeAllowanceExternal: withFeeMargin(2_256n + 28_873n),
       minBalanceExternal: MIN_BALANCE,
-      heldBackExternal: MIN_BALANCE + withFeeMargin(2_256n + 28_857n),
+      heldBackExternal: MIN_BALANCE + withFeeMargin(2_256n + 28_873n),
       dispatchNative: 1_234n,
       dispatchExternal: 8_765n,
       maxWeight: { ref_time: 1_000_000n, proof_size: 1_000n },
     });
+  });
+
+  it("covers the delivery fee a deposit a quarter of the pool's size pays after its own exchange", async () => {
+    // 5,000 USDC into a pool of 19,930, where the chain accepts no allowance under 50,759.
+    const { api } = recordingApi({
+      localExternal: 2_796n,
+      deliveryExternal: 30_480n,
+      reserves: [201_052_656_151_652n, 19_930_493_079n],
+    });
+    const fees = await estimateStableProgramFees({
+      api,
+      ...input,
+      depositStable: 5_000_000_000n,
+    });
+    expect(fees.deliveryExternal).toBe(47_692n);
+    expect(fees.feeAllowanceExternal).toBe(withFeeMargin(2_796n + 47_692n));
+    expect(fees.feeAllowanceExternal).toBeGreaterThanOrEqual(50_759n);
   });
 
   it("dry-runs the bare execute as the burner for the real forwarded program, with the weighed ceiling", async () => {
@@ -383,6 +428,19 @@ describe("estimateStableProgramFees", () => {
     });
     expect(seen.assetRead).toBe(TOKENS.USDT.assetHubId);
     expect(seen.feeOptions).toEqual({ asset: TOKENS.USDT.location });
+    expect(seen.reserves).toEqual([NATIVE_LOC, TOKENS.USDT.location]);
+  });
+
+  it("refuses a stable pool the runtime does not know or that holds no stable", async () => {
+    await expect(
+      estimateStableProgramFees({ api: recordingApi({ reserves: undefined }).api, ...input }),
+    ).rejects.toThrow(/holds no reserves/);
+    await expect(
+      estimateStableProgramFees({
+        api: recordingApi({ reserves: [10n ** 15n, 0n] }).api,
+        ...input,
+      }),
+    ).rejects.toThrow(/holds no reserves/);
   });
 
   it("refuses a deposit that does not cover what is held back, an asset Asset Hub does not know, and an unpriceable dispatch", async () => {

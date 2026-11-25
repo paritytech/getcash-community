@@ -1,5 +1,5 @@
 import { computed } from "vue";
-import { FUNDING_CHAINS } from "~~/lib/config";
+import { chainLabel } from "~~/lib/config";
 import { useFundingProgressClock } from "../composables/useFundingProgressClock";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
@@ -30,7 +30,7 @@ const FINISHED = new Set<TopUpRecord["status"]["kind"]>(["settled", "failed", "e
 function topUpDetails(record: ChainflipTopUpRecord): FundingTopUpDetails {
   const network = record.chain
     ? {
-        label: FUNDING_CHAINS.find(({ chain }) => chain === record.chain)?.label ?? record.chain,
+        label: chainLabel(record.chain),
         icon: networkIcon(record.chain),
       }
     : undefined;
@@ -75,7 +75,7 @@ export function projectChainflipTopUps(
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
         request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
-        state: rowStateOf(record, listHeadline("crypto", timeline).text),
+        state: rowStateOf(record, listHeadline("crypto", timeline).text, now),
       },
     ];
   });

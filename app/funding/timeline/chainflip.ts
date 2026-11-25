@@ -230,6 +230,11 @@ function chainflipFailure(record: TopUpRecord): PartFailure {
         text: withReason(`Chainflip exchanged your ${source} but couldn't send it`, reason),
         action: CLOSE,
       };
+    case "deposit-lost":
+      return {
+        text: "Your money didn't arrive. Chainflip sent it, but the network dropped the transfer and it hasn't come back.",
+        action: CLOSE,
+      };
   }
   switch (record.failure?.code) {
     case "BelowMinimumDeposit":

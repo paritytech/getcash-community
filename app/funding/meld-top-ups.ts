@@ -72,7 +72,7 @@ export function projectMeldTopUps(
     const route: FundingRoute = method;
     const timeline = timelineOf(record, now);
     const progress = listProgress(timeline);
-    const state = rowStateOf(record, listHeadline(route, timeline).text);
+    const state = rowStateOf(record, listHeadline(route, timeline).text, now);
     const worded =
       state.kind === "failed" && state.reason === DEPOSIT_EXPIRED_REASON
         ? { ...state, reason: MELD_WINDOW_CLOSED_REASON }

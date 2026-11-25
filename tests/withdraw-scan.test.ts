@@ -109,6 +109,39 @@ describe("whether a scanned code fits the network and token picked", () => {
     expect(fits(`eth:${ETHEREUM}`, "Ethereum", "USDC")).toBeNull();
   });
 
+  it("tells the EVM networks apart by the chain a code names, their addresses being the same", () => {
+    // Every EVM network writes `ethereum:`; only the id after `@` says which one.
+    expect(fits(`ethereum:${ETHEREUM}@42161`, "Arbitrum", "ETH")).toBeNull();
+    expect(fits(`ethereum:${ETHEREUM}@56`, "Bsc", "BNB")).toBeNull();
+    expect(fits(`ethereum:${ETHEREUM}`, "Arbitrum", "ETH")).toBeNull();
+    expect(fits(`ethereum:${ETHEREUM}`, "Bsc", "BNB")).toBeNull();
+    expect(fits(ETHEREUM, "Bsc", "USDT")).toBeNull();
+    expect(fits(`ethereum:${ETHEREUM}@1`, "Arbitrum", "ETH")).toBe("network");
+    expect(fits(`ethereum:${ETHEREUM}@1`, "Bsc", "BNB")).toBe("network");
+    expect(fits(`ethereum:${ETHEREUM}@56`, "Arbitrum", "ETH")).toBe("network");
+    expect(fits(`ethereum:${ETHEREUM}@42161`, "Ethereum", "ETH")).toBe("network");
+    expect(fits(`ethereum:${ETHEREUM}@56`, "Ethereum", "ETH")).toBe("network");
+    expect(fits(`arb1:${ETHEREUM}`, "Arbitrum", "USDC")).toBeNull();
+    expect(fits(`bnb:${ETHEREUM}`, "Bsc", "USDT")).toBeNull();
+    expect(fits(`eth:${ETHEREUM}`, "Bsc", "USDT")).toBe("network");
+    expect(fits(`bitcoin:${BITCOIN}`, "Bsc", "BNB")).toBe("network");
+  });
+
+  it("holds a token transfer code to the picked token's own contract on that network", () => {
+    const arbUsdc = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
+    const arbUsdt = "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9";
+    const bscUsdt = "0x55d398326f99059fF775485246999027B3197955";
+    const transfer = (contract: string, id: number) =>
+      `ethereum:${contract}@${id}/transfer?address=${ETHEREUM}&uint256=1`;
+    expect(fits(transfer(arbUsdc, 42161), "Arbitrum", "USDC")).toBeNull();
+    expect(fits(transfer(arbUsdt, 42161), "Arbitrum", "USDT")).toBeNull();
+    expect(fits(transfer(bscUsdt, 56), "Bsc", "USDT")).toBeNull();
+    // Ethereum's USDT contract on BNB Chain's id is another token.
+    expect(fits(transfer(USDT_CONTRACT, 56), "Bsc", "USDT")).toBe("token");
+    expect(fits(transfer(arbUsdc, 42161), "Arbitrum", "USDT")).toBe("token");
+    expect(fits(transfer(bscUsdt, 56), "Bsc", "BNB")).toBe("token");
+  });
+
   it("refuses an EVM code on a network that is not EVM", () => {
     expect(fits(`ethereum:${ETHEREUM}@1`, "Bitcoin", "BTC")).toBe("network");
   });

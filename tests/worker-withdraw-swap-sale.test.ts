@@ -61,11 +61,17 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
   withdrawTickOnce: mocks.withdrawTickOnce,
 }));
 
-// How the CASH moves to Asset Hub is the chains' answer, and the scripted leg does not read it.
+// How the CASH moves to Asset Hub is the chains' answer, and the scripted leg does not read it;
+// so is what a key's balance converts to on its way home.
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   chooseCashTransfer: async () => "teleport",
   chooseRoute: async () => ({ tier: "pool", external: "USDT" }),
+  quoteDepositValue: async () => ({
+    receive: 1_000_000n,
+    remoteFeeBuffer: 1_000n,
+    keepNativeForFees: 0n,
+  }),
 }));
 
 // The residue is read off the key on Asset Hub through a client the engine opens for it.

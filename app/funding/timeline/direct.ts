@@ -2,7 +2,7 @@
 // and its timeline opens on phase 3. The route files give it no failure texts, so it keeps the
 // wording from before the timeline.
 
-import type { TopUpRecord } from "../requests/model";
+import { depositGone, type TopUpRecord } from "../requests/model";
 import { CLOSE, CRYPTO_EXPIRED_TEXT, expiredEnding, type PartFailure } from "./failure";
 import type { TimelineRoute } from "./route";
 
@@ -14,8 +14,12 @@ function noProviderPhase(): never {
 }
 
 /** Whatever the buyer sent to an expired top-up stays on its own account: the token that arrived,
- *  when it is not the one asked for. */
+ *  when it is not the one asked for. Not a transfer the network dropped, which never left the
+ *  buyer's wallet, unless what they sent since is on the account. */
 function directFailure(record: TopUpRecord): PartFailure {
+  if (expiredEnding(record) && depositGone(record) && record.depositMismatch === undefined) {
+    return { text: CRYPTO_EXPIRED_TEXT, action: CLOSE };
+  }
   if (expiredEnding(record)) {
     const source = record.depositMismatch?.asset ?? record.asset;
     return {

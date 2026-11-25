@@ -22,6 +22,7 @@ import {
   type TopUpRecord,
   type WithdrawalRecord,
   type WithdrawalStatus,
+  type WorkerJobView,
 } from "../funding/requests/model";
 import { applyTopUp } from "../funding/requests/transitions/top-up";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
@@ -92,6 +93,11 @@ const FLOORS = new Map<SourceId, SourceFloorResult>([
   ["eth", floor("eth", 10n ** 16n, (25n * DOT) / 10n)],
   ["usdc-eth", { kind: "unavailable", reason: "preview: unanswered" }],
   ["usdt-eth", floor("usdt-eth", 20_000_000n, 5n * DOT)],
+  ["eth-arbitrum", floor("eth-arbitrum", 39n * 10n ** 14n, DOT)],
+  ["usdc-arbitrum", floor("usdc-arbitrum", 10_000_000n, (25n * DOT) / 10n)],
+  ["usdt-arbitrum", floor("usdt-arbitrum", 10_000_000n, (25n * DOT) / 10n)],
+  ["bnb-bsc", floor("bnb-bsc", 2n * 10n ** 16n, 3n * DOT)],
+  ["usdt-bsc", floor("usdt-bsc", 10n ** 19n, (25n * DOT) / 10n)],
   ["sol-solana", floor("sol-solana", 68_000_000n, (17n * DOT) / 10n)],
   ["usdc-solana", floor("usdc-solana", 10_000_000n, (25n * DOT) / 10n)],
   ["usdt-solana", floor("usdt-solana", 10_000_000n, (25n * DOT) / 10n)],
@@ -924,6 +930,51 @@ function worker(request: PreviewRequest, step: number, phase: string, done = fal
   };
 }
 
+/** The worker's word at `at` that the deposit it took left the best chain at `leftAt`. */
+function depositLeft(at: number, leftAt: number, over: Partial<WorkerJobView> = {}): Observation {
+  return {
+    source: "worker",
+    at,
+    job: {
+      phase: "await-native",
+      done: false,
+      fundsSeenAt: null,
+      depositLeftAt: leftAt,
+      lastTickAt: at,
+      claim: null,
+      ...over,
+    },
+  };
+}
+
+/** A swap that sent its deposit, which the worker took two minutes before a fork took it back,
+ *  `leftMinutesAgo` minutes ago. Under Chainflip's own source when `chainflip`, the preview's
+ *  direct one otherwise. Returns when it left. */
+async function depositDropped(
+  s: Session,
+  f: Flow,
+  index: number,
+  { leftMinutesAgo = 0, chainflip = false }: { leftMinutesAgo?: number; chainflip?: boolean } = {},
+) {
+  base(s, f);
+  const r = await previewRequest(s, {
+    ...BITCOIN_SWAP,
+    ...(chainflip ? { sourceId: "btc" } : {}),
+    index,
+    startedMinutesAgo: leftMinutesAgo + 5,
+  });
+  const leftAt = Date.now() - leftMinutesAgo * 60_000 - 30_000;
+  const takenAt = leftAt - 2 * 60_000;
+  await r.observe({ source: "core", at: takenAt - 1_000, state: swapping("complete") });
+  await r.observe({
+    source: "worker",
+    at: takenAt,
+    job: { phase: "swap", done: false, fundsSeenAt: takenAt, lastTickAt: takenAt, claim: null },
+  });
+  await r.observe(depositLeft(leftAt, leftAt));
+  return { r, leftAt };
+}
+
 /** How far a running preview top-up has got. Named for the rail's own step, because that is what
  *  the observations below say. */
 type RunningStage =
@@ -1599,6 +1650,11 @@ const REFUND_PREVIEWS: readonly [SourceId, string][] = [
   ["eth", "0.0012"],
   ["usdc-eth", "5.02"],
   ["usdt-eth", "5.02"],
+  ["eth-arbitrum", "0.0012"],
+  ["usdc-arbitrum", "5.02"],
+  ["usdt-arbitrum", "5.02"],
+  ["bnb-bsc", "0.02"],
+  ["usdt-bsc", "5.02"],
   ["sol-solana", "0.025"],
   ["usdc-solana", "5.02"],
   ["usdt-solana", "5.02"],
@@ -2482,6 +2538,39 @@ export const SCENES: Scene[] = [
     name: "top-up / crypto / pipeline: arrival wait",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "await-arrival");
+    },
+  },
+  {
+    // A fork took the deposit after the worker took it: Received goes back, and the timeline
+    // waits for the deposit to land again.
+    name: "top-up / crypto / pipeline: deposit dropped",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i);
+    },
+  },
+  {
+    // The buyer's own transfer is past the time it could land again: the deposit screen asks for
+    // it once more.
+    name: "top-up / crypto / journey: transfer dropped, asked again",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i, { leftMinutesAgo: 11 });
+    },
+  },
+  {
+    // An hour on, Chainflip's payout is still not back: the line turns amber and says so.
+    name: "top-up / crypto / pipeline: deposit dropped, an hour on",
+    apply: async (s, f, i) => {
+      await depositDropped(s, f, i, { leftMinutesAgo: 61, chainflip: true });
+    },
+  },
+  {
+    // A day on it never came back: the top-up ends.
+    name: "top-up / crypto / journey: deposit lost",
+    apply: async (s, f, i) => {
+      const { r, leftAt } = await depositDropped(s, f, i, { chainflip: true });
+      await r.observe(
+        depositLeft(leftAt + 1_000, leftAt, { phase: "failed", failure: "deposit-lost" }),
+      );
     },
   },
   {

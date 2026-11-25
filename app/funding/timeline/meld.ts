@@ -87,6 +87,13 @@ function endingWords(record: TopUpRecord): EndingWords {
   };
 }
 
+/** The provider sent the deposit, and the network dropped it for good: the provider still has
+ *  the money, and the details carry the reference it knows the payment by. */
+const depositLost = (provider: string): PartFailure => ({
+  text: `Your money didn't arrive. ${provider} sent it, but the network dropped the transfer. Contact ${provider} with the reference below to get it back.`,
+  action: CLOSE,
+});
+
 function meldFailureDetails(record: TopUpRecord): FailureDetails {
   const code = failureCode(record);
   return {
@@ -134,7 +141,10 @@ function meldRoute(method: MeldMethod): TimelineRoute {
           : normal("Your money is on its way"),
       };
     },
-    failure: (record) => method.failures[meldEnding(record)](endingWords(record)),
+    failure: (record) =>
+      record.failure?.kind === "deposit-lost"
+        ? depositLost(meldProviderName(record))
+        : method.failures[meldEnding(record)](endingWords(record)),
     failureDetails: meldFailureDetails,
   };
 }

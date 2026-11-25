@@ -2,6 +2,7 @@
 const USD_RATES: Record<string, number> = {
   BTC: 84_500,
   ETH: 2_670,
+  BNB: 590,
   SOL: 114,
   TRX: 0.34,
   USDC: 1,

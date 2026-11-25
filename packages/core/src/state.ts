@@ -13,6 +13,8 @@ export type SourceId =
   | "eth-arbitrum"
   | "usdc-arbitrum"
   | "usdt-arbitrum"
+  | "bnb-bsc"
+  | "usdt-bsc"
   | "sol-solana"
   | "usdc-solana"
   | "usdt-solana"
@@ -93,6 +95,8 @@ export type FailureKind =
   | "refunded"
   | "refund-failed"
   | "expired"
+  /** The deposit reached the top-up's account, then left the best chain and did not come back. */
+  | "deposit-lost"
   /** The rail could not tell what happened. */
   | "unknown"
   | "stale";

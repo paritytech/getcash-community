@@ -22,6 +22,8 @@ import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
   DEPOSIT_EXPIRED_REASON,
+  DEPOSIT_WATCH_RETRY_MAX_MS,
+  DEPOSIT_WATCH_RETRY_MS,
   HIDDEN_RESET_MS,
   JOB_POLL_CLAIMING_MS,
   JOB_POLL_MS,
@@ -36,6 +38,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   conversionRouteOf,
+  depositGone,
   effectiveSourceId,
   handoffSaleOf,
   isDirectDeposit,
@@ -234,6 +237,22 @@ const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "sent",
 ]);
 
+/** A top-up that ended with its deposit gone has it on its account again: failed as lost, or, a
+ *  direct one, expired. */
+function lostDepositBack(previous: RequestRecord, next: RequestRecord): next is TopUpRecord {
+  return (
+    isTopUp(previous) &&
+    isTopUp(next) &&
+    endedGone(previous) &&
+    next.failure === undefined &&
+    next.status.kind === "deposit-seen"
+  );
+}
+
+/** Ended while its deposit was gone: the worker gave the job up, and the deposit may still land. */
+const endedGone = (record: TopUpRecord): boolean =>
+  (record.status.kind === "failed" || record.status.kind === "expired") && depositGone(record);
+
 /** A critical change is written to the host before `observe` resolves: the money's first
  *  sighting (a worker step can carry a record from rank 0 straight to converting), a terminal or
  *  side-exit kind, a failure; for a top-up the buyer's submit; for a withdrawal the prompt's
@@ -346,10 +365,11 @@ const followsWorker = (record: RequestRecord): boolean =>
   isWorkerDriven(record) || record.status.kind === "failed" || record.status.kind === "expired";
 
 /** Why the worker must be handed the request again, or null when it has the job in hand: it has
- *  no job for it (`unknown`), or it retired the job after the money was paid (`expired`): a job
+ *  no job for it (`unknown`), it retired the job after the money was paid (`expired`): a job
  *  that expired, or a withdrawal's job cancelled while the host's sheet was still up and then
- *  approved, whose CASH reached the key after all. */
-function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
+ *  approved, whose CASH reached the key after all; or it gave up a deposit as lost that is back
+ *  on the account since (`returned`). */
+function lostHandoff(record: RequestRecord): "unknown" | "expired" | "returned" | null {
   const { worker } = record.witnesses;
   if (worker === undefined || !isWorkerDriven(record)) return null;
   // A sale the purse has not been asked for has nothing for the worker yet: no CASH will come.
@@ -358,6 +378,7 @@ function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
   if (isWithdrawal(record) && worker.failure === "cancelled" && rankOf(record) >= 1) {
     return "expired";
   }
+  if (isTopUp(record) && worker.failure === "deposit-lost") return "returned";
   if (worker.failure !== "expired") return null;
   const paid = isTopUp(record) ? buyerPaid(record) : paymentTaken(record);
   return paid ? "expired" : null;
@@ -370,7 +391,14 @@ type WorkerJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null; psmRefusals?: number; workedMs?: number };
+  state?: {
+    fundsSeenAt?: number | null;
+    depositLeftAt?: number | null;
+    emptyReadAt?: number | null;
+    heldReadAt?: number | null;
+    psmRefusals?: number;
+    workedMs?: number;
+  };
   claim?: {
     phase?: string;
     amount?: string;
@@ -524,12 +552,18 @@ function jobView(job: WorkerJob): WorkerJobView {
   const recovery = recoveryOf(job);
   const refusals = job.state?.psmRefusals;
   const workedMs = job.state?.workedMs;
+  const leftAt = job.state?.depositLeftAt;
+  const readAt = job.state?.emptyReadAt;
+  const heldAt = job.state?.heldReadAt;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
+    ...(isNumber(leftAt) ? { depositLeftAt: leftAt } : {}),
+    ...(isNumber(readAt) ? { emptyReadAt: readAt } : {}),
+    ...(isNumber(heldAt) ? { heldReadAt: heldAt } : {}),
     lastTickAt: job.lastTickAt ?? null,
     ...(isNumber(workedMs) ? { workedMs } : {}),
     claim:
@@ -1219,7 +1253,26 @@ export const useRequestsStore = defineStore("requests", () => {
       }
       const next = { ...reduced, rev: entry.record.rev + 1 };
       await commit(key, next, isCritical(entry.record, next));
+      if (lostDepositBack(entry.record, next)) void resumeLostDeposit(ref, next);
     });
+  }
+
+  /** A top-up whose deposit was lost sees it on its account again: the worker gave the job up, so
+   *  the hand-off is sent again, hosted, and the worker re-arms it to convert the deposit. */
+  async function resumeLostDeposit(ref: RequestRef, record: TopUpRecord): Promise<void> {
+    if (!isHosted() || record.handoff === undefined) return;
+    const key = requestRefKey(ref);
+    try {
+      const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
+      const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
+      await sendHandoff(getStorageWorkerManager(), sessionId, record.handoff);
+      patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
+    } catch (e) {
+      const handoffError = messageOf(e);
+      devLog("requests", `${key} could not re-arm the worker: ${handoffError}`, undefined, "warn");
+      patchEntry(key, (current) => ({ ...current, handoffError }));
+    }
+    syncJobPoll();
   }
 
   /** Notes on a top-up's record something no observation carries: the core slot it expects is
@@ -1504,23 +1557,31 @@ export const useRequestsStore = defineStore("requests", () => {
   // read final on the burner, the app follows its burner at each best and each finalized block.
   // The app is the early witness of the deposit, before or after a provider's word, and its own
   // finalized read confirms it. Hosted only; it ends once the deposit is final on the burner or
-  // the request moves past it, and a failed subscription is let go until the next sync
-  // re-subscribes.
+  // the request moves past it. A failed subscription is tried again while its request stays on
+  // screen, after a wait that doubles with each failure in a row.
   let depositWatch: {
     key: RequestKey;
     unsubscribe: (() => void) | null;
     stopped: boolean;
   } | null = null;
+  /** The failures in a row of the watch on one request, and the try pending after the last. */
+  let depositRetry: {
+    key: RequestKey;
+    failures: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
-  /** The request on screen awaits its deposit, or has it seen but not yet final on the burner. */
+  /** The request on screen awaits its deposit, has it seen but not yet final on the burner, or
+   *  lost it to a fork: it may still land. */
   function foregroundFollowsDeposit(): boolean {
     const record = foregroundRecord.value;
     if (record === null) return false;
     const { kind } = record.status;
     return (
       kind === "awaiting-deposit" ||
-      (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined)
+      (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined) ||
+      endedGone(record)
     );
   }
   /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
@@ -1539,11 +1600,20 @@ export const useRequestsStore = defineStore("requests", () => {
       if (depositWatch.key === key) return;
       stopDepositWatch();
     }
+    // A try still pending is owed no more: it was this start, or for a request no longer on screen,
+    // whose failures this one does not carry, even while that try loads the chain module.
+    if (depositRetry?.timer != null) {
+      clearTimeout(depositRetry.timer);
+      depositRetry.timer = null;
+    }
+    if (depositRetry !== null && depositRetry.key !== key) depositRetry = null;
     // Claimed before the subscription lands, so a second start while it is pending is a no-op.
     const watching = { key, unsubscribe: null as (() => void) | null, stopped: false };
     depositWatch = watching;
     const sourceId = effectiveSourceId(ref);
-    const failed = (e: unknown): void => {
+    // The subscription's own error is the chain client's; a subscribe that rejected failed before
+    // it, deriving the account or dialing, and a failed dial is not cached.
+    const failed = (e: unknown, fromClient: boolean): void => {
       if (watching.stopped) return;
       devLog(
         "requests",
@@ -1551,12 +1621,17 @@ export const useRequestsStore = defineStore("requests", () => {
         undefined,
         "warn",
       );
-      stopDepositWatch();
+      dropDepositWatch();
+      retryDepositWatch(key, fromClient);
     };
+    const clientFailed = (e: unknown): void => failed(e, true);
     // Only a change is observed, since the watch emits at every block; each finality on its own.
+    // Any reading shows the subscription alive, which ends its failures in a row.
     const last: Partial<Record<Finality, string>> = {};
     const changed = (finality: Finality, reading: string): boolean => {
-      if (watching.stopped || last[finality] === reading) return false;
+      if (watching.stopped) return false;
+      if (depositRetry?.key === key) depositRetry = null;
+      if (last[finality] === reading) return false;
       last[finality] = reading;
       return true;
     };
@@ -1583,7 +1658,7 @@ export const useRequestsStore = defineStore("requests", () => {
                 ),
               );
             },
-            failed,
+            clientFailed,
           );
         }
         return live.watchTradeBurner(
@@ -1595,13 +1670,16 @@ export const useRequestsStore = defineStore("requests", () => {
               void observe(ref, chainReading(free, requestsNow(), finality));
             }
           },
-          failed,
+          clientFailed,
         );
       })
-      .then((unsubscribe) => {
-        if (watching.stopped) unsubscribe();
-        else watching.unsubscribe = unsubscribe;
-      }, failed);
+      .then(
+        (unsubscribe) => {
+          if (watching.stopped) unsubscribe();
+          else watching.unsubscribe = unsubscribe;
+        },
+        (e: unknown) => failed(e, false),
+      );
   }
   /** Starts the watch over again after a request took new terms: its token may have changed, and
    *  the balance it already read has to be read again against the new gate. */
@@ -1609,12 +1687,46 @@ export const useRequestsStore = defineStore("requests", () => {
     stopDepositWatch();
     syncDepositWatch();
   }
+  /** Stops the watch with any try pending, and forgets its failures. */
   function stopDepositWatch(): void {
+    clearDepositRetry();
+    dropDepositWatch();
+  }
+  /** Lets the subscription go, and nothing else. */
+  function dropDepositWatch(): void {
     if (depositWatch === null) return;
     const watching = depositWatch;
     depositWatch = null;
     watching.stopped = true;
     watching.unsubscribe?.();
+  }
+  function clearDepositRetry(): void {
+    if (depositRetry?.timer != null) clearTimeout(depositRetry.timer);
+    depositRetry = null;
+  }
+  /** Tries the watch on `key` again after its latest failure, while its request stays on screen.
+   *  From the second failure in a row on, when the client failed it, the Asset Hub client is
+   *  dialed afresh first: a client that died stays cached, and every try on it would fail the
+   *  same way. Other failures leave the client to the reads that share it. */
+  function retryDepositWatch(key: RequestKey, fromClient: boolean): void {
+    const failures = (depositRetry?.key === key ? depositRetry.failures : 0) + 1;
+    clearDepositRetry();
+    const wait = Math.min(DEPOSIT_WATCH_RETRY_MS * 2 ** (failures - 1), DEPOSIT_WATCH_RETRY_MAX_MS);
+    const retry: NonNullable<typeof depositRetry> = { key, failures, timer: null };
+    retry.timer = setTimeout(() => {
+      retry.timer = null;
+      if (failures < 2 || !fromClient) {
+        syncDepositWatch();
+        return;
+      }
+      void import("~~/lib/host-chain").then(({ evictChain, ASSET_HUB }) => {
+        // Stopped or started over while the module loaded: this try is no longer owed.
+        if (depositRetry !== retry) return;
+        evictChain(ASSET_HUB);
+        syncDepositWatch();
+      });
+    }, wait);
+    depositRetry = retry;
   }
   /** The watch follows the request on screen until its deposit is final on the burner, hosted,
    *  and not otherwise. */
@@ -2666,6 +2778,8 @@ export const useRequestsStore = defineStore("requests", () => {
     /** One bounded burner read, applied as the chain's observation; null when it failed. */
     async function probe(ref: RequestRef): Promise<{ address: string; free: bigint } | null> {
       const sourceId = effectiveSourceId(ref);
+      // Stamped when the read starts, as the worker stamps its own, so that the two compare.
+      const readAt = requestsNow();
       const read = await bounded(`burner read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
         probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
@@ -2673,7 +2787,7 @@ export const useRequestsStore = defineStore("requests", () => {
         devLog("requests", `${read.reason} (kept)`, undefined, "warn");
         return null;
       }
-      await observe(ref, chainReading(read.value.free, now));
+      await observe(ref, chainReading(read.value.free, readAt));
       return read.value;
     }
 
@@ -2840,12 +2954,12 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** Reconcile step 6: the worker is handed every open request it lost, off screen only. The
    *  pass waits for the worker's heartbeat once, up to `WORKER_READY_MS`, and skips every send
-   *  when it never comes. A job it has no record of gets the request's stored hand-off as it is;
-   *  a job it expired after the buyer paid gets it with a fresh deadline, because the worker
-   *  keeps the hand-off's own; a legacy record without a hand-off builds one hosted world to
-   *  obtain it, stores it and lets the world go. Nothing here observes the record: the worker's
-   *  answer arrives with the next job read. A failure is noted on the entry and the next
-   *  reconcile tries again. */
+   *  when it never comes. A job it has no record of, or one that gave up a deposit now back,
+   *  gets the request's stored hand-off as it is; a job it expired after the buyer paid gets it
+   *  with a fresh deadline, because the worker keeps the hand-off's own; a legacy record without
+   *  a hand-off builds one hosted world to obtain it, stores it and lets the world go. Nothing
+   *  here observes the record: the worker's answer arrives with the next job read. A failure is
+   *  noted on the entry and the next reconcile tries again. */
   async function handOffLostRequests(now: number): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;

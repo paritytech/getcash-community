@@ -35,6 +35,10 @@ export const HIDDEN_RESET_MS = 5_000;
 export const JOB_POLL_MS = 2_000;
 /** The same poll while a top-up's claim is in flight and the host's word on it is due. */
 export const JOB_POLL_CLAIMING_MS = 1_000;
+/** A deposit watch that failed is tried again after this, doubled for each failure in a row. */
+export const DEPOSIT_WATCH_RETRY_MS = 2_000;
+/** The longest wait before a failed deposit watch is tried again. */
+export const DEPOSIT_WATCH_RETRY_MAX_MS = 30_000;
 /** Foreground Meld status poll. */
 export const MELD_POLL_MS = 3_000;
 /** The Meld poll's ceiling while its reads keep failing; the delay doubles up to it. */
@@ -70,6 +74,10 @@ export const DEFAULT_DEPOSIT_WINDOW_MS = 86_400_000;
 export const PROBED_RECHECK_MS = 86_400_000;
 /** A chain-provisional deposit-seen may revert after this. */
 export const PROVISIONAL_REVERT_MS = 600_000;
+/** How long after the app last read the deposit on its account a worker read that finds the
+ *  account empty takes back a sighting the worker never counted: past any lag between their views
+ *  of the best block. */
+export const SIGHTING_DROPPED_AFTER_MS = 60_000;
 /** Failure reason for a request whose deposit window lapsed. */
 export const DEPOSIT_EXPIRED_REASON = "Channel expired";
 /** The worker holds a request after the PSM refused the mint three times: the deposit stays on
@@ -293,8 +301,14 @@ export interface WorkerJobView {
   failure?: string;
   lastError?: string;
   fundsSeenAt: number | null;
+  /** When the deposit left the best chain after the worker took it, while it stays away. */
+  depositLeftAt?: number;
+  /** When the worker last read the deposit's account empty. */
+  emptyReadAt?: number;
+  /** When the worker last read money on the deposit's account, of any amount. */
+  heldReadAt?: number;
   lastTickAt: number | null;
-  /** The time the worker really ran since the deposit was final, until it registered the claim:
+  /** The time the worker really ran since it took the deposit, until it registered the claim:
    *  ticks apart by more than 30 s count as 30 s. */
   workedMs?: number;
   claim: {
@@ -409,9 +423,15 @@ export interface TopUpRecord {
   observedAt?: Partial<Record<ObservedFact, number>>;
   /** A Chainflip swap's progress, from core's status reads. */
   chainflip?: ChainflipFacts;
-  /** The worker's facts past the deposit, each kept from its first report. Only `finalized` and
-   *  `best` of the deposit move on. */
+  /** The worker's facts past the deposit, each kept from its first report but for what a fork
+   *  takes back: the deposit's block and the conversion. Only `finalized` and `best` of the
+   *  deposit move on. The timeline reads only that the deposit's block is there; its numbers are
+   *  kept for the record. */
   depositInBlock?: DepositInBlock;
+  /** When the app took back its own sighting of the deposit, one the worker never counted and so
+   *  never reports gone: it left, as the worker's `depositLeftAt` says of one it counted. Cleared
+   *  once money is read on the account again. */
+  depositDroppedAt?: number;
   conversionPreparedAt?: number;
   converted?: ConvertedTx;
   claimRegisteredAt?: number;
@@ -435,6 +455,8 @@ export interface TopUpRecord {
           claimCredited?: string;
           psmRefusals?: number;
           fundsSeenAt: number | null;
+          /** When the deposit left the best chain, while the latest read has it away. */
+          depositLeftAt?: number;
           lastTickAt: number | null;
           /** The job's `workedMs` and its claim's, as the latest read gave them. */
           workedMs?: number;
@@ -1076,3 +1098,19 @@ export const railSawPayment = (record: Pick<TopUpRecord, "rail">): boolean =>
  *  the provider's widget. Such a request never expires, however long the funds take to land. */
 export const buyerPaid = (record: Pick<TopUpRecord, "rail" | "meldSubmittedAt">): boolean =>
   railSawPayment(record) || record.meldSubmittedAt !== undefined;
+
+/** When the deposit left the best chain, while it stays away and the worker is known: the
+ *  worker's word for a deposit it counted, the app's for its own sighting the worker never did. */
+export function depositLeftAtOf(
+  record: Pick<TopUpRecord, "witnesses" | "depositDroppedAt">,
+): number | undefined {
+  const worker = record.witnesses.worker;
+  if (worker?.known !== true) return undefined;
+  return worker.depositLeftAt ?? record.depositDroppedAt;
+}
+
+/** The deposit reached the account and left the best chain, and the worker has not seen it back:
+ *  it was sent, and the worker owns the wait for it. */
+export const depositGone = (
+  record: Pick<TopUpRecord, "failure" | "witnesses" | "depositDroppedAt">,
+): boolean => record.failure?.kind === "deposit-lost" || depositLeftAtOf(record) !== undefined;

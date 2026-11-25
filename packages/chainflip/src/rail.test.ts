@@ -40,7 +40,7 @@ function fakeSdk() {
 describe("createChainflipRail", () => {
   it("sources() returns the full catalog by default and filters via opts.sources", () => {
     const { sdk } = fakeSdk();
-    expect(createChainflipRail({ sdk }).sources()).toHaveLength(13);
+    expect(createChainflipRail({ sdk }).sources()).toHaveLength(15);
 
     const filtered = createChainflipRail({ sdk, sources: ["btc", "eth"] }).sources();
     expect(filtered.map((s) => s.sourceId)).toEqual(["btc", "eth"]);

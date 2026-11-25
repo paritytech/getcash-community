@@ -68,12 +68,15 @@ function fromUri(uri: string): ScannedCode | null {
   };
 }
 
-/** The URI schemes each network's codes are written in. An EVM network also takes the short name
- *  EIP 3770 puts in front of an address, as `eth:0x…`. */
+/** The URI schemes each network's codes are written in. Every EVM network writes EIP 681's
+ *  `ethereum:`, the chain id after `@` telling them apart, and also takes the short name EIP 3770
+ *  puts in front of an address, as `eth:0x…`. */
 const NETWORK_SCHEMES: Readonly<Record<string, readonly string[]>> = {
   Polkadot: ["substrate", "polkadot"],
   Bitcoin: ["bitcoin"],
   Ethereum: ["ethereum"],
+  Arbitrum: ["ethereum"],
+  Bsc: ["ethereum"],
   Solana: ["solana"],
   Tron: ["tron"],
 };

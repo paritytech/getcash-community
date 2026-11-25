@@ -18,7 +18,6 @@ export interface FundingRouteOption {
 }
 
 export interface FundingSelectorConfig {
-  provider: string;
   amount: FundingAmountRules & {
     initial: string;
     presets: readonly string[];
@@ -54,7 +53,6 @@ const asAmounts = (units: readonly bigint[]): readonly string[] =>
   units.map((amount) => formatFundingAmount(amount, DECIMALS));
 
 export const fundingSelectorConfig = {
-  provider: "getcash.dot",
   amount: {
     decimals: DECIMALS,
     initial: "",

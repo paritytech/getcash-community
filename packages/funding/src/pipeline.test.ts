@@ -2,12 +2,18 @@
 // on every tier, pool discovery, the quote headroom, the deposit sizing, the dispatch-error
 // decoder, and the manual rail.
 
+import { isDeepStrictEqual } from "node:util";
 import { TOKENS } from "@getsome/core";
 import { AccountId, InvalidTxError, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
 import { createManualRail } from "./manual-rail";
-import { destinationEarmark, estimateDestinationFeeCash, withFeeMargin } from "./funding-program";
+import {
+  destinationEarmark,
+  estimateDestinationFeeCash,
+  pricedAfterSpend,
+  withFeeMargin,
+} from "./funding-program";
 import {
   decideStep,
   DEFAULT_SLIPPAGE_PCT,
@@ -19,6 +25,7 @@ import {
   FundingTrappedError,
   isConverted,
   sentAmountOf,
+  DEPOSIT_GONE_AFTER_MS,
   MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   psmDepositNeeded,
@@ -96,7 +103,13 @@ const STABLE_QUOTED = 1_300_000n;
 const DISPATCH_STABLE = 7_000n;
 /** The scripted runtime's answers for the program's own fees, in USDC. */
 const LOCAL_STABLE = 90n;
-const DELIVERY_STABLE = 10n;
+const DELIVERY_QUOTED = 10n;
+/** The stable in the scripted USDC/PAS pool: deep enough that no deposit here moves the price
+ *  by a whole unit of the delivery fee. */
+const STABLE_RESERVE = 1_000_000_000_000n;
+/** The delivery fee the estimate carries: the runtime's quote at the price the program's own
+ *  exchange leaves, rounded up, so one unit more on a pool this deep. */
+const DELIVERY_STABLE = DELIVERY_QUOTED + 1n;
 const FEES_STABLE = LOCAL_STABLE + DELIVERY_STABLE;
 /** The fee allowance the program carries and refunds the unspent part of. */
 const ALLOWANCE_STABLE = withFeeMargin(FEES_STABLE);
@@ -125,6 +138,13 @@ const UNDERLYING_LOC = {
     ],
   },
 };
+
+/** The pool table as the chain reads it: a pool is found under its exact key and no other. A pool
+ *  reads as its lp token id, which is 0 for the first one. */
+const poolTable = (keys: unknown[]) => ({
+  getValues: async (asked: unknown[][]) =>
+    asked.map(([key]) => (keys.some((held) => isDeepStrictEqual(held, key)) ? 0 : undefined)),
+});
 
 describe("decideStep", () => {
   const targets = { settleAmount: SETTLE, depositNeeded: QUOTED + KEEP };
@@ -502,6 +522,10 @@ function scriptedWorld(
     debitIn: 0, // AH balance reads remaining until the funding program's debit becomes visible
     /** Debits landed while Asset Hub's finality is held: the finalized block shows them not. */
     unfinalDebit: 0n,
+    /** A deposit in a best block only: the finalized block shows it not. */
+    unfinalCredit: 0n,
+    /** The block each dry run as the burner was asked at, absent for the default. */
+    dryRunsAt: [] as Array<string | undefined>,
     xcmLanded: false, // a SUCCESSFUL send; a rejected submit leaves the run still quoting
     /** What the last landed program took from the burner and sent to People. */
     lastLanding: null as { debit: bigint; arrived: bigint } | null,
@@ -522,8 +546,9 @@ function scriptedWorld(
   const underlyingFor = (nativeIn: bigint) =>
     (((nativeIn * BUY) / QUOTED) * 10_000n) / state.priceBps;
   // The program as a dry run sees it: at the current price, without the debit, and without the
-  // scripted rejection or the price move at inclusion, which only the real submit meets.
-  const dryRunCall = (args: ExecuteArgs) => {
+  // scripted rejection or the price move at inclusion, which only the real submit meets. A dry
+  // run at a block that does not hold the deposit cannot withdraw it, as on the chain.
+  const dryRunCall = (args: ExecuteArgs, at?: string) => {
     const exchange = exchangeOf(args);
     const give = exchange.give.value[0]!.fun.value;
     const want = exchange.want[0]!.fun.value;
@@ -536,6 +561,7 @@ function scriptedWorld(
       },
     });
     if (opts.assetHubDryRunError) return rejected(3, opts.assetHubDryRunError);
+    if (at !== "best" && state.unfinalCredit > 0n) return rejected(0, "FailedToTransactAsset");
     const out = underlyingFor(give);
     if (out < want) return rejected(2, "NoDeal");
     return {
@@ -619,7 +645,7 @@ function scriptedWorld(
   const api = {
     query: {
       AssetConversion: {
-        Pools: { getEntries: async () => [{ keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] }] },
+        Pools: poolTable([[NATIVE_LOC, UNDERLYING_LOC]]),
       },
       System: {
         Number: chain.Number,
@@ -630,7 +656,9 @@ function scriptedWorld(
               state.nativeAh -= state.pendingDebit;
               state.pendingDebit = 0n;
             }
-            const free = state.nativeAh + (options?.at === "finalized" ? state.unfinalDebit : 0n);
+            const unfinal =
+              options?.at === "finalized" ? state.unfinalDebit - state.unfinalCredit : 0n;
+            const free = state.nativeAh + unfinal;
             return { data: { free }, nonce: chain.nonce.latest };
           },
         },
@@ -650,7 +678,7 @@ function scriptedWorld(
           if (!opts.quoteAfterXcm && state.xcmLanded) {
             throw new Error("quote called after the XCM; should be lazy");
           }
-          return giveLoc === NATIVE_LOC ? nativeFor(out) : (out * BUY) / QUOTED;
+          return isNativeLoc(giveLoc) ? nativeFor(out) : (out * BUY) / QUOTED;
         },
         // What `nativeIn` buys, at the same rate.
         quote_price_exact_tokens_for_tokens: async (_a: unknown, _b: unknown, nativeIn: bigint) =>
@@ -659,8 +687,15 @@ function scriptedWorld(
             : underlyingFor(nativeIn),
       },
       DryRunApi: {
-        dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
-          dryRunCall(call.value.value),
+        dry_run_call: async (
+          _origin: unknown,
+          call: { value: { value: ExecuteArgs } },
+          _version: number,
+          options?: { at?: string },
+        ) => {
+          state.dryRunsAt.push(options?.at);
+          return dryRunCall(call.value.value, options?.at);
+        },
       },
       // The landing shortfall is driven by `remoteFee`, not by these.
       XcmPaymentApi: xcmPaymentApi,
@@ -675,6 +710,7 @@ function scriptedWorld(
   chain.finalize = () => {
     finalizeChain();
     state.unfinalDebit = 0n;
+    state.unfinalCredit = 0n;
   };
   return {
     state,
@@ -859,7 +895,7 @@ function scriptedPsmWorld(
     query: {
       AssetConversion: {
         Pools: {
-          getEntries: async () => {
+          getValues: async () => {
             throw new Error("pool discovery on the psm tier");
           },
         },
@@ -966,6 +1002,8 @@ function scriptedStableWorld(
     arrivalAfterReads?: number;
     /** The most stable the stable pool can price in one exchange. */
     stablePoolDepth?: bigint;
+    /** The stable the stable pool holds, when shallower than STABLE_RESERVE. */
+    stableReserve?: bigint;
     /** The most native the CASH pool can price in one exchange. */
     poolDepth?: bigint;
     /** The stable pool's rate at inclusion, in bps of the sizing rate, when it differs. */
@@ -1117,12 +1155,10 @@ function scriptedStableWorld(
   const api = {
     query: {
       AssetConversion: {
-        Pools: {
-          getEntries: async () => [
-            { keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] },
-            { keyArgs: [[NATIVE_LOC, token.location]] },
-          ],
-        },
+        Pools: poolTable([
+          [NATIVE_LOC, UNDERLYING_LOC],
+          [NATIVE_LOC, token.location],
+        ]),
       },
       System: {
         Number: chain.Number,
@@ -1176,6 +1212,12 @@ function scriptedStableWorld(
             ? undefined
             : nativeOutFor(amount);
         },
+        get_reserves: async (native: unknown, stable: unknown) => {
+          expect(isNativeLoc(native)).toBe(true);
+          expect(stable).toEqual(token.location);
+          const reserve = opts.stableReserve ?? STABLE_RESERVE;
+          return [reserve * 1_000n, reserve];
+        },
       },
       DryRunApi: {
         dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
@@ -1192,7 +1234,7 @@ function scriptedStableWorld(
           expect(asset).toEqual({ type: "V5", value: token.location });
           return {
             success: true,
-            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_STABLE } }] },
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_QUOTED } }] },
           };
         },
       },
@@ -1417,6 +1459,121 @@ describe("tickOnce", () => {
     );
     // Nothing converts again while the trap stands.
     expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
+  });
+
+  it("takes the deposit as gone when a fork takes its block before a program went out, and as back when it returns", async () => {
+    // Seen, but the program is refused before it goes out.
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    expect(state.fundsSeenAt).toBe(2_000);
+
+    // A fork takes the block the deposit was in: the burner is empty, and nothing went out.
+    world.state.nativeAh = 0n;
+    const gone = await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(gone.steps).toEqual(["await-native"]);
+    expect(state).toMatchObject({ fundsSeenAt: null, depositLeftAt: 5_000 });
+
+    // Still gone later: the time it first left stands.
+    await drive(world, 1, state, POOL, undefined, { now: () => 9_000 });
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // Back in a best block: seen again, and no longer gone.
+    world.state.nativeAh = ASK + KEEP;
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    expect(state).toMatchObject({ fundsSeenAt: 2_000, depositLeftAt: null });
+    expect(world.state.txs).toEqual([]);
+  });
+
+  it("stamps when each read started by what it found, and nothing for a read that fails", async () => {
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, POOL, undefined, { now: () => 1_000 })).rejects.toThrow(
+      /not submitted/,
+    );
+    expect(state).toMatchObject({ emptyReadAt: null, heldReadAt: 1_000 });
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(state).toMatchObject({ emptyReadAt: 5_000, heldReadAt: 1_000, depositLeftAt: 5_000 });
+
+    // A read that fails stamps nothing.
+    const failing = {
+      now: () => 9_000,
+      readUnderlyingOnPeople: () => Promise.reject(new Error("rpc down")),
+    };
+    await expect(drive(world, 1, state, POOL, undefined, failing)).rejects.toThrow(/rpc down/);
+    expect(state).toMatchObject({ emptyReadAt: 5_000, heldReadAt: 1_000 });
+
+    // Money of any amount, short of the deposit too.
+    world.state.nativeAh = 1n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 13_000 });
+    expect(state).toMatchObject({ emptyReadAt: 5_000, heldReadAt: 13_000 });
+  });
+
+  it("keeps waiting for a deposit that left when a tick reads it back and then fails, so a second fork still counts", async () => {
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // Back in a block; the tick reads it, then the pool quote fails.
+    world.state.nativeAh = ASK + KEEP;
+    const base = (
+      world.client as unknown as { getTypedApi: () => Record<string, never> }
+    ).getTypedApi() as unknown as { apis: { AssetConversionApi: object } };
+    const flaky = {
+      ...base,
+      apis: {
+        ...base.apis,
+        AssetConversionApi: {
+          ...base.apis.AssetConversionApi,
+          quote_price_tokens_for_exact_tokens: () => Promise.reject(new Error("quote timed out")),
+        },
+      },
+    };
+    const failing = { now: () => 9_000, api: flaky as never };
+    await expect(drive(world, 1, state, POOL, undefined, failing)).rejects.toThrow(
+      /quote timed out/,
+    );
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // A second fork drops that block: still the deposit that left, read empty again.
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 13_000 });
+    expect(state).toMatchObject({ depositLeftAt: 5_000, emptyReadAt: 13_000 });
+  });
+
+  it("ends the wait for a deposit that left once any money is on the burner again, short of the gate included", async () => {
+    const world = scriptedWorld({ assetHubDryRunError: "FeesNotMet" });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/not submitted/);
+    world.state.nativeAh = 0n;
+    await drive(world, 1, state, POOL, undefined, { now: () => 5_000 });
+    expect(state.depositLeftAt).toBe(5_000);
+
+    // The buyer sends again, less than the gate: not the deposit, but no longer the one that left.
+    world.state.nativeAh = KEEP + 1n;
+    const short = await drive(world, 1, state, POOL, undefined, { now: () => 9_000 });
+    expect(short.steps).toEqual(["await-native"]);
+    expect(state).toMatchObject({ fundsSeenAt: null, depositLeftAt: null });
+  });
+
+  it("does not take a deposit left short as gone: only an empty burner is a deposit that left", async () => {
+    const world = scriptedWorld({ rejectSubmits: 1 });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/dispatch rejected/);
+    // The rejection took its fee and the pool moved: what is left is short of the program.
+    world.state.priceBps = 10_300n;
+    const short = await drive(world, 2, state);
+    expect(short.steps).toEqual(["await-native", "await-native"]);
+    expect(state).toMatchObject({ fundsSeenAt: 2_000, depositLeftAt: null });
   });
 
   it("names the failed instruction on a rejection, keeps the deposit native, and retries with fresh estimates", async () => {
@@ -1717,6 +1874,27 @@ describe("tickOnce on the stable pool tier", () => {
     expect(args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
     // The dispatch fee is charged in the stable, with the tick's anchor.
     expect(tx!.options).toEqual({ asset: TOKENS.USDC.location, ...SIGN_OPTIONS });
+  });
+
+  it("prices the delivery fee for the burner's whole balance going into the stable pool", async () => {
+    // A pool of one USDC, so the allowance shows which amount the estimate was given: the whole
+    // balance, not the spend or the quote.
+    const reserve = 1_000_000n;
+    const deposit = STABLE_DEPOSIT + 1_000_000n;
+    const world = scriptedStableWorld({ arrivalAfterReads: 1, stableReserve: reserve });
+    world.state.stableAh = deposit;
+    const run = await drive(world, 4, freshTickState(), STABLE_ROUTE);
+    expect(run.steps).toEqual(["swap", "done"]);
+    const allowance = withFeeMargin(
+      LOCAL_STABLE + pricedAfterSpend(DELIVERY_QUOTED, reserve, deposit),
+    );
+    // Priced on the spend instead, the allowance would come out lower.
+    const spend = deposit - DISPATCH_STABLE - MIN_BALANCE - allowance;
+    expect(allowance).toBeGreaterThan(
+      withFeeMargin(LOCAL_STABLE + pricedAfterSpend(DELIVERY_QUOTED, reserve, spend)),
+    );
+    const payFees = (instruction(world.state.txs[0]!.args, "PayFees") as { asset: Fungible }).asset;
+    expect(payFees.fun.value).toBe(allowance);
   });
 
   it("gates on the two-hop quote, then the fees: short of the bare swap waits without the fee reads", async () => {
@@ -2314,6 +2492,149 @@ describe("the submit, and the arrival on People", () => {
     expect(state).toMatchObject({ attempts: 2, nonceAtSubmit: null, inclusionBlock: null });
   });
 
+  it("takes a deposit at the best block, before Asset Hub finalizes it, and dry-runs as the burner there", async () => {
+    const world = funded();
+    world.chain.finalityHeld = true;
+    world.state.unfinalCredit = world.state.nativeAh;
+    const run = await drive(world, 2);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(run.state.fundsSeenAt).toBe(2_000);
+    // The fee estimate's dry run and the one before the submit both read the best block.
+    expect(world.state.dryRunsAt).toEqual(["best", "best"]);
+  });
+
+  it("sends nothing while a fork took the deposit's block with the conversion, and converts it again once the transfer is back", async () => {
+    const world = funded({ quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const deposit = world.state.nativeAh;
+    world.state.unfinalCredit = deposit;
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "done"]);
+
+    // The fork that took the conversion's block took the deposit's too. The empty burner reads
+    // as the program having run, so the run holds and sends nothing, through finality rounds
+    // that pass the block it watched while nothing arrives on People.
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const gone = await drive(world, 3, state);
+    expect(gone.steps).toEqual(["await-arrival", "await-arrival", "await-arrival"]);
+    expect(gone.txs).toEqual(["swap"]);
+
+    // The transfer is back in a best block, not yet final: the program never took it, and it
+    // goes out again.
+    world.state.nativeAh = deposit;
+    world.state.unfinalCredit = deposit;
+    const again = await drive(world, 3, state);
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+  });
+
+  it("takes the deposit as gone once the program's block was replaced and the burner stays empty with nothing on People, and as back when it returns", async () => {
+    const world = funded({ quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const deposit = world.state.nativeAh;
+    world.state.unfinalCredit = deposit;
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "done"]);
+
+    // The fork took the deposit with the program. Found replaced, the run first waits for the
+    // program's CASH on People, as a program put back into a later block would show it.
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const at = (now: number) => ({ now: () => now });
+    const found = await drive(world, 1, state, POOL, undefined, at(100_000));
+    expect(found.steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ replacedAt: 100_000, depositLeftAt: null });
+    expect(state.fundsSeenAt).not.toBeNull();
+
+    // Still nothing on People and the burner still empty a minute on: the deposit is gone, and
+    // the program never ran.
+    const gone = await drive(world, 1, state, POOL, undefined, at(100_000 + DEPOSIT_GONE_AFTER_MS));
+    expect(gone.steps).toEqual(["await-native"]);
+    expect(state).toMatchObject({
+      fundsSeenAt: null,
+      depositLeftAt: 100_000 + DEPOSIT_GONE_AFTER_MS,
+      replacedAt: null,
+      xcmSubmitted: false,
+      nonceAtSubmit: null,
+      inclusionBlock: null,
+    });
+    expect(gone.txs).toEqual(["swap"]);
+
+    // The transfer is back: seen again, no longer gone, and converted.
+    world.state.nativeAh = deposit;
+    world.state.unfinalCredit = deposit;
+    const back = await drive(world, 3, state);
+    expect(back.steps).toEqual(["swap", "done"]);
+    expect(back.txs).toEqual(["swap", "swap"]);
+    expect(state.depositLeftAt).toBeNull();
+  });
+
+  it("leaves a replaced program to the host once a claim is registered, however long People shows nothing", async () => {
+    const world = funded({ quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    world.state.unfinalCredit = world.state.nativeAh;
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "done"]);
+
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    const claimed = (now: number) => ({ now: () => now, claimRegistered: true });
+    await drive(world, 1, state, POOL, undefined, claimed(100_000));
+    await drive(world, 1, state, POOL, undefined, claimed(100_000 + DEPOSIT_GONE_AFTER_MS));
+    expect(state).toMatchObject({ depositLeftAt: null, replacedAt: null });
+    expect(state.fundsSeenAt).not.toBeNull();
+  });
+
+  it("does not take a conversion as run on an arrival a fork took with it, and converts the deposit once it is back", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 1 });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const deposit = world.state.nativeAh;
+    world.state.unfinalCredit = deposit;
+    const state = freshTickState();
+    await lostTick(world, state);
+    // The conversion reaped the burner, and its CASH shows at People's best block.
+    world.nonce.latest = 0;
+    world.nonce.finalized = 0;
+    world.state.loseAnswer = null;
+    expect((await drive(world, 1, state)).steps).toEqual(["done"]);
+    expect(state.arrived).toBe(true);
+
+    // A fork takes the deposit, the conversion and the arrival, and finality passes the block the
+    // run watched: the arrival seen at the best block is no proof, so nothing stands as done.
+    world.discard();
+    world.state.nativeAh = 0n;
+    world.state.unfinalCredit = 0n;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+
+    // The transfer is back, not yet final, and goes out again.
+    world.state.nativeAh = deposit;
+    world.state.unfinalCredit = deposit;
+    const again = await drive(world, 3, state);
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+  });
+
+  it("finds the trap a conversion left on People after its answer was lost, though the empty burner proves nothing", async () => {
+    const world = funded({ loseAnswer: "included", trapOnLanding: true, quoteAfterXcm: true });
+    const state = freshTickState();
+    await lostTick(world, state);
+    // The conversion reaped the burner, so its nonce starts over and Asset Hub shows nothing of it.
+    world.nonce.latest = 0;
+    world.nonce.finalized = 0;
+    world.state.loseAnswer = null;
+    const error = await drive(world, 3, state).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(FundingTrappedError);
+    expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
+  });
+
   it("ends the run on a short arrival only once People's finalized block shows it", async () => {
     const world = funded({
       remoteFee: BUFFER * 3n,
@@ -2349,6 +2670,7 @@ describe("the submit, and the arrival on People", () => {
         ...freshTickState(),
         attempts: 1,
         fundsSeenAt: 2_000,
+        heldReadAt: 2_000,
         nonceAtSubmit: 0,
         peopleAtXcm: 3n,
         sentToPeople: expect.any(BigInt),
@@ -2755,9 +3077,10 @@ describe("the submit, and the arrival on People", () => {
     expect(rest.txs).toEqual(["swap"]);
   });
 
-  it("takes a lost submit settled as landed as final from the reaped burner on the finalized chain", async () => {
-    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 4 });
+  it("takes a lost submit settled as landed as final from the reaped burner only once People's finalized block shows its CASH", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 6 });
     world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
     const state = freshTickState();
     await lostTick(world, state);
     // The program landed and reaped the burner: its nonce starts over and nothing is left on it.
@@ -2767,14 +3090,18 @@ describe("the submit, and the arrival on People", () => {
     expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
     expect(state).toMatchObject({ nonceAtSubmit: 0, inclusionHash: null });
 
+    // Asset Hub is final past the block, and the empty burner proves nothing on its own: the run
+    // holds, sending nothing, through the arrival at People's best block.
     world.chain.finalize();
-    world.chain.reads.length = 0;
-    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
-    expect(world.chain.reads).toEqual(["number@finalized", "nonce@finalized"]);
+    const arrival = await drive(world, 4, state);
+    expect(arrival.steps.at(-1)).toBe("done");
+    expect(arrival.txs).toEqual(["swap"]);
+    expect(state.nonceAtSubmit).toBe(0);
+
+    // Once People's finalized block holds the CASH, the conversion is final.
+    world.people.finalize();
+    expect((await drive(world, 1, state)).steps).toEqual(["done"]);
     expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
-    const rest = await drive(world, 2, state);
-    expect(rest.steps).toEqual(["await-arrival", "done"]);
-    expect(rest.txs).toEqual(["swap"]);
   });
 
   it("takes a lost submit settled as landed as final from the burner's moved nonce when the program left the account standing, as on the stable tiers", async () => {
@@ -3141,68 +3468,32 @@ describe("quoteNativeInMax", () => {
 });
 
 describe("discoverPool", () => {
-  const apiWith = (entries: unknown[]) =>
-    ({ query: { AssetConversion: { Pools: { getEntries: async () => entries } } } }) as never;
+  const apiWith = (keys: unknown[]) =>
+    ({ query: { AssetConversion: { Pools: poolTable(keys) } } }) as never;
+  /** The underlying's GeneralIndex under a location that is not the underlying's. */
+  const lookalike = {
+    parents: 1,
+    interior: {
+      type: "X3",
+      value: [{ type: "Parachain", value: 2000 }, ...UNDERLYING_LOC.interior.value],
+    },
+  };
 
-  it("finds the pool from either key order", async () => {
-    const flipped = await discoverPool(
-      apiWith([{ keyArgs: [[UNDERLYING_LOC, NATIVE_LOC]] }]),
+  it("reads the pool under its exact key and returns those locations", async () => {
+    const pool = await discoverPool(
+      apiWith([
+        [NATIVE_LOC, lookalike],
+        [NATIVE_LOC, UNDERLYING_LOC],
+      ]),
       50_000_413,
     );
-    expect(flipped).toEqual({ native: NATIVE_LOC, underlying: UNDERLYING_LOC });
+    expect(pool).toEqual({ native: NATIVE_LOC, underlying: UNDERLYING_LOC });
   });
 
-  it("throws when no pool exists or none pairs the underlying with the native", async () => {
-    await expect(discoverPool(apiWith([]), 50_000_413)).rejects.toThrow(
-      /no native AssetConversion pool/,
+  it("throws when the pool does not exist, whatever else carries its GeneralIndex", async () => {
+    await expect(discoverPool(apiWith([[NATIVE_LOC, lookalike]]), 50_000_413)).rejects.toThrow(
+      /no native AssetConversion pool found for underlying asset 50000413/,
     );
-    // an underlying/underlying pool (counter-side not interior-Here) must not match
-    await expect(
-      discoverPool(apiWith([{ keyArgs: [[UNDERLYING_LOC, UNDERLYING_LOC]] }]), 50_000_413),
-    ).rejects.toThrow(/no native AssetConversion pool/);
-    // a pool for a different GeneralIndex must not match
-    await expect(
-      discoverPool(
-        apiWith([
-          {
-            keyArgs: [
-              [
-                NATIVE_LOC,
-                {
-                  parents: 0,
-                  interior: {
-                    type: "X2",
-                    value: [
-                      { type: "PalletInstance", value: 50 },
-                      { type: "GeneralIndex", value: 999n },
-                    ],
-                  },
-                },
-              ],
-            ],
-          },
-        ]),
-        50_000_413,
-      ),
-    ).rejects.toThrow(/no native AssetConversion pool/);
-  });
-
-  it("matches GeneralIndex regardless of number/bigint decoding", async () => {
-    const numericLoc = {
-      parents: 0,
-      interior: {
-        type: "X2",
-        value: [
-          { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413 }, // number, not bigint
-        ],
-      },
-    };
-    const found = await discoverPool(
-      apiWith([{ keyArgs: [[NATIVE_LOC, numericLoc]] }]),
-      50_000_413,
-    );
-    expect(found.underlying).toBe(numericLoc);
   });
 });
 
