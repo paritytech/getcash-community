@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// Token picker for a withdrawal: the tokens on the chosen network, under a reminder of the
-// network already picked.
+// Token picker for a withdrawal: the tokens on the network, under a bar that names it.
 import {
   destinationTokenIcon,
   type WithdrawDestination,

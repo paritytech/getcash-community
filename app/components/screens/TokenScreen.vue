@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Token picker: every token on the chosen network, under a reminder of the network already
-// picked. Picking a row starts the purchase, and the row carries the spinner while it does.
+// Token picker: every token on the network, under a bar that names it. Picking a row starts the
+// purchase, and the row carries the spinner while it does.
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
 
