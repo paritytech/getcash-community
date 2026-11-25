@@ -253,7 +253,6 @@ async function confirm() {
       paymentMethodType: quoted.paymentMethodType,
       quote: quoted.line,
       cryptoAmount: quoted.cryptoAmount,
-      ...(quoted.swap === undefined ? {} : { swap: quoted.swap }),
       ...(quoted.sellCode === undefined ? {} : { sellCode: quoted.sellCode }),
       ...(quoted.route === undefined ? {} : { route: quoted.route }),
     });

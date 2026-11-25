@@ -90,7 +90,7 @@ tier, the fee PAS that travels with the CASH ends up in the landing token, so th
 credited one asset.
 The sale is decided at quote time, from the token the user picks for Asset Hub or, for a Meld
 destination, from the candidates the off-ramp catalog routes for the region, in this build's lane
-order (USDT on Asset Hub, then PAS, then the Chainflip lanes): a USDT candidate only when the PSM
+order (USDT on Asset Hub, then PAS): a USDT candidate only when the PSM
 can serve it, and the first a provider quotes wins. The PSM serves when it has room for the
 amount plus a tenth of it, 20 CASH at the least, once the app's own open PSM withdrawals are
 counted against that room. Confirm decides the sale again, fresh: when it is no longer the one the
@@ -149,9 +149,8 @@ stable pool otherwise, PAS through the pool. A sale that ends before the provide
 the price moved past the figure, the provider closed or changed the order, or the hour ran out,
 sends everything on the key home the same way, wherever it is. A payment whose answer was lost
 holds the job until the chain shows it landed or outlived its mortality, and an exact payment that
-shows landed at the best head is watched from there until the finalized chain shows it too. A sweep
-is not: a swap's refund can fill the key it emptied, so the key cannot settle it later. Only a key
-whose chain state contradicts the payment stops the job for a person.
+shows landed at the best head is watched from there until the finalized chain shows it too. Only a
+key whose chain state contradicts the payment stops the job for a person.
 
 ### Rails as packages
 
@@ -260,7 +259,7 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                       |
 | `VITE_MELD_PRODUCT_ID`          | this product's id, which the adapter's `allowed_products` must list; in `personhood` mode, the id the Host gives getcash (its domain)                                                                                           |
 | `VITE_ADAPTER_AUTH`             | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                             |
-| `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only                                   |
+| `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub`), not Meld code; only the direct Asset Hub sales are sold, USDT then DOT when unset, and any other asset is ignored |
 | `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                 |
 | `VITE_TOP_UP_MINIMUM`           | the least a top up or withdrawal can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, if it has one, shows when it is picked |
 | `VITE_TOP_UP_MAXIMUM`           | the most a top up or withdrawal can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so         |
