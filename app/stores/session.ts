@@ -936,6 +936,7 @@ export const useSessionStore = defineStore("session", () => {
           settleAmount,
           remoteFeeBuffer: sizing.remoteFeeBuffer,
           keepNativeForFees: sizing.keepNativeForFees,
+          keepAliveNative: sizing.keepAliveNative,
         }),
       );
     } catch (e) {
@@ -1452,6 +1453,7 @@ export const useSessionStore = defineStore("session", () => {
                   settleAmount: settleForPricing,
                   remoteFeeBuffer: priced.remoteFeeBuffer,
                   keepNativeForFees: priced.keepNativeForFees,
+                  keepAliveNative: priced.keepAliveNative,
                   // A direct deposit carries its own headroom, as the hosted sizing does.
                   ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
                 }))(),
@@ -2255,7 +2257,14 @@ export const useSessionStore = defineStore("session", () => {
     route: ConversionRoute,
     value: DepositValue,
   ): WorkerHandoffPayload {
-    const { external: _e, feeRate: _f, quotedDeposit: _q, tier: _t, ...rest } = handoff;
+    const {
+      external: _e,
+      feeRate: _f,
+      quotedDeposit: _q,
+      tier: _t,
+      keepAliveNative: _k,
+      ...rest
+    } = handoff;
     return {
       ...rest,
       settleAmount: value.receive.toString(),

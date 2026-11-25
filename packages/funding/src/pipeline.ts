@@ -387,10 +387,19 @@ export async function quoteNativeInMax(
   return withHeadroom(await quoteNativeIn(api, pool, underlyingOut), slippagePct);
 }
 
+/** Native the ask carries on top of the headroom for a burner the chain keeps open: the
+ *  existential deposit that stays on it, and the dispatch fee of the one attempt the chain may
+ *  refuse before the pipeline holds that deposit back. The gate counts neither, so they stay out
+ *  of keepNativeForFees. */
+export async function keepAliveNative(api: AssetHubApi, dispatchNative: bigint): Promise<bigint> {
+  return (await api.constants.Balances.ExistentialDeposit()) + dispatchNative;
+}
+
 /** The native budget the rail must deliver for `settleAmount` to be claimable on the pool tier:
  *  the pool quote for settle+buffer plus the headroom (DEFAULT_SLIPPAGE_PCT), plus the native
- *  the funding program spends on its own fees. The single source of truth for app-side budget
- *  sizing; uses the same defaults as the pipeline.
+ *  the funding program spends on its own fees, plus `keepAliveNative` where the caller measured
+ *  it. The single source of truth for app-side budget sizing; uses the same defaults as the
+ *  pipeline.
  *
  *  No credit is netted off. Each request has its own burner, so there is nothing on it to
  *  net against, and a quote that shrinks itself against a balance the buyer cannot see is
@@ -402,6 +411,7 @@ export async function sizeNativeBudget(input: {
   remoteFeeBuffer?: bigint;
   slippagePct?: number;
   keepNativeForFees?: bigint;
+  keepAliveNative?: bigint;
 }): Promise<bigint> {
   const keep = input.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
   const buyTarget = input.settleAmount + (input.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER);
@@ -413,7 +423,7 @@ export async function sizeNativeBudget(input: {
     buyTarget,
     input.slippagePct ?? DEFAULT_SLIPPAGE_PCT,
   );
-  return nativeInMax + keep;
+  return nativeInMax + keep + (input.keepAliveNative ?? 0n);
 }
 
 /** Fresh exact-out quote on the stable/native pool: the stable that buys `nativeOut` right now.

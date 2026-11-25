@@ -118,12 +118,14 @@ describe("lostRequestHandoff", () => {
       tier: "pool",
       remoteFeeBuffer: 43n,
       keepNativeForFees: 150_000_000n,
+      keepAliveNative: 118_000_000n,
     });
     const native = await lostRequestHandoff("dot-assethub", 4, "5Burner", slot({ tier: "pool" }));
     expect(native).toMatchObject({
       tier: "pool",
       remoteFeeBuffer: "43",
       keepNativeForFees: "150000000",
+      keepAliveNative: "118000000",
     });
     expect(native.quotedDeposit).toBeUndefined();
   });
@@ -150,6 +152,7 @@ describe("lostRequestHandoff", () => {
       remoteFeeBuffer: "1000",
       keepNativeForFees: "200000000",
     });
+    expect(gaveUp.keepAliveNative).toBeUndefined();
 
     const nothing = await lostRequestHandoff(
       "dot-assethub",

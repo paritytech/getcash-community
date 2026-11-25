@@ -23,6 +23,7 @@ import {
   FundingShortfallError,
   FundingTrappedError,
   isConverted,
+  keepAliveNative,
   sentAmountOf,
   DEPOSIT_GONE_AFTER_MS,
   MAX_PROGRAM_REJECTIONS,
@@ -33,6 +34,7 @@ import {
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
+  withHeadroom,
   type ConversionFact,
   type FundingStep,
   type TickOnceInput,
@@ -1674,6 +1676,33 @@ describe("tickOnce", () => {
       ASK + KEEP - DISPATCH - EXISTENTIAL_DEPOSIT - DISPATCH,
     );
     expect(world.state.nativeAh).toBe(EXISTENTIAL_DEPOSIT);
+  });
+
+  it("converts a small burner the chain will not close at the ask, a refused attempt included", async () => {
+    // Small enough that the headroom is under the existential deposit: after the refused attempt's
+    // fee, only what the ask carries on top still clears the gate.
+    const small = { settleAmount: 20_000n, remoteFeeBuffer: 1_000n };
+    const quoted = ((small.settleAmount + small.remoteFeeBuffer) * QUOTED) / BUY;
+    expect(withHeadroom(quoted, DEFAULT_SLIPPAGE_PCT) - quoted).toBeLessThan(EXISTENTIAL_DEPOSIT);
+    const world = scriptedWorld({ arrivalAfterReads: 1, remoteFee: 500n });
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi();
+    world.state.nativeAh = await sizeNativeBudget({
+      client: world.client,
+      underlyingAssetId: 50_000_413,
+      ...small,
+      keepNativeForFees: KEEP,
+      keepAliveNative: await keepAliveNative(api, DISPATCH),
+    });
+    world.state.consumersAtSubmit = 1;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, POOL, undefined, small)).rejects.toThrow(
+      /WithdrawAsset failed with FailedToTransactAsset/,
+    );
+
+    const retry = await drive(world, 2, state, POOL, undefined, small);
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(world.state.nativeAh).toBe(EXISTENTIAL_DEPOSIT);
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(small.settleAmount);
   });
 });
 
@@ -3611,6 +3640,20 @@ describe("sizeNativeBudget", () => {
         keepNativeForFees: KEEP,
       }),
     ).toBe(ASK + KEEP);
+  });
+
+  it("adds what a burner the chain keeps open needs on top of the headroom", async () => {
+    const world = scriptedWorld();
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi();
+    const budget = await sizeNativeBudget({
+      client: world.client,
+      underlyingAssetId: 50_000_413,
+      settleAmount: SETTLE,
+      remoteFeeBuffer: BUFFER,
+      keepNativeForFees: KEEP,
+      keepAliveNative: await keepAliveNative(api, DISPATCH),
+    });
+    expect(budget).toBe(ASK + KEEP + EXISTENTIAL_DEPOSIT + DISPATCH);
   });
 });
 

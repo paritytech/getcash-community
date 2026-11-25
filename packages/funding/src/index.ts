@@ -14,6 +14,7 @@ export {
   discoverPools,
   freshTickState,
   includedInBlock,
+  keepAliveNative,
   psmDepositNeeded,
   quoteNativeInMax,
   quoteNativeOut,
