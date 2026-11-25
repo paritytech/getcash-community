@@ -10,7 +10,7 @@ import type {
   SourceId,
 } from "@getsome/core";
 import { nextTick } from "vue";
-import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
 import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
 import { CRYPTO_SOURCE_ID, isMeldSourceId, meldMethodFor } from "../funding/source-ids";
@@ -34,7 +34,6 @@ import { previewQuote, previewTopUpScene, type PreviewTopUpScene } from "./dev-p
 import type { FundingTopUp, StoredQuote } from "../funding/top-ups";
 import { previewStage, type PreviewStage } from "./dev-preview-stage";
 import { useFlowStore } from "../stores/flow";
-import { useOffersStore } from "../stores/offers";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 import type { RequestRef } from "../utils/request-index";
@@ -42,8 +41,6 @@ import { devLog } from "~~/lib/log";
 
 type Session = ReturnType<typeof useSessionStore>;
 type Flow = ReturnType<typeof useFlowStore>;
-
-const DOT = 10_000_000_000n;
 
 /** The withdraw summary/fees scenes' canned quote, as the section's design frames draw it. */
 const WITHDRAW_PREVIEW_FEES = {
@@ -79,32 +76,6 @@ const SALE_PREVIEW_QUOTE: MeldSellQuote = {
   },
 };
 
-function floor(sourceId: SourceId, minimumBaseUnits: bigint, worth: bigint): SourceFloorResult {
-  return {
-    kind: "floor",
-    floor: { sourceId, minimumBaseUnits, minimumEgressBaseUnits: worth, etaSeconds: 600 },
-  };
-}
-
-/** Canned floors for the selection scenes. Bitcoin's is above the 100 CASH purchase and
- *  Ethereum USDC is unanswered. */
-const FLOORS = new Map<SourceId, SourceFloorResult>([
-  ["btc", floor("btc", 40_000n, 16n * DOT)],
-  ["eth", floor("eth", 10n ** 16n, (25n * DOT) / 10n)],
-  ["usdc-eth", { kind: "unavailable", reason: "preview: unanswered" }],
-  ["usdt-eth", floor("usdt-eth", 20_000_000n, 5n * DOT)],
-  ["eth-arbitrum", floor("eth-arbitrum", 39n * 10n ** 14n, DOT)],
-  ["usdc-arbitrum", floor("usdc-arbitrum", 10_000_000n, (25n * DOT) / 10n)],
-  ["usdt-arbitrum", floor("usdt-arbitrum", 10_000_000n, (25n * DOT) / 10n)],
-  ["bnb-bsc", floor("bnb-bsc", 2n * 10n ** 16n, 3n * DOT)],
-  ["usdt-bsc", floor("usdt-bsc", 10n ** 19n, (25n * DOT) / 10n)],
-  ["sol-solana", floor("sol-solana", 68_000_000n, (17n * DOT) / 10n)],
-  ["usdc-solana", floor("usdc-solana", 10_000_000n, (25n * DOT) / 10n)],
-  ["usdt-solana", floor("usdt-solana", 10_000_000n, (25n * DOT) / 10n)],
-  ["trx-tron", floor("trx-tron", 30_000_000n, 2n * DOT)],
-  ["usdt-tron", floor("usdt-tron", 10_000_000n, (25n * DOT) / 10n)],
-]);
-
 const DEPOSIT = {
   address: "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC",
   amount: 2_934_713_048n,
@@ -117,7 +88,6 @@ const DEPOSIT = {
 const QUOTED = {
   send: "0.00004545",
   symbol: "BTC",
-  nativeAmount: 2_934_713_048n,
   sourceAsset: "BTC",
   sourceChain: "Bitcoin",
 };
@@ -178,7 +148,6 @@ const QUOTED_CARD = {
   // against Paseo for this frame's 50 CASH — 0.0343 DOT of Asset Hub fees at the quote's implied
   // rate, plus 0.000043 CASH of execution on People.
   chainFee: "0.0867",
-  nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
 };
@@ -189,7 +158,6 @@ const QUOTED_BANK = {
   symbol: "EUR",
   fee: "0.55",
   networkFee: "0.05",
-  nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
 };
@@ -1339,7 +1307,6 @@ function polkadotDeposit(
     ...QUOTED,
     send: `${send} ${asset}`,
     symbol: asset,
-    nativeAmount: null,
     sourceAsset: asset,
     sourceChain: "Polkadot",
   };
@@ -1435,15 +1402,11 @@ const PREVIEW_MELD_IDS = [
   "e9b3f7a4-1c58-4d20-97af-63d2b8e4c015",
 ] as const;
 
-/** Baseline for the selection scenes: 100 CASH, floors already learned. */
+/** Baseline for the selection scenes: 100 CASH. */
 function selection(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("100");
-  session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
-  const offers = useOffersStore();
-  offers.floors = FLOORS;
-  // The rail-off scene turns the rail off; every other scene gets the build's own settings.
-  offers.railEnabled = true;
+  session.quoted = { ...QUOTED };
 }
 
 /** Baseline for the bank-journey scenes: the Meld quote and method the bank frames show. */

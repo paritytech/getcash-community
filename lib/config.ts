@@ -35,8 +35,8 @@ export const ASSETS = {
 } as const;
 
 // The Chainflip source chains with their available assets, in the order Chainflip's own app
-// lists them. `native` is the network's own coin. The withdraw side and the floors read this
-// catalog; the direct network below stays out of it.
+// lists them. `native` is the network's own coin. The withdraw side reads this catalog; the
+// direct network below stays out of it.
 export const SOURCE_CHAINS = [
   { chain: CHAINS.Bitcoin, native: ASSETS.BTC, assets: [ASSETS.BTC], label: "Bitcoin" },
   {

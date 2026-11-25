@@ -12,7 +12,9 @@ import {
   type WithdrawNetwork,
 } from "../withdraw/destinations";
 import { networkRow, rowState, type RowState, type WithdrawOffer } from "../withdraw/offers";
-import { FLOORS_STALE_MS } from "./offers";
+
+/** How long a quoted answer stands before the next look asks again. */
+export const OFFERS_STALE_MS = 10 * 60_000;
 
 const CHECKING: WithdrawOffer = { state: "checking" };
 const RAIL_OFF: WithdrawOffer = { state: "rail-off" };
@@ -36,7 +38,7 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
    *  ref so tests can pin it. */
   const railOn = ref(brokerConfigured());
 
-  const fresh = () => learnedAt.value !== null && Date.now() - learnedAt.value < FLOORS_STALE_MS;
+  const fresh = () => learnedAt.value !== null && Date.now() - learnedAt.value < OFFERS_STALE_MS;
   /** An answer that was no answer for some destination is asked again on the next look. */
   const settled = () =>
     offers.value.size > 0 &&

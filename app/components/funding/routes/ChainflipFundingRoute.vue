@@ -96,14 +96,13 @@ function requote() {
 let active = true;
 onMounted(async () => {
   // The preview deck put this package on screen for a scene that owns the store state; its own
-  // entry — a fresh flow, a re-quote, a floor sweep — would land on top of what the scene wrote.
+  // entry, a fresh flow and a re-quote, would land on top of what the scene wrote.
   if (previewStage.value?.kind === "package") return;
   flow.startOver();
   session.setAmount(props.selection.amount);
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   if (!active) return;
-  // Open requests carry on converting; none of them takes the screen. The pickers learn which
-  // crypto sources can serve the amount, and keep that fresh, while they are on screen.
+  // Open requests carry on converting; none of them takes the screen.
   void session.resumeOpenRequests();
   void session.fetchQuote(flow.srcChain.chain, flow.srcAsset);
 });

@@ -14,8 +14,7 @@ import { networkRow, rowState, sameSale, type WithdrawOffer } from "../app/withd
 vi.mock("../lib/withdraw-live", () => ({ quoteWithdrawOffers: vi.fn() }));
 
 import { quoteWithdrawOffers } from "../lib/withdraw-live";
-import { FLOORS_STALE_MS } from "../app/stores/offers";
-import { useWithdrawOffersStore } from "../app/stores/withdraw-offers";
+import { OFFERS_STALE_MS, useWithdrawOffersStore } from "../app/stores/withdraw-offers";
 
 const quote = vi.mocked(quoteWithdrawOffers);
 
@@ -139,7 +138,7 @@ describe("the withdraw offers store", () => {
     expect(quote).toHaveBeenLastCalledWith(50_000_000n, expect.any(Array), RESERVED + 10_000_000n);
     await store.learn(60_000_000n, RESERVED);
     expect(quote).toHaveBeenCalledTimes(4); // another amount: asked for it
-    vi.advanceTimersByTime(FLOORS_STALE_MS);
+    vi.advanceTimersByTime(OFFERS_STALE_MS);
     await store.learn(60_000_000n, RESERVED);
     expect(quote).toHaveBeenCalledTimes(5); // stale: asked again
   });
@@ -173,7 +172,7 @@ describe("the withdraw offers store", () => {
     const store = useWithdrawOffersStore();
     store.railOn = true;
     await store.learn(50_000_000n, RESERVED);
-    vi.advanceTimersByTime(FLOORS_STALE_MS);
+    vi.advanceTimersByTime(OFFERS_STALE_MS);
     const refresh = store.learn(50_000_000n, RESERVED);
     expect(store.offerFor(btc)).toEqual(AVAILABLE); // the old answer stands meanwhile
     expect(store.awaitingNetworks).toBe(false);

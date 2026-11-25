@@ -64,7 +64,6 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         symbol: "dotUSD",
         sourceAsset: "dotUSD",
         sourceChain: "Polkadot",
-        nativeAmount: null,
       });
       expect(store.mock?.sourceId).toBe("dotusd-assethub");
       expect(store.mock?.route).toEqual({ tier: "dotusd" });
@@ -106,9 +105,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         symbol: "USDC",
         sourceAsset: "USDC",
         sourceChain: "Polkadot",
-        nativeAmount: null,
       });
-      expect(store.quoted?.depositToken).toBeUndefined();
       expect(store.mock?.sourceId).toBe("usdc-assethub");
       expect(store.mock?.route).toEqual({ tier: "pool", external: "USDC" });
 

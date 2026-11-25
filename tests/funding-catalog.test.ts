@@ -1,5 +1,5 @@
 // The on-ramp catalog: the direct Polkadot network alone, the Chainflip catalog unchanged for the
-// withdraw side and the floors, and the two source id maps agreeing.
+// withdraw side, and the two source id maps agreeing.
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -29,7 +29,7 @@ describe("the funding catalog", () => {
     });
   });
 
-  it("keeps the Chainflip catalog as it was, which the withdraw side and the floors read", () => {
+  it("keeps the Chainflip catalog as it was, which the withdraw side reads", () => {
     expect(SOURCE_CHAINS.map((chain) => chain.chain)).toEqual([
       "Bitcoin",
       "Ethereum",

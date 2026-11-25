@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { TOKENS } from "@getsome/core";
 import { createManualRail, type ConversionRoute } from "@getsome/funding";
 import { createFakeRail } from "@getsome/testing";
 import {
@@ -143,8 +142,6 @@ describe("a hosted Polkadot pick", () => {
     expect(worlds.builds).toEqual([{ sourceId: "dot-assethub", tradeN: 1, tier: "pool" }]);
     expect(session.quoted).toMatchObject({
       symbol: "DOT",
-      nativeAmount: BUDGET,
-      depositToken: TOKENS.PAS,
       sourceAsset: "DOT",
       sourceChain: "Polkadot",
     });

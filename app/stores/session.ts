@@ -13,7 +13,6 @@ import {
   type SourceId,
   type TokenSpec,
 } from "@getsome/core";
-import { chainflipTokenOf, type ChainflipToken } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
@@ -245,12 +244,6 @@ export interface QuotedView {
   mintFee?: string | null;
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
-  /** Live world only: what the rail must deliver to the burner, in `depositToken`'s base units:
-   *  the native on the pool tier, the stable on the stable tiers. */
-  nativeAmount: bigint | null;
-  /** The token `nativeAmount` is counted in, set with it and only when Chainflip can deliver that
-   *  token: the floors and the display price read it. A USDC deposit sets neither. */
-  depositToken?: ChainflipToken;
   sourceAsset: string | null;
   sourceChain: string | null;
 }
@@ -358,7 +351,6 @@ function meldQuotedView(raw: MeldQuoteRaw, sizing: FundingSizing): QuotedView {
     partnerFee: raw.provider.partnerFee ?? null,
     chainFee: meldChainFeeFiat(raw, sizing),
     mintFee: sizing.tier === "psm" ? meldMintFeeFiat(raw, sizing) : null,
-    nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
   };
@@ -1309,14 +1301,11 @@ export const useSessionStore = defineStore("session", () => {
           world.dispose();
           return;
         }
-        const depositToken = chainflipTokenOf(depositTokenOf(route));
         live.value = world;
         quoteFailures.value = 0;
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
-          nativeAmount: depositToken === undefined ? null : world.budget,
-          ...(depositToken === undefined ? {} : { depositToken }),
           sourceAsset: asset,
           sourceChain: chain,
         };
@@ -1391,12 +1380,9 @@ export const useSessionStore = defineStore("session", () => {
         }
         mock.value = world;
         quoteFailures.value = 0;
-        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
-          nativeAmount,
-          ...(depositToken === undefined ? {} : { depositToken }),
           sourceAsset: asset,
           sourceChain: chain,
         };
@@ -1799,7 +1785,6 @@ export const useSessionStore = defineStore("session", () => {
         partnerFee: record.sourcePartnerFee ?? null,
         chainFee: record.sourceChainFee ?? null,
         mintFee: record.sourceMintFee ?? null,
-        nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
       };
