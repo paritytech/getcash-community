@@ -7,6 +7,7 @@
 // payment that cannot be confirmed stops the job with nothing sent anywhere.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DepositUnpricedError } from "@getsome/funding";
 
 const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
@@ -22,8 +23,11 @@ const mocks = vi.hoisted(() => ({
   channel: vi.fn(),
   startFunding: vi.fn(),
   fundingStatus: vi.fn(),
+  amendFunding: vi.fn(),
+  cancelFunding: vi.fn(),
   withdrawTickOnce: vi.fn(),
   chooseRoute: vi.fn(),
+  quoteDepositValue: vi.fn(),
   submits: [] as { args: unknown; options: unknown }[],
   keyFree: 0n,
   /** The key's native at Asset Hub's finalized head, when it lags the best one. */
@@ -65,6 +69,8 @@ vi.mock("../worker/src/engine.js", () => ({
   CLAIM_UNIT: 10_000n,
   startFunding: mocks.startFunding,
   fundingStatus: mocks.fundingStatus,
+  amendFunding: mocks.amendFunding,
+  cancelFunding: mocks.cancelFunding,
 }));
 
 // The message leg is scripted: what it does to the chain is the withdraw package's own business.
@@ -74,11 +80,13 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
 }));
 
 // How the CASH moves to Asset Hub is the chains' answer, and the scripted leg does not read it;
-// the route a stable residue takes home is the PSM's answer, scripted here.
+// the route a stable residue takes home is the PSM's answer, and what a key's balance converts to
+// on its way home the pool's, both scripted here.
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   chooseCashTransfer: async () => "teleport",
   chooseRoute: mocks.chooseRoute,
+  quoteDepositValue: mocks.quoteDepositValue,
 }));
 
 // The residue is read off the key on Asset Hub through a client the engine opens for it: the
@@ -161,6 +169,9 @@ const DAY = 86_400_000;
 const AMOUNT = "20000000000";
 const DEPOSIT = "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM";
 
+/** What a key's balance converts to on its way home, unless a test says otherwise. */
+const VALUE = { receive: 6_540_000n, remoteFeeBuffer: 1_200n, keepNativeForFees: 150_000_000n };
+
 const channel = {
   id: "funding-sell-1",
   address: DEPOSIT,
@@ -228,6 +239,11 @@ function landedJob(): StoredJob {
 beforeEach(() => {
   mocks.fundingStatus.mockReset();
   mocks.fundingStatus.mockResolvedValue({ phase: "convert", claim: null });
+  mocks.amendFunding.mockReset();
+  mocks.cancelFunding.mockReset();
+  mocks.quoteDepositValue.mockReset();
+  mocks.quoteDepositValue.mockResolvedValue(VALUE);
+  mocks.keyCash = 0n;
   mocks.keyFreeFinalized = null;
   mocks.paymentOutcome.mockReset();
   mocks.peopleReads.length = 0;
@@ -324,14 +340,28 @@ describe("the worker's side of a fiat sale", () => {
   });
 
   it("sends the residue home through the funding engine once the payment is out", async () => {
+    // A claim unit of CASH is on the key on People before its way home starts.
+    mocks.keyCash = 10_000n;
     const engine = await engineWith({ "s-1": landedJob() });
     await engine.tickAllWithdraw();
+    // Valued as the funding job will read it, under the sale's own bound.
+    expect(mocks.quoteDepositValue).toHaveBeenCalledTimes(1);
+    expect(mocks.quoteDepositValue.mock.calls[0]![0]).toMatchObject({
+      route: { tier: "pool" },
+      deposit: 7_000_000_000n,
+      slippagePct: 5,
+      peopleParaId: 1004,
+    });
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({
       sessionId: "s-1/residue",
       label: "wd:eph:meld-bank:1",
       burnerAddress: "5Key",
-      settleAmount: "10000",
+      // The CASH on People and what the PAS converts to: the job is not done before the PAS is
+      // converted.
+      settleAmount: "6550000",
+      remoteFeeBuffer: "1200",
+      keepNativeForFees: "150000000",
       peopleParaId: 1004,
       tier: "pool",
       // Held to the bound the sale went out under, and claimed under ids the purse's payment to
@@ -343,6 +373,7 @@ describe("the worker's side of a fiat sale", () => {
       amount: "7000000000",
       returning: true,
       sessionId: "s-1/residue",
+      terms: { settleAmount: "6550000", remoteFeeBuffer: "1200", keepNativeForFees: "150000000" },
     });
     // Once only: the next pass follows the provider and starts nothing more.
     await engine.tickAllWithdraw();
@@ -454,6 +485,14 @@ describe("the worker's side of a fiat sale", () => {
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).not.toHaveBeenCalled();
     expect(storedJob().residue).toEqual({ amount: "200000000", returning: false });
+  });
+
+  it("keeps a residue its own fees would take", async () => {
+    mocks.quoteDepositValue.mockResolvedValue(null);
+    const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toEqual({ amount: "7000000000", returning: false });
   });
 
   it("stops the job when the payment cannot be confirmed, and sends nothing home", async () => {
@@ -630,7 +669,7 @@ describe("a sale that ends before its provider is paid", () => {
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({
       sessionId: "s-1/residue",
-      settleAmount: "10000",
+      settleAmount: "6540000",
       tier: "pool",
       // Held to the floor the sale itself went out under, the hand-off's.
       quoteFloorPct: 5,
@@ -728,6 +767,20 @@ describe("a sale that ends before its provider is paid", () => {
     expect(mocks.startFunding).not.toHaveBeenCalled();
     expect(mocks.payRailExact).not.toHaveBeenCalled();
     expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+  });
+
+  it("starts no way home while the pool cannot price what the key holds, and tries it again", async () => {
+    mocks.channel.mockResolvedValue(closed);
+    mocks.quoteDepositValue.mockRejectedValueOnce(new DepositUnpricedError());
+    const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/cannot price/);
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+    expect(storedJob().residueError).toBeUndefined();
   });
 
   it("gives up a residue read that hangs, and tries it again", async () => {
@@ -1093,6 +1146,98 @@ describe("a sale's way to the provider and back", () => {
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(4);
     expect(storedJob().residue.stuck).toBe(true);
+    // Every start carried the terms the way home recorded, sized once.
+    for (const [params] of mocks.startFunding.mock.calls) {
+      expect(params).toMatchObject({ settleAmount: "6540000", remoteFeeBuffer: "1200" });
+    }
+    expect(mocks.quoteDepositValue).toHaveBeenCalledTimes(1);
+  });
+
+  it("sizes the way home again while its funding job waits for a deposit its gate does not take", async () => {
+    const engine = await engineWith({ "s-1": landedJob() });
+    mocks.payRailExact.mockResolvedValue(undefined);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue.terms).toMatchObject({ settleAmount: "6540000" });
+    // The price fell before the job's gate took the PAS.
+    mocks.fundingStatus.mockResolvedValue({ phase: "await-native", claim: null });
+    mocks.quoteDepositValue.mockResolvedValue({ ...VALUE, receive: 6_100_000n });
+    mocks.amendFunding.mockResolvedValue({ sessionId: "s-1/residue" });
+    await engine.tickAllWithdraw();
+    expect(mocks.amendFunding).toHaveBeenCalledTimes(1);
+    expect(mocks.amendFunding.mock.calls[0]![0]).toMatchObject({
+      sessionId: "s-1/residue",
+      burnerAddress: "5Key",
+      settleAmount: "6100000",
+      remoteFeeBuffer: "1200",
+      keepNativeForFees: "150000000",
+      tier: "pool",
+    });
+    expect(storedJob().residue.terms).toMatchObject({ settleAmount: "6100000" });
+    // The conversion went out since: the job keeps the terms it was sent on, and so does the way
+    // home.
+    mocks.quoteDepositValue.mockResolvedValue({ ...VALUE, receive: 5_900_000n });
+    mocks.amendFunding.mockResolvedValue({ error: "invalid", reason: "no longer waiting" });
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue.terms).toMatchObject({ settleAmount: "6100000" });
+    expect(storedJob().residueError).toBeUndefined();
+    mocks.fundingStatus.mockResolvedValue({ phase: "await-arrival", claim: null });
+    await engine.tickAllWithdraw();
+    expect(mocks.amendFunding).toHaveBeenCalledTimes(2);
+  });
+
+  it("has the way home's job claim the CASH on People once the key holds nothing left to convert", async () => {
+    const engine = await engineWith({ "s-1": landedJob() });
+    mocks.payRailExact.mockResolvedValue(undefined);
+    await engine.tickAllWithdraw();
+    mocks.fundingStatus.mockResolvedValue({ phase: "await-native", claim: null });
+    mocks.quoteDepositValue.mockResolvedValue(null);
+    mocks.keyCash = 10_000n;
+    // A job that took its deposit meanwhile keeps the terms it was sent on.
+    mocks.amendFunding.mockResolvedValue({ error: "invalid", reason: "no longer waiting" });
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue.terms).toMatchObject({ settleAmount: "6540000" });
+    mocks.amendFunding.mockResolvedValue({ sessionId: "s-1/residue" });
+    await engine.tickAllWithdraw();
+    // One claim unit, which the CASH on People already meets, and no figure for a gate.
+    const amended = mocks.amendFunding.mock.calls[1]![0];
+    expect(amended).toMatchObject({ sessionId: "s-1/residue", settleAmount: "10000" });
+    expect(amended.remoteFeeBuffer).toBeUndefined();
+    expect(storedJob().residue).toMatchObject({ amount: "21000000000", returning: true });
+    expect(storedJob().residue.terms).toBeUndefined();
+    expect(mocks.cancelFunding).not.toHaveBeenCalled();
+    // Claim-only from here: it is not sized again.
+    await engine.tickAllWithdraw();
+    expect(mocks.amendFunding).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels the way home's job and ends it once the key holds nothing anywhere", async () => {
+    const engine = await engineWith({ "s-1": landedJob() });
+    mocks.payRailExact.mockResolvedValue(undefined);
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ done: true, residue: { returning: true } });
+    mocks.fundingStatus.mockResolvedValue({ phase: "await-native", claim: null });
+    mocks.keyFree = 0n;
+    mocks.quoteDepositValue.mockClear();
+    // A job that took a deposit meanwhile is not cancelled, and is followed on.
+    mocks.cancelFunding.mockResolvedValueOnce({ phase: "swap" });
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ returning: true });
+    mocks.cancelFunding.mockResolvedValue({ phase: "failed", failure: "cancelled" });
+    await engine.tickAllWithdraw();
+    expect(mocks.cancelFunding).toHaveBeenLastCalledWith({ sessionId: "s-1/residue" });
+    expect(mocks.amendFunding).not.toHaveBeenCalled();
+    // An empty key is not valued.
+    expect(mocks.quoteDepositValue).not.toHaveBeenCalled();
+    expect(storedJob().residue).toMatchObject({
+      amount: "21000000000",
+      returning: false,
+      sessionId: "s-1/residue",
+    });
+    expect(storedJob().residueError).toBeUndefined();
+    // Nothing is owed any more: the next pass has no work, and holds no keep-alive.
+    expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 0, holding: 0 });
   });
 
   it("leaves the way home stuck at once when its program trapped, with no start again", async () => {
@@ -1229,13 +1374,42 @@ describe("a sale that fails before its provider is paid", () => {
     expect(storedJob().residue).toEqual({ whole: true, returning: false });
   });
 
+  it("starts no way home for a key whose fees would take what it holds, with under a claim unit on People", async () => {
+    mocks.quoteDepositValue.mockResolvedValue(null);
+    mocks.keyCash = 9_999n;
+    const engine = await engineWith({ "s-1": failedWith("rejected") });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toEqual({ whole: true, returning: false });
+    expect(await engine.tickAllWithdraw()).toMatchObject({ ticked: 0, holding: 0 });
+  });
+
+  it("sends the CASH home from People when the fees would take what is on Asset Hub", async () => {
+    mocks.quoteDepositValue.mockResolvedValue(null);
+    mocks.keyCash = 99_000_000n;
+    const engine = await engineWith({ "s-1": failedWith("rejected") });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ settleAmount: "10000" });
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+    expect(storedJob().residue.terms).toBeUndefined();
+  });
+
   it("sends the CASH home from People when nothing reached Asset Hub", async () => {
     mocks.keyFree = 0n;
     mocks.keyCash = 99_000_000n;
     const engine = await engineWith({ "s-1": failedWith("rejected") });
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    // Nothing to convert: one claim unit, which the CASH on People already meets.
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ settleAmount: "10000" });
+    expect(mocks.quoteDepositValue).not.toHaveBeenCalled();
     expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+    expect(storedJob().residue.terms).toBeUndefined();
+    // Nor is it sized while its job waits.
+    mocks.fundingStatus.mockResolvedValue({ phase: "await-native", claim: null });
+    await engine.tickAllWithdraw();
+    expect(mocks.amendFunding).not.toHaveBeenCalled();
   });
 
   it("keeps a sale off the fifteen-minute clock once its PAS has landed", async () => {
@@ -1450,6 +1624,12 @@ describe("a sale on the PSM tier, in USDT", () => {
   });
 
   it("sends the USDT residue home on the mint route the worker chose for it", async () => {
+    mocks.quoteDepositValue.mockResolvedValue({
+      receive: 26_800_000n,
+      remoteFeeBuffer: 1_200n,
+      keepNativeForFees: 0n,
+      quotedDeposit: 27_000_000n,
+    });
     const engine = await engineWith({ "s-1": psmJob() });
     await engine.tickAllWithdraw();
     expect(mocks.payRailExact).toHaveBeenCalledTimes(1);
@@ -1466,6 +1646,9 @@ describe("a sale on the PSM tier, in USDT", () => {
       tier: "psm",
       external: "USDT",
       feeRate: 5_000,
+      // The fixed-rate gate takes the deposit that was valued.
+      settleAmount: "26800000",
+      quotedDeposit: "27000000",
       quoteFloorPct: 5,
       claimIdOffset: 1_000_000,
     });
@@ -1474,6 +1657,12 @@ describe("a sale on the PSM tier, in USDT", () => {
       returning: true,
       sessionId: "s-1/residue",
       route: { tier: "psm", external: "USDT", feeRate: 5_000 },
+      terms: {
+        settleAmount: "26800000",
+        remoteFeeBuffer: "1200",
+        keepNativeForFees: "0",
+        quotedDeposit: "27000000",
+      },
     });
   });
 

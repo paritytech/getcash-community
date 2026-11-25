@@ -54,19 +54,6 @@ export async function trapKey(claimerHex: string, amount: bigint): Promise<HexSt
   return toHex(blake2b(payload.subarray(32), { dkLen: 32 }));
 }
 
-type Junction = { type: string; value?: { type?: string; value?: { id?: unknown } } };
-
-/** Whether `origin`, as an event carries it, is `claimerHex` as its own signed origin. */
-function namesClaimer(origin: unknown, claimerHex: string): boolean {
-  const location = origin as { parents?: number; interior?: Junction };
-  if (location.parents !== 0 || location.interior?.type !== "X1") return false;
-  const junction = location.interior.value;
-  if (junction?.type !== "AccountId32") return false;
-  const id = junction.value?.id as string | { asHex: () => string } | undefined;
-  const hex = typeof id === "string" ? id : id?.asHex();
-  return hex?.toLowerCase() === claimerHex.toLowerCase();
-}
-
 /** The amount of the one fungible asset a trap event names, if it is one. */
 function trappedAmountOf(assets: unknown): bigint | null {
   const list = (assets as { value?: Array<{ fun?: { type?: string; value?: bigint } }> }).value;
@@ -91,14 +78,16 @@ export function trapScanSpan(peopleFee: bigint | null): bigint {
 
 /** The trap holding the CASH sent for `claimerHex`, read from People at its finalized block: the
  *  entry whose key one of the amounts within `span` of `sent` gives, or the AssetsTrapped event
- *  of that block naming the claimer. The scan looks above `sent` as well as below: while the
- *  figure is still the dry run's, the pool may have filled more or less than it saw. Null when
- *  neither shows one. */
+ *  of that block filed under the claimer's key that is no more than `span` short of `mustLand`,
+ *  what the program had to land. The scan looks above `sent` as well as below: while the figure
+ *  is still the dry run's, the pool may have filled more or less than it saw. Null when neither
+ *  shows one. */
 export async function findTrap(
   peopleApi: PeopleApi,
   claimerHex: string,
   sent: bigint,
   span: bigint,
+  mustLand: bigint,
 ): Promise<Trap | null> {
   // Read at the finalized block, as the arrival is: a trap ends the conversion for good, and a
   // trap seen in a best block the chain then replaces would end it for nothing.
@@ -119,14 +108,14 @@ export async function findTrap(
   for (const record of events) {
     const event = record.event as { type: string; value: { type: string; value: unknown } };
     if (event.type !== "PolkadotXcm" || event.value.type !== "AssetsTrapped") continue;
-    const { hash, origin, assets } = event.value.value as {
-      hash: HexString;
-      origin: unknown;
-      assets: unknown;
-    };
-    if (!namesClaimer(origin, claimerHex)) continue;
+    const { hash, assets } = event.value.value as { hash: HexString; assets: unknown };
     const amount = trappedAmountOf(assets);
-    if (amount !== null) return { amount, key: hash };
+    // Any account can make People emit this event with the claimer as its origin, and can trap
+    // CASH of its own under the claimer's key. So the hash must be that key, and the amount within
+    // People's charge of what the program had to land, which a trap of anyone else's then costs.
+    if (amount === null || amount + span < mustLand) continue;
+    const key = await trapKey(claimerHex, amount);
+    if (key.toLowerCase() === hash.toLowerCase()) return { amount, key };
   }
   return null;
 }

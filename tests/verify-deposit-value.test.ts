@@ -10,13 +10,13 @@ import {
   DIRECT_SLIPPAGE_PCT,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  quoteDepositValue,
   type ConversionRoute,
 } from "@getsome/funding";
 import {
   estimatePsmFundingSizing,
   estimateStableFundingSizing,
   estimateDotUsdFundingSizing,
-  quoteDepositValue,
 } from "../lib/funding-fees";
 
 /** A funded Paseo account for the fee reads; the fees do not depend on its balance. */

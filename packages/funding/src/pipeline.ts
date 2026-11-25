@@ -91,7 +91,12 @@
 // (trap.ts). FundingTrappedError then ends the run as a recovery, never as a timeout, and nothing
 // is converted twice: the trap waits for the burner's claim.
 
-import { sendableNative, TOKENS, type SendableNativeOptions } from "@getsome/core";
+import {
+  assetHubAssetLocation,
+  sendableNative,
+  TOKENS,
+  type SendableNativeOptions,
+} from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
   HexString,
@@ -136,7 +141,7 @@ import {
   type ConversionRoute,
   type StablePoolRoute,
 } from "./route";
-import { stableTxOptions } from "./stable";
+import { asLocation, stableTxOptions } from "./stable";
 import { findTrap, trapScanSpan } from "./trap";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
@@ -287,43 +292,28 @@ export function decideStep(b: FundingBalances, t: FundingTargets): FundingStep {
   return "await-native";
 }
 
-type Junction = { type?: string; value?: unknown };
-
-const junctionsOf = (loc: AssetLocation): Junction[] => {
-  const interior = (loc as { interior?: { type?: string; value?: unknown } }).interior;
-  if (interior?.value === undefined) return [];
-  return Array.isArray(interior.value) ? interior.value : [interior.value as Junction];
-};
-
-/** Structural junction match (number/bigint/string-agnostic, order-independent). */
-const isUnderlying = (loc: AssetLocation, assetId: number): boolean =>
-  junctionsOf(loc).some(
-    (j) => j?.type === "GeneralIndex" && BigInt(j.value as never) === BigInt(assetId),
-  );
-
-/** The chain's native asset as AssetConversion keys it: an interior-Here location. */
-const isNative = (loc: AssetLocation): boolean =>
-  ((loc as { parents?: number }).parents ?? 0) <= 1 &&
-  (loc as { interior?: { type?: string } }).interior?.type === "Here";
-
-/** Finds the native pool of each underlying in one read of the pool table, in the order asked,
- *  and returns both sides' exact Location keys. */
+/** The native pool of each pallet-assets asset, in the order asked, named by its exact key: the
+ *  native's Location, then the asset's. Anyone can add a pool to the table, so it is never
+ *  searched; one read of those keys confirms the pools exist. */
 export async function discoverPools(
   api: AssetHubApi,
   underlyingAssetIds: readonly number[],
 ): Promise<Pool[]> {
-  const pools = await api.query.AssetConversion.Pools.getEntries();
-  return underlyingAssetIds.map((underlyingAssetId) => {
-    for (const entry of pools) {
-      const [a, b] = entry.keyArgs[0] ?? [];
-      if (a === undefined || b === undefined) continue;
-      if (isUnderlying(a, underlyingAssetId) && isNative(b)) return { native: b, underlying: a };
-      if (isUnderlying(b, underlyingAssetId) && isNative(a)) return { native: a, underlying: b };
-    }
+  const native = asLocation(TOKENS.PAS.location);
+  const pools = underlyingAssetIds.map((assetId): Pool => ({
+    native,
+    underlying: asLocation(assetHubAssetLocation(assetId)),
+  }));
+  const found = await api.query.AssetConversion.Pools.getValues(
+    pools.map((pool) => [[pool.native, pool.underlying]]),
+  );
+  const missing = found.indexOf(undefined);
+  if (missing !== -1) {
     throw new Error(
-      `no native AssetConversion pool found for underlying asset ${underlyingAssetId}`,
+      `no native AssetConversion pool found for underlying asset ${underlyingAssetIds[missing]}`,
     );
-  });
+  }
+  return pools;
 }
 
 /** `discoverPools` for one underlying. */
@@ -994,6 +984,19 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   if (depositAh === 0n) state.emptyReadAt = readStartedAt;
   else state.heldReadAt = readStartedAt;
 
+  const readTrap = (sent: bigint) =>
+    bounded(
+      findTrap(
+        input.peopleApi,
+        input.beneficiaryHex,
+        sent,
+        trapScanSpan(state.peopleFeeCash),
+        // What the program's dry run had to land before it was submitted.
+        input.settleAmount - state.peopleAtXcm,
+      ),
+      input.tickTimeoutMs,
+      "trap read",
+    );
   // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
   // it there. Asked only of a burner found empty, since a fork can take the deposit, the program
   // and the arrival People saw at its best block all together. A claim the host made final since
@@ -1006,17 +1009,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     );
     if (held > state.peopleAtXcm) return true;
     if (state.sentToPeople === null) return false;
-    const trap = await bounded(
-      findTrap(
-        input.peopleApi,
-        input.beneficiaryHex,
-        state.sentToPeople,
-        trapScanSpan(state.peopleFeeCash),
-      ),
-      input.tickTimeoutMs,
-      "trap read",
-    );
-    return trap !== null;
+    return (await readTrap(state.sentToPeople)) !== null;
   };
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(
@@ -1062,16 +1055,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     state.sentToPeople !== null &&
     peopleHeld <= state.peopleAtXcm
   ) {
-    const trap = await bounded(
-      findTrap(
-        input.peopleApi,
-        input.beneficiaryHex,
-        state.sentToPeople,
-        trapScanSpan(state.peopleFeeCash),
-      ),
-      input.tickTimeoutMs,
-      "trap read",
-    );
+    const trap = await readTrap(state.sentToPeople);
     if (trap !== null) throw new FundingTrappedError(trap.amount, trap.key, input.beneficiaryHex);
   }
 
