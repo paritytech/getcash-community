@@ -1,7 +1,7 @@
 import type { Component } from "vue";
-import ChainflipFundingStatusRoute from "../components/funding/routes/ChainflipFundingStatusRoute.vue";
+import CryptoFundingStatusRoute from "../components/funding/routes/CryptoFundingStatusRoute.vue";
 import MeldFundingStatusRoute from "../components/funding/routes/MeldFundingStatusRoute.vue";
-import { useChainflipTopUpAdapter } from "./chainflip-top-ups";
+import { useCryptoTopUpAdapter } from "./crypto-top-ups";
 import { useMeldTopUpAdapter } from "./meld-top-ups";
 import { useCryptoWithdrawalTopUpAdapter, useFiatWithdrawalTopUpAdapter } from "../withdraw/rows";
 import type { FundingRoute, FundingSelection } from "./selection";
@@ -137,8 +137,7 @@ const meldWithdrawPackage = {
   },
 } satisfies FundingRoutePackage;
 
-/** The withdrawal routes: crypto through Chainflip or to Asset Hub, card and bank through a Meld
- *  sale. Each package hosts its own journey, so a withdrawal opened from the list loads the same
+/** The withdrawal routes: crypto to Asset Hub, card and bank through a Meld sale. Each package hosts its own journey, so a withdrawal opened from the list loads the same
  *  route. */
 export const getcashWithdrawPackages = {
   crypto: {
@@ -157,14 +156,14 @@ export const getcashRoutePackages = {
   card: meldPackage,
   bank: meldPackage,
   crypto: {
-    packageId: "@getsome/chainflip",
+    packageId: "@getsome/funding",
     load: () =>
-      import("../components/funding/routes/ChainflipFundingRoute.vue").then(
+      import("../components/funding/routes/CryptoFundingRoute.vue").then(
         ({ default: component }) => component,
       ),
     topUps: {
-      useAdapter: useChainflipTopUpAdapter,
-      loadStatus: async () => ChainflipFundingStatusRoute,
+      useAdapter: useCryptoTopUpAdapter,
+      loadStatus: async () => CryptoFundingStatusRoute,
     },
   },
 } satisfies FundingRoutePackages;
