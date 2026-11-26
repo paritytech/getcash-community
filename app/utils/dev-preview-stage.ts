@@ -14,41 +14,27 @@ import type { WithdrawFeeView } from "../withdraw/offers";
 export type PreviewStage =
   /** The shell's own screens: the top-ups list, history, the amount screen. */
   | { kind: "shell" }
-  /** A route package's entry flow (network, token, the deposit). */
+  /** A route package's entry flow (token, the deposit). */
   | { kind: "package"; route: FundingRoute }
   /** The journey. `topUpId` opens it as a top-up from the list; without one it reads as a
    *  package handoff. */
   | { kind: "journey"; route: FundingRoute; topUpId?: string }
   /** The withdrawal package's steps, on `#/withdraw` — `app/pages/withdraw.vue` stages the
    *  package of `route` (crypto when unsaid) and the route reads the rest: the step on screen,
-   *  the network already picked, the address seeded into the address step, the summary's canned
-   *  estimate and fee split, and whether the pickers show their skeletons. The fiat routes read
-   *  their own steps and the sale's canned quote instead. */
+   *  the address seeded into the address step, and the summary's canned estimate and fee split.
+   *  The fiat routes read their own steps and the sale's canned quote instead. */
   | {
       kind: "withdraw-package";
       route?: "crypto" | "card" | "bank";
       step:
-        | "network"
-        | "token"
-        | "address"
-        | "summary"
-        | "fees"
-        | "journey"
-        | "return-funds"
-        | "quote"
-        | "region";
-      chain?: string;
+        "token" | "address" | "summary" | "fees" | "journey" | "return-funds" | "quote" | "region";
       address?: string;
       /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
        *  the row as an estimate the quote could not give. */
       receive?: string | null;
       fees?: WithdrawFeeView;
-      /** The provider's minimum for the staged token, in CASH, over the amount: the summary gives
-       *  way to the out-of-range screen. */
-      belowMinimum?: string;
       /** A canned secret for the return-funds step, so the revealed frame can be staged. */
       secret?: string;
-      skeleton?: boolean;
       /** A fiat route's canned sale: the quote shows it priced, null shows it pricing, and
        *  `saleError` alone shows it refused, the rate after `attempts` failures in a row. The route
        *  never asks the adapter while staged. */

@@ -1,41 +1,14 @@
-// Which lanes a sale tries, and what each sells: a direct Asset Hub sale of PAS or USDT, a
-// Chainflip lane this build can swap into, or nothing at all.
+// Which lanes a sale tries: the direct Asset Hub sales of PAS and USDT, in the build's order, and
+// no other.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { laneCandidates, saleLaneOf, sellableCorridor } from "../app/composables/useMeldSellQuote";
+import { laneCandidates, sellableCorridor } from "../app/composables/useMeldSellQuote";
 import type { MeldAssetId } from "@getsome/core";
 import type { SupportedCorridor, SupportedMethod } from "../lib/supported";
 
 const ORDER: MeldAssetId[] = ["dot@assethub", "usdc@arbitrum", "usdc@solana"];
 /** A lane as an adapter that names no asset sends it: matched by the asset table's reading of its code. */
 const lane = (code: string, chain: string) => ({ code, chain });
-
-describe("saleLaneOf", () => {
-  it("sells PAS on Asset Hub for the direct code", () => {
-    expect(saleLaneOf("DOT")).toBeNull();
-  });
-
-  it("sells nothing under a code Meld retired, which the adapter's table no longer names", () => {
-    for (const code of ["DOT_ASSETHUB", "DOT_STATEMINT", "USDT_ASSETHUB", "USDT_STATEMINT"]) {
-      expect(saleLaneOf(code)).toBeUndefined();
-    }
-  });
-
-  it("sells USDT on Asset Hub with no swap", () => {
-    expect(saleLaneOf("USDT_DOT")).toBeNull();
-  });
-
-  it("swaps into a lane this build knows", () => {
-    expect(saleLaneOf("USDC_ARBITRUM")?.id).toBe("usdc-arbitrum");
-    expect(saleLaneOf("USDC_SOLANA")?.id).toBe("usdc-solana");
-  });
-
-  it("sells nothing for another Asset Hub asset or an unknown lane", () => {
-    expect(saleLaneOf("USDC_DOT")).toBeUndefined();
-    expect(saleLaneOf("USDC_STATEMINT")).toBeUndefined();
-    expect(saleLaneOf("USDT_TRON")).toBeUndefined();
-  });
-});
 
 describe("laneCandidates", () => {
   it("tries the lanes the adapter found, in this build's order", () => {
@@ -91,24 +64,21 @@ const DIRECT: MeldAssetId[] = ["usdt@assethub", "dot@assethub"];
 const WITH_SWAPS: MeldAssetId[] = [...DIRECT, "usdc@arbitrum", "usdc@solana"];
 
 describe("sellableCorridor", () => {
-  it("drops a method only a swap lane routes when the build sells no swaps", () => {
+  it.each([
+    ["the order names no swap", DIRECT],
+    ["the order names the swap lanes", WITH_SWAPS],
+  ])("drops a method only a swap lane routes when %s", (_when, order) => {
     const routed = corridor(
       method("card", [lane("USDC_ARBITRUM", "arbitrum"), lane("USDC_SOLANA", "solana")]),
       method("bank", [lane("DOT", "assethub")]),
     );
-    const sellable = sellableCorridor(routed, DIRECT);
+    const sellable = sellableCorridor(routed, order);
     expect(sellable.methods.map((m) => m.category)).toEqual(["bank"]);
   });
 
-  it("keeps the swap-only method when the build lists the swap lane", () => {
-    const routed = corridor(method("card", [lane("USDC_ARBITRUM", "arbitrum")]));
-    expect(sellableCorridor(routed, WITH_SWAPS)).toEqual(routed);
-  });
-
-  it("drops a lane the build lists but cannot sell", () => {
+  it("drops a lane the order names but no sale sells", () => {
     const routed = corridor(method("card", [lane("USDT_TRON", "tron")]));
     expect(sellableCorridor(routed, WITH_SWAPS).methods).toEqual([]);
-    // Listed, and a lane of this build's, but with no swap behind it.
     const usdc = corridor(method("card", [lane("USDC_DOT", "assethub")]));
     expect(sellableCorridor(usdc, ["usdc@assethub"]).methods).toEqual([]);
   });
@@ -156,37 +126,44 @@ describe("the build's lane order", () => {
     expect(OFFRAMP_LANE_ORDER).toEqual(DIRECT);
   });
 
-  it("offers a swap lane only when the build names it", async () => {
-    vi.stubEnv("VITE_OFFRAMP_LANES", WITH_SWAPS.join(","));
-    vi.resetModules();
-    const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
-    expect(OFFRAMP_LANE_ORDER).toEqual(WITH_SWAPS);
-  });
-
   it("takes the build's own order when it names one", async () => {
-    vi.stubEnv("VITE_OFFRAMP_LANES", " dot@assethub, USDC@SOLANA ,");
+    vi.stubEnv("VITE_OFFRAMP_LANES", " dot@assethub, USDT@ASSETHUB ,");
     vi.resetModules();
     const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
-    expect(OFFRAMP_LANE_ORDER).toEqual(["dot@assethub", "usdc@solana"]);
+    expect(OFFRAMP_LANE_ORDER).toEqual(["dot@assethub", "usdt@assethub"]);
   });
 
-  it("drops, with a warning, an entry that is a Meld code rather than an asset id", async () => {
+  it.each([
     // A build variable still listing the codes Meld retired would otherwise sell through nothing.
+    [
+      "a Meld code rather than an asset id",
+      "USDT_ASSETHUB,DOT_STATEMINT,dot@assethub",
+      "usdt_assethub, dot_statemint",
+    ],
+    [
+      "a swap lane or an asset no sale sells",
+      "usdc@arbitrum,dot@assethub,usdc@assethub",
+      "usdc@arbitrum, usdc@assethub",
+    ],
+  ])("drops, with a warning, an entry that is %s", async (_what, lanes, named) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubEnv("VITE_OFFRAMP_LANES", "USDT_ASSETHUB,DOT_STATEMINT,dot@assethub");
+    vi.stubEnv("VITE_OFFRAMP_LANES", lanes);
     vi.resetModules();
     const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
     expect(OFFRAMP_LANE_ORDER).toEqual(["dot@assethub"]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("usdt_assethub, dot_statemint"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(named));
     warn.mockRestore();
   });
 
-  it("falls back to the direct sales when every entry is unknown", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubEnv("VITE_OFFRAMP_LANES", "DOT_ASSETHUB");
-    vi.resetModules();
-    const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
-    expect(OFFRAMP_LANE_ORDER).toEqual(DIRECT);
-    vi.restoreAllMocks();
-  });
+  it.each(["DOT_ASSETHUB", "usdc@arbitrum,usdc@solana"])(
+    "falls back to the direct sales when every entry is dropped (%s)",
+    async (lanes) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubEnv("VITE_OFFRAMP_LANES", lanes);
+      vi.resetModules();
+      const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
+      expect(OFFRAMP_LANE_ORDER).toEqual(DIRECT);
+      vi.restoreAllMocks();
+    },
+  );
 });

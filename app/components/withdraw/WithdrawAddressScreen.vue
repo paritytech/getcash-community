@@ -1,14 +1,12 @@
 <script setup lang="ts">
 // The destination address: the network and token already chosen as pills, the address typed,
-// pasted or scanned from a QR code, checked against the destination's own rule. An address another
-// network would take gets the wrong-network error; anything else invalid is just incorrect. A
-// scanned code made for another network or token says so. Valid turns the disabled Next into
-// Continue with a warning.
+// pasted or scanned from a QR code, checked against the destination's own rule. A scanned code
+// made for another network or token says so. Valid turns the disabled Next into Continue with a
+// warning.
 import { computed, ref } from "vue";
 import { CircleAlert, Clipboard, Scan } from "lucide-vue-next";
 import {
   destinationTokenIcon,
-  matchesOtherNetwork,
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../withdraw/destinations";
@@ -44,14 +42,9 @@ const addressOk = computed(
   () => trimmed.value !== "" && props.destination.validateAddress(trimmed.value),
 );
 const valid = computed(() => addressOk.value && scanProblem.value === null);
-const wrongNetwork = computed(() => `This is not ${props.network.label} address`);
 const error = computed<string | null>(() => {
   if (!touched.value || trimmed.value === "") return null;
-  if (!addressOk.value) {
-    return matchesOtherNetwork(props.network, trimmed.value)
-      ? wrongNetwork.value
-      : "Incorrect address";
-  }
+  if (!addressOk.value) return "Incorrect address";
   if (scanProblem.value === "network") return `This QR code is not for ${props.network.label}`;
   if (scanProblem.value === "token") return `This QR code is not for ${props.destination.asset}`;
   return null;

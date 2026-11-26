@@ -6,7 +6,6 @@ import type { SupportedCorridor } from "../lib/supported";
 
 const corridors = new Map<string, SupportedCorridor>();
 const getSellQuote = vi.fn();
-const sizeSwapSale = vi.fn();
 const reported = vi.hoisted(() => [] as string[]);
 
 vi.mock("~~/lib/telemetry", async (importOriginal) => ({
@@ -21,7 +20,7 @@ vi.mock("../app/withdraw/meld-client", async () => {
   const { TEST_MELD_ASSETS } = await import("./setup-meld-assets");
   return { meldSellClient: () => ({ getSellQuote, getAssets: async () => TEST_MELD_ASSETS }) };
 });
-vi.mock("../lib/withdraw-live", () => ({ sizeSwapSale, sizeMeldCommitment: vi.fn() }));
+vi.mock("../lib/withdraw-live", () => ({ sizeMeldCommitment: vi.fn() }));
 vi.mock("../lib/supported", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/supported")>()),
   fetchOfframpCorridors: async () => corridors,
@@ -63,17 +62,20 @@ describe("a region only a swap routes", () => {
       methods: [card("DOT", "assethub")],
     });
     getSellQuote.mockReset();
-    sizeSwapSale.mockReset();
     reported.length = 0;
   });
 
-  it("reads as not available there when the build sells no swap", async () => {
-    const sale = await quoteFor("usdt@assethub,dot@assethub");
+  it.each([
+    ["names no swap", "usdt@assethub,dot@assethub"],
+    ["names the swap lane", "dot@assethub,usdc@arbitrum"],
+  ])("reads as not available there when the build %s", async (_what, lanes) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const sale = await quoteFor(lanes);
+    warn.mockRestore();
     expect(sale.errorKind.value).toBe("unrouted");
     expect(sale.error.value).toBe("Card payout isn't available in this region");
     expect(sale.corridors.value?.get("DE")?.methods).toEqual([]);
     expect(sale.corridors.value?.get("FR")?.methods).toHaveLength(1);
-    expect(sizeSwapSale).not.toHaveBeenCalled();
     expect(getSellQuote).not.toHaveBeenCalled();
     // the region's own situation: reported, and read as expected (catalogue.ts)
     expect(reported).toEqual(["sale-card:unrouted"]);
@@ -88,14 +90,5 @@ describe("a region only a swap routes", () => {
     const sale = await quoteFor("usdt@assethub,dot@assethub");
     expect(sale.errorKind.value).toBe("unrouted");
     expect(getSellQuote).not.toHaveBeenCalled();
-  });
-
-  it("tries the swap when the build lists it", async () => {
-    sizeSwapSale.mockRejectedValue(new Error("no channel"));
-    const sale = await quoteFor("dot@assethub,usdc@arbitrum");
-    expect(sizeSwapSale).toHaveBeenCalledOnce();
-    expect(sale.errorKind.value).toBe("rate");
-    // the lane's own error decides the cause
-    expect(reported).toEqual(["sale-card:error"]);
   });
 });

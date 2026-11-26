@@ -1,31 +1,14 @@
 <script setup lang="ts">
-// Token picker: every coin on the chosen network, the ones that clear their floor for this
-// amount first and the rest greyed with why, under a reminder of the network already picked.
-// While any of them is still being answered, skeleton rows stand in for the list, one per token.
-// Picking a row starts the purchase, and a pick in flight keeps its rows on screen as they stood
-// at the tap, spinner and all.
-import { computed } from "vue";
+// Token picker: every token on the network, under a bar that names it. Picking a row starts the
+// purchase, and the row carries the spinner while it does.
 import { networkIcon, tokenIcon } from "../../utils/icons";
-import { groupTokens, tokenSubtitle } from "../../funding/source-groups";
-import { useFreshFloors } from "../../composables/useFreshFloors";
-import { useHeldRows } from "../../composables/useHeldRows";
 import { useFlowStore } from "../../stores/flow";
-import { isPickable, useOffersStore, type TokenRow } from "../../stores/offers";
 
 const flow = useFlowStore();
-const offers = useOffersStore();
-useFreshFloors();
 
-const tokens = computed(() => offers.tokensOf(flow.srcChain.chain));
-const { rows: groups, hold } = useHeldRows(
-  () => groupTokens(tokens.value),
-  () => flow.starting,
-);
-
-function pick(token: TokenRow) {
+function pick(asset: string) {
   if (flow.starting) return;
-  hold();
-  flow.selectSource(flow.srcChain.chain, token.asset);
+  flow.selectSource(flow.srcChain.chain, asset);
   void flow.startPurchase();
 }
 </script>
@@ -39,35 +22,15 @@ function pick(token: TokenRow) {
       :icon="networkIcon(flow.srcChain.chain)"
     />
 
-    <ul
-      v-if="offers.awaitingTokens(flow.srcChain.chain) && !flow.starting"
-      class="-mx-2 mt-4 flex flex-col gap-2"
-      aria-label="Loading tokens"
-    >
-      <OptionRow v-for="n in tokens.length" :key="n" skeleton />
+    <ul class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-cta">
+      <OptionRow
+        v-for="asset in flow.srcChain.assets"
+        :key="asset"
+        :icon="tokenIcon(asset)"
+        :label="asset"
+        :busy="flow.starting && asset === flow.srcAsset"
+        @select="pick(asset)"
+      />
     </ul>
-
-    <div v-else class="-mx-2 mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto pb-cta">
-      <ul
-        v-for="group in groups"
-        :key="group.label"
-        class="flex flex-col gap-2"
-        :aria-label="group.label"
-      >
-        <li v-if="groups.length > 1" class="px-2 pt-2 text-overline text-fg-tertiary">
-          {{ group.label }}
-        </li>
-        <OptionRow
-          v-for="token in group.rows"
-          :key="token.sourceId"
-          :icon="tokenIcon(token.asset)"
-          :label="token.asset"
-          :subtitle="tokenSubtitle(token.offer)"
-          :disabled="!isPickable(token.offer)"
-          :busy="flow.starting && token.asset === flow.srcAsset"
-          @select="pick(token)"
-        />
-      </ul>
-    </div>
   </div>
 </template>

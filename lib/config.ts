@@ -8,6 +8,7 @@ import {
   type DepositAsset,
   type ManualSourceId,
 } from "@getsome/funding";
+import { directSellTokenOf } from "@getsome/meld";
 import { devLog } from "./log";
 
 // Chain and asset identifiers, as Chainflip and the icon set name them.
@@ -35,8 +36,8 @@ export const ASSETS = {
 } as const;
 
 // The Chainflip source chains with their available assets, in the order Chainflip's own app
-// lists them. `native` is the network's own coin. The withdraw side and the floors read this
-// catalog; the direct network below stays out of it.
+// lists them. `native` is the network's own coin. The withdraw side reads this catalog; the
+// direct network below stays out of it.
 export const SOURCE_CHAINS = [
   { chain: CHAINS.Bitcoin, native: ASSETS.BTC, assets: [ASSETS.BTC], label: "Bitcoin" },
   {
@@ -72,13 +73,13 @@ export const POLKADOT_CHAIN = {
   label: "Polkadot",
 } as const;
 
-/** The on-ramp's networks in picker order: the direct one first, then the Chainflip ones. */
-export const FUNDING_CHAINS = [POLKADOT_CHAIN, ...SOURCE_CHAINS] as const;
+/** The on-ramp's networks: the direct one alone. */
+export const FUNDING_CHAINS = [POLKADOT_CHAIN] as const;
 export type FundingChain = (typeof FUNDING_CHAINS)[number];
 
 /** A network as the screens name it, from the name Chainflip and the records give it. */
 export const chainLabel = (chain: string): string =>
-  FUNDING_CHAINS.find((candidate) => candidate.chain === chain)?.label ?? chain;
+  [POLKADOT_CHAIN, ...SOURCE_CHAINS].find((candidate) => candidate.chain === chain)?.label ?? chain;
 
 // The destination is always CASH; this app has no other destination assets.
 
@@ -150,26 +151,35 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
 
 /** The off-ramp lanes this build sells through, in preference order, by the app's name for each
  *  asset (`usdt@assethub`), never by Meld's code for it, which the adapter owns and Meld renames.
- *  By default only the direct Asset Hub sales, USDT before DOT since the PSM redeems the CASH for
- *  USDT at a fixed rate where DOT takes the pool's price. The Chainflip swap lanes (usdc@arbitrum,
- *  usdc@solana) are opt-in: a build sells through one only when VITE_OFFRAMP_LANES names it.
+ *  Only the direct Asset Hub sales, by default USDT before DOT since the PSM redeems the CASH for
+ *  USDT at a fixed rate where DOT takes the pool's price.
  *  VITE_OFFRAMP_LANES overrides the list, comma separated; an asset left out is not offered,
- *  whatever the adapter lists, and an entry that is not an asset id is dropped with a warning. */
+ *  whatever the adapter lists. An entry that is not an asset id, or names an asset no sale sells
+ *  directly on Asset Hub (`usdc@arbitrum`), is dropped with a warning. */
 export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
   const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
   const listed = (raw ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry !== "");
-  const unknown = listed.filter((entry) => !isMeldAssetId(entry));
-  if (unknown.length > 0) {
+  const assets = listed.filter(isMeldAssetId);
+  const lanes = assets.filter((asset) => directSellTokenOf(asset) !== undefined);
+  const ignored = (entries: readonly string[], why: string): void => {
+    if (entries.length === 0) return;
     devLog(
       "config",
-      `VITE_OFFRAMP_LANES names ${unknown.join(", ")}, which are not asset ids (e.g. usdt@assethub); ignored`,
+      `VITE_OFFRAMP_LANES names ${entries.join(", ")}, ${why}; ignored`,
       undefined,
       "warn",
     );
-  }
-  const assets = listed.filter(isMeldAssetId);
-  return assets.length > 0 ? assets : ["usdt@assethub", "dot@assethub"];
+  };
+  ignored(
+    listed.filter((entry) => !isMeldAssetId(entry)),
+    "which are not asset ids (e.g. usdt@assethub)",
+  );
+  ignored(
+    assets.filter((asset) => !lanes.includes(asset)),
+    "which a sale cannot sell on Asset Hub",
+  );
+  return lanes.length > 0 ? lanes : ["usdt@assethub", "dot@assethub"];
 })();

@@ -58,7 +58,6 @@ const nonePriced = computed(
     <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
     <NetworkRecapBar
       class="-mx-2"
-      caption="Network"
       :label="POLKADOT_CHAIN.label"
       :icon="networkIcon(POLKADOT_CHAIN.label)"
     />

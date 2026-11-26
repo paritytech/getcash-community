@@ -1,27 +1,17 @@
 // Front-loaded host permissions. Every permission the top-up flow needs is requested once at
-// launch: Network (Remote) for the Chainflip domains, ChainSubmit for the funding pipeline, and
+// launch: Network (Remote) for the geo and Meld domains, ChainSubmit for the funding pipeline, and
 // Balance through a one-shot purse read. Outside a host container this is a no-op.
 
-import { BAAS_BROKER_HOST } from "@getsome/chainflip";
-import { brokerConfigured } from "./chainflip-backend";
 import { isHosted } from "./host-account";
 import { readPurseBalance } from "./coinage";
 import { describeError, reportFailure, requestTelemetryGrant } from "./telemetry";
 import { appOpenHostPermissions, appOpenOutsideHost } from "./app-open";
 import { devLog } from "./log";
 
-/** The two Chainflip hosts that serve quotes, floors and prices. */
-const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip.io"];
-
 /** The IP→country service the card and bank screens default the buyer's region from (lib/geo.ts).
  *  Only the grant is front-loaded: the lookup itself runs when one of those screens opens, so a
  *  user who never goes there never sends their address. */
 const GEO_DOMAINS = ["get.geojs.io"];
-
-/** The broker the channels open on, when the build has a key for it. */
-function brokerDomains(): string[] {
-  return brokerConfigured() ? [BAAS_BROKER_HOST] : [];
-}
 
 /** The fiat rail's domain, read from the build-time base URL. A relative base yields nothing. */
 function meldDomains(): string[] {
@@ -44,13 +34,11 @@ export async function frontloadHostPermissions(): Promise<void> {
   }
   const { requestPermission, getPaymentManager } = await import("@parity/product-sdk-host");
 
-  // Network first: the amount screen's floor-learning fires as soon as this resolves.
+  // Network first: the card and bank screens call the adapter and the region lookup under it.
   await appOpenHostPermissions(() =>
     requestPermission({
       tag: "Remote",
-      value: {
-        domains: [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
-      },
+      value: { domains: [...GEO_DOMAINS, ...meldDomains()] },
     }).then(
       (result) => {
         if ((!result.ok || !result.value) && !refusalReported) {
