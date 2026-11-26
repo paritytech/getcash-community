@@ -23,11 +23,13 @@
   },
   "dependencies": {
     "@chainflip/sdk": "2.3.1",
+    "@getsome/bridge": "workspace:*",
     "@getsome/chainflip": "workspace:*",
     "@getsome/core": "workspace:*",
     "@getsome/ephemeral": "workspace:*",
     "@getsome/funding": "workspace:*",
     "@getsome/host": "workspace:*",
+    "@getsome/intents": "workspace:*",
     "@getsome/meld": "workspace:*",
     "@getsome/offramp": "workspace:*",
     "@getsome/people": "workspace:*",

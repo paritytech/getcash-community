@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BridgeCheckLink from "./components/dev/BridgeCheckLink.vue";
 import { Toaster } from "./components/ui/sonner";
 import { useHostTheme } from "./composables/useHostTheme";
 import { useResolvedThemeKind } from "./composables/useResolvedThemeKind";
@@ -11,6 +12,8 @@ const themeKind = useResolvedThemeKind();
 
 <template>
   <NuxtPage />
+  <!-- shows only on the preview of a pull request and on a developer's copy -->
+  <BridgeCheckLink />
   <!-- Undo toasts live here (act, then offer undo — never a confirmation dialog).
        top-center: the app column is centred in the viewport, so viewport-centre
        and content-centre coincide. -->

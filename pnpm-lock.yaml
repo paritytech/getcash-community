@@ -14,6 +14,9 @@ importers:
       '@chainflip/sdk':
         specifier: 2.3.1
         version: 2.3.1(@types/node@26.4.1)(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+      '@getsome/bridge':
+        specifier: workspace:*
+        version: link:packages/bridge
       '@getsome/chainflip':
         specifier: workspace:*
         version: link:packages/chainflip
@@ -29,6 +32,9 @@ importers:
       '@getsome/host':
         specifier: workspace:*
         version: link:packages/host
+      '@getsome/intents':
+        specifier: workspace:*
+        version: link:packages/intents
       '@getsome/meld':
         specifier: workspace:*
         version: link:packages/meld
@@ -136,6 +142,30 @@ importers:
         specifier: ^2.1.10
         version: 2.2.12(typescript@5.9.3)
 
+  packages/bridge:
+    dependencies:
+      '@getsome/intents':
+        specifier: workspace:*
+        version: link:../intents
+      '@noble/curves':
+        specifier: ^2.3.0
+        version: 2.3.0
+      '@noble/hashes':
+        specifier: ^2.3.0
+        version: 2.3.0
+      '@polkadot-api/descriptors':
+        specifier: file:../../.papi/descriptors
+        version: file:.papi/descriptors(polkadot-api@2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6))
+      '@polkadot-api/metadata-builders':
+        specifier: 0.14.3
+        version: 0.14.3
+      '@polkadot-api/substrate-bindings':
+        specifier: 0.20.3
+        version: 0.20.3
+      polkadot-api:
+        specifier: 2.2.2
+        version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
+
   packages/chainflip:
     dependencies:
       '@chainflip/sdk':
@@ -225,6 +255,12 @@ importers:
       polkadot-api:
         specifier: 2.2.2
         version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
+
+  packages/intents:
+    dependencies:
+      '@getsome/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/meld:
     dependencies:

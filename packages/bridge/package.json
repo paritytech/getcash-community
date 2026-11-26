@@ -1,0 +1,22 @@
+{
+  "name": "@getsome/bridge",
+  "version": "0.0.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@getsome/intents": "workspace:*",
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
+    "@polkadot-api/descriptors": "file:../../.papi/descriptors",
+    "@polkadot-api/metadata-builders": "0.14.3",
+    "@polkadot-api/substrate-bindings": "0.20.3",
+    "polkadot-api": "2.2.2"
+  }
+}
