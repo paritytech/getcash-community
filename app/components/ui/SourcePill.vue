@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// A small "Network / Ethereum" plate showing one thing already chosen.
+// A small "Network / Polkadot" plate showing one thing already chosen.
 defineProps<{ label: string; value: string; icon: string }>();
 </script>
 

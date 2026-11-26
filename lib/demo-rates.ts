@@ -1,10 +1,5 @@
 // Indicative USD reference rates for the demo CASH quote display, rendered with a leading ≈.
 const USD_RATES: Record<string, number> = {
-  BTC: 84_500,
-  ETH: 2_670,
-  BNB: 590,
-  SOL: 114,
-  TRX: 0.34,
   USDC: 1,
   USDT: 1,
   dotUSD: 1,
