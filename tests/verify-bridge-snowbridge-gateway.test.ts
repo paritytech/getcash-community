@@ -4,6 +4,8 @@
 // touches the real chain. The test then reads the Gateway's event and builds from it the message
 // that Bridge Hub would send to Asset Hub.
 // TODO: remove the sending with the signer, once a forwarder and a relayer send the message.
+// Run the test soon after the fork starts: the public node gives the state of recent blocks
+// only, and a fork older than about 20 minutes fails.
 //   anvil --fork-url https://ethereum-rpc.publicnode.com
 //   VERIFY_BRIDGE_ETHEREUM_FORK=http://127.0.0.1:8545 pnpm vitest run tests/verify-bridge-snowbridge-gateway.test.ts
 

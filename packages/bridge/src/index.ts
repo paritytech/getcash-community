@@ -1,5 +1,15 @@
 export { BASE_CHAIN_ID, BASE_USDC } from "./base/chain";
 export { baseDataFee } from "./base/data-fee";
+export { HOLLAR, hollarProgram } from "./base/hollar-program";
+export type { HollarProgramInput } from "./base/hollar-program";
+export {
+  HYDRATION_CHAIN_ID,
+  hydrationAccountOf,
+  permitDigest,
+  permitExtrinsic,
+  signPermit,
+} from "./base/permit";
+export type { HydrationPermit, PermitSignature } from "./base/permit";
 export { ethToUsdcSwap, quoteEthIn, quoteUsdcOut } from "./base/swap";
 export {
   approveVault,

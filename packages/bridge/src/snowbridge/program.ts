@@ -21,7 +21,7 @@ export const ETHEREUM = {
 export const ETHER = { parents: 2, interior: { type: "X1", value: ETHEREUM } };
 
 /** The USDT of Asset Hub as Hydration names it. */
-const USDT_ON_HYDRATION = {
+export const USDT_ON_HYDRATION = {
   parents: 1,
   interior: {
     type: "X3",
@@ -33,13 +33,14 @@ const USDT_ON_HYDRATION = {
   },
 };
 
-const fungible = (id: unknown, amount: bigint) => ({
+/** An amount of one asset. */
+export const fungible = (id: unknown, amount: bigint) => ({
   id,
   fun: { type: "Fungible", value: amount },
 });
 
 /** All of one asset in the holding. */
-const allOf = (id: unknown): XcmValue => ({
+export const allOf = (id: unknown): XcmValue => ({
   type: "Wild",
   value: { type: "AllOf", value: { id, fun: { type: "Fungible", value: undefined } } },
 });
@@ -75,7 +76,7 @@ const depositOnAssetHub = (account: string): XcmInstruction[] => [
 
 /** Hydration sends all of `asset` to `account` on Asset Hub, which is the reserve of the asset.
  *  `fee` of it pays for the program there. */
-const backToAssetHub = (asset: unknown, fee: bigint, account: string): XcmInstruction => ({
+export const backToAssetHub = (asset: unknown, fee: bigint, account: string): XcmInstruction => ({
   type: "InitiateTransfer",
   value: {
     destination: sibling(ASSET_HUB),

@@ -4,6 +4,8 @@
 // a block of the next fork as it is: Hydration, then Asset Hub again. The balances are then read
 // from the fork.
 // TODO: remove the sending with the signer, once a forwarder and a relayer send the message.
+// Start the fork of Ethereum last and run the test soon after: the public node gives the state
+// of recent blocks only, and a fork older than about 20 minutes fails.
 //   anvil --fork-url https://ethereum-rpc.publicnode.com --port 8557
 //   npx @acala-network/chopsticks@1.5.2 --endpoint wss://rpc.hydradx.cloud --port 8012
 //   npx @acala-network/chopsticks@1.5.2 --endpoint wss://polkadot-asset-hub-rpc.polkadot.io --port 8013
@@ -11,8 +13,7 @@
 //   VERIFY_BRIDGE_ASSET_HUB_FORK=ws://127.0.0.1:8013 pnpm vitest run tests/verify-bridge-snowbridge-forks.test.ts
 
 import { bytesToHex, concatBytes, hexToBytes } from "@noble/hashes/utils.js";
-import { createClient, type PolkadotClient } from "polkadot-api";
-import { getWsProvider } from "polkadot-api/ws";
+import type { PolkadotClient } from "polkadot-api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   acceptedMessage,
@@ -36,6 +37,7 @@ import {
   type XcmInstruction,
 } from "@getsome/bridge";
 import { deriveKeypair } from "@getsome/ephemeral";
+import { connectFork, pageTo, ranFrom, receive, soon, type Fork } from "./bridge-forks";
 
 const ETHEREUM = process.env.VERIFY_BRIDGE_ETHEREUM_FORK;
 const HYDRATION = process.env.VERIFY_BRIDGE_HYDRATION_FORK;
@@ -48,10 +50,6 @@ const FUNDED_KEY = hexToBytes("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efca
 const SENDER = evmAddressOf(FUNDED_KEY);
 const SWAP = 50_000_000_000_000_000n;
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-type Fork = { client: PolkadotClient; api: any };
-type Block = { hash: string; events: { pallet: string; name: string; fields: any }[]; sent: any[] };
-
 /** A number as SCALE writes the length of a list. */
 function compact(value: number): Uint8Array {
   if (value < 64) return Uint8Array.of(value << 2);
@@ -59,9 +57,7 @@ function compact(value: number): Uint8Array {
   throw new Error("the message is too long for this test");
 }
 
-const bytesOf = (data: any): Uint8Array =>
-  typeof data === "string" ? hexToBytes(data.replace(/^0x/, "")) : data;
-
+/* eslint-disable @typescript-eslint/no-explicit-any */
 describe.runIf(ON)("a Snowbridge top-up on local forks", () => {
   const rpc = createEvmRpc(ETHEREUM!);
   const clients: PolkadotClient[] = [];
@@ -71,53 +67,9 @@ describe.runIf(ON)("a Snowbridge top-up on local forks", () => {
   let usdtOut: bigint;
 
   const connect = (url: string): Fork => {
-    const client = createClient(getWsProvider(url));
-    clients.push(client);
-    return { client, api: client.getUnsafeApi() };
-  };
-
-  /** A read of a fork at a block it has just made. The client learns of the block a moment
-   *  after the fork makes it. */
-  async function soon<T>(read: () => Promise<T>): Promise<T> {
-    for (let tries = 0; ; tries++) {
-      try {
-        return await read();
-      } catch (error) {
-        if (tries === 40) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-    }
-  }
-
-  /** Makes a block on `fork` that receives `page` from the parachain `from`. */
-  async function receive(fork: Fork, from: number, page: Uint8Array): Promise<Block> {
-    const hash: string = await fork.client._request("dev_newBlock", [
-      { hrmp: { [from]: [{ sentAt: 0, data: `0x${bytesToHex(page)}` }] } },
-    ]);
-    const at = { at: hash };
-    const records: any[] = await soon(() => fork.api.query.System.Events.getValue(at));
-    const sent: any[] = await soon(() =>
-      fork.api.query.ParachainSystem.HrmpOutboundMessages.getValue(at),
-    );
-    const events = records.map(({ event }) => ({
-      pallet: event.type,
-      name: event.value.type,
-      fields: event.value.value ?? {},
-    }));
-    return { hash, events, sent };
-  }
-
-  /** Whether the block ran the message from `from` to its end. */
-  const ranFrom = (block: Block, from: number): boolean | undefined =>
-    block.events.find(
-      (e) =>
-        e.pallet === "MessageQueue" && e.name === "Processed" && e.fields.origin?.value === from,
-    )?.fields.success;
-
-  /** The page the block sends to the parachain `to`. */
-  const pageTo = (block: Block, to: number): Uint8Array | null => {
-    const message = block.sent.find((entry) => entry.recipient === to);
-    return message === undefined ? null : bytesOf(message.data);
+    const fork = connectFork(url);
+    clients.push(fork.client);
+    return fork;
   };
 
   /** Bridge Hub's page for one message: the kind of page, the length of the message, the message. */
