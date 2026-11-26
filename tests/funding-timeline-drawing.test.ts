@@ -270,7 +270,7 @@ describe("top-up list headline", () => {
     ["the Polkadot part", "crypto", current("active", 3, 0.5), "Adding to your balance", false],
     ["a delayed card", "card", current("delayed", 0, 0.5), "Delayed, don't pay again", true],
     ["a delayed bank", "bank", current("delayed", 1, 0.5), "Delayed, don't pay again", true],
-    ["a delayed Chainflip provider part", "crypto", current("delayed", 1, 0.5), "On its way", true],
+    ["a delayed provider part", "crypto", current("delayed", 1, 0.5), "On its way", true],
     ["a delayed Polkadot part", "card", current("delayed", 4, 0.5), "Adding to your balance", true],
   ] as const)("words %s", (_, route, view, text, delayed) => {
     expect(listHeadline(route, view && { view })).toEqual({ text, delayed });

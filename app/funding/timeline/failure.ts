@@ -3,9 +3,8 @@
 
 import type { TopUpRecord } from "../requests/model";
 
-/** Where the money to get back is: on the refund key the provider returned it to, or on the
- *  top-up's own account. */
-export type GetBackFrom = "refund-key" | "deposit-account";
+/** Where the money to get back is: on the top-up's own account. */
+export type GetBackFrom = "deposit-account";
 
 export type FailureAction =
   | { readonly kind: "start-over" }
@@ -48,7 +47,3 @@ export const expiredEnding = (record: TopUpRecord): boolean =>
 
 /** The wording of an expired crypto top-up, from before the timeline. */
 export const CRYPTO_EXPIRED_TEXT = "This top-up expired because no funds arrived in time.";
-
-/** `text` followed by the provider's reason, when it gave one. */
-export const withReason = (text: string, reason: string | undefined): string =>
-  reason === undefined ? `${text}.` : `${text}: ${reason}`;
