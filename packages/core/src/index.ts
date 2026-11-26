@@ -11,3 +11,4 @@ export * from "./network";
 export * from "./tokens";
 export * from "./native-balance";
 export * from "./meld-assets";
+export * from "./chains";

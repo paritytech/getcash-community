@@ -72,6 +72,7 @@ export {
   RailFailedError,
   railTickOnce,
   readingFailed,
+  sameChannelAddress,
 } from "./rail-leg";
 export type {
   RailChannelRecord,

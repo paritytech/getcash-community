@@ -27,7 +27,7 @@
 // retried on the next tick. Terminal is the provider's own verdict: delivered, or a failure it
 // names.
 
-import type { SwapStatusResult } from "@getsome/core";
+import { isEvmChain, type SwapStatusResult } from "@getsome/core";
 import { AccountId } from "polkadot-api";
 import { bounded } from "./bounded";
 import { freshSweepState, type SweepState } from "./sweep";
@@ -89,6 +89,9 @@ export interface RailChannelRecord {
   destinationAddress?: string;
   /** `off-chain` when the payout has no address to compare; absent for a payout to an address. */
   payout?: "off-chain";
+  destinationChain?: string;
+  destinationAsset?: string;
+  refundAddress?: string;
   /** The provider's own word on the channel being closed. */
   expired: boolean;
   /** What the provider expects to receive, base units, for a provider that holds the key to an
@@ -121,19 +124,34 @@ export class ChannelMismatchError extends Error {
   }
 }
 
+const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
+const BECH32_ADDRESS = /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]+$/;
+
+const isBech32 = (address: string): boolean =>
+  (address === address.toLowerCase() || address === address.toUpperCase()) &&
+  BECH32_ADDRESS.test(address.toLowerCase());
+
 /** The formats that define the same address in either case: Ethereum, whose checksum is carried in
  *  the casing, and bech32, which is specified in both. Base58 has no such rule, and a Solana
  *  address is a bare public key with no checksum at all, so a case variant of one is simply a
- *  different account. */
-const eitherCase = (address: string): boolean => /^(0x|bc1|tb1|bcrt1)/i.test(address);
+ *  different account. Judged by the chain's format, or by the address's own shape without one. */
+function eitherCase(address: string, chain?: string): boolean {
+  const evm = chain === undefined || isEvmChain(chain);
+  const bitcoin = chain === undefined || chain === "Bitcoin";
+  return (evm && EVM_ADDRESS.test(address)) || (bitcoin && isBech32(address));
+}
 
-/** Addresses on the destination chain, compared as the provider may hand them back: exactly,
- *  unless the format itself says the two spellings are one address. */
-function sameAddress(a: string, b: string): boolean {
+/** Addresses on `chain`, compared as the provider may hand them back: exactly, unless the format
+ *  itself says the two spellings are one address. */
+function sameAddress(a: string, b: string, chain?: string): boolean {
   const left = a.trim();
   const right = b.trim();
   if (left === right) return true;
-  return eitherCase(left) && eitherCase(right) && left.toLowerCase() === right.toLowerCase();
+  return (
+    eitherCase(left, chain) &&
+    eitherCase(right, chain) &&
+    left.toLowerCase() === right.toLowerCase()
+  );
 }
 
 /**
@@ -152,6 +170,9 @@ function sameAccount(a: string, b: string): boolean {
     return a.trim() === b.trim();
   }
 }
+
+export const sameChannelAddress = (a: string, b: string, chain?: string): boolean =>
+  sameAccount(a, b) || sameAddress(a, b, chain);
 
 export interface RailLegInput {
   rail: RailClient;
@@ -176,6 +197,8 @@ export interface RailLegInput {
   payout?: "off-chain";
   /** The exact amount the key pays, base units, for a provider that expects one. */
   amount?: bigint;
+  refundAddress?: string;
+  payoutAsset?: { chain: string; asset: string };
   /** For a payment that keeps its own memory of an attempt that may have left (the exact
    *  payment's nonce): whether that attempt landed, from the chain alone. Asked before anything
    *  else while the key is unpaid, since a provider that saw the funds may already have closed the
@@ -259,6 +282,23 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
       `channel ${handoff.id} takes deposits at ${record.depositAddress}, not ${handoff.address}`,
     );
   }
+  if (
+    input.refundAddress !== undefined &&
+    !sameAccount(record.refundAddress ?? "", input.refundAddress)
+  ) {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} refunds to '${record.refundAddress ?? ""}', not ${input.refundAddress}`,
+    );
+  }
+  const asset = input.payoutAsset;
+  if (
+    asset !== undefined &&
+    (record.destinationChain !== asset.chain || record.destinationAsset !== asset.asset)
+  ) {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} pays out '${record.destinationAsset ?? ""}' on '${record.destinationChain ?? ""}', not ${asset.asset} on ${asset.chain}`,
+    );
+  }
   if (input.payout === "off-chain") {
     checkOffChainPayout(input, handoff, record);
   } else {
@@ -272,7 +312,7 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
         `channel ${handoff.id} cannot be checked: it pays out to '${named}' and the withdrawal names '${wanted}'`,
       );
     }
-    if (!sameAddress(named, wanted)) {
+    if (!sameAddress(named, wanted, asset?.chain)) {
       throw new ChannelMismatchError(`channel ${handoff.id} pays out to ${named}, not ${wanted}`);
     }
   }

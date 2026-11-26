@@ -50,8 +50,10 @@ import {
   anchorFor,
   asBig,
   bounded,
+  brief,
   connectChain,
   createJobStore,
+  errorText,
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
@@ -311,6 +313,9 @@ function channelOf(channel) {
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
     ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
+    ...(Number.isFinite(channel.minPrice) && channel.minPrice > 0
+      ? { minPrice: channel.minPrice }
+      : {}),
   };
 }
 
@@ -441,7 +446,7 @@ export async function startWithdraw(params) {
   try {
     record = newRecord(input, Date.now());
   } catch (error) {
-    return { error: "invalid", reason: String(error?.message ?? error) };
+    return { error: "invalid", reason: errorText(error) };
   }
   const key = await keypairFor(record.label);
   if (key.address !== record.keyAddress) {
@@ -526,7 +531,7 @@ function rearm(record, nowMs) {
 function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
-  record.lastError = reason;
+  record.lastError = brief(reason);
   record.failedAt = Date.now();
 }
 
@@ -578,11 +583,14 @@ function describeWithdraw(record) {
 }
 
 /**
- * Dev builds only: takes the provider's word as delivered for a job on the rail leg, so the walk
- * can be finished where the provider cannot be reached. On a test network the channel is real
- * but the swap never runs, since the provider watches another chain.
+ * Test networks only: takes the provider's word as delivered for a job on the rail leg, so the
+ * walk can be finished where the provider cannot be reached. On a test network the channel is
+ * real but the swap never runs, since the provider watches another chain.
  */
 export async function skipWithdrawRail(params) {
+  if (!NETWORK.testnet) {
+    return { error: "invalid", reason: "the rail leg can be skipped on a test network only" };
+  }
   const input = readParams(params);
   const all = await loadJobs();
   const sessionId = String(input.sessionId ?? "");
@@ -752,6 +760,12 @@ async function tickRailLeg(record) {
         // The Chainflip channel of a swap sale must pay out to the provider's deposit address.
         destinationAddress:
           swapOf(record) === null ? record.destination?.address : record.channel?.address,
+        ...(record.rail === "chainflip" || swapOf(record) !== null
+          ? { refundAddress: record.keyAddress }
+          : {}),
+        ...(record.rail === "chainflip"
+          ? { payoutAsset: { chain: record.destination.chain, asset: record.destination.asset } }
+          : {}),
         ...(exactAmount === null
           ? swapOf(record) === null
             ? {}
@@ -786,7 +800,9 @@ async function tickRailLeg(record) {
     // the attempt lands and the sale is paid, or it outlives its mortality unlanded and the
     // refusal stands (see `exactPaymentLanded`).
     if (refused && exactAmount !== null && exact.inFlight) {
-      record.lastError = `the provider refused the sale while a payment to it may still land: ${error.message}`;
+      record.lastError = brief(
+        `the provider refused the sale while a payment to it may still land: ${error.message}`,
+      );
       return;
     }
     // Nothing moved: the native is still on the key. A fresh Chainflip channel can carry it; a
@@ -1316,6 +1332,7 @@ async function tickRecord(record, nowMs) {
     state.rejections = record.state.rejections ?? 0;
     state.submitted = !!record.state.submitted;
     state.xcmSigned = record.state.xcmSigned === true;
+    state.xcmCashSent = asBig(record.state.xcmCashSent, null);
     state.xcmBlock = record.state.xcmBlock ?? null;
     state.xcmHash = record.state.xcmHash ?? null;
     state.arrived = record.state.arrived === true;
@@ -1342,6 +1359,7 @@ async function tickRecord(record, nowMs) {
         rejections: state.rejections,
         submitted: state.submitted,
         xcmSigned: state.xcmSigned,
+        xcmCashSent: state.xcmCashSent === null ? null : String(state.xcmCashSent),
         xcmBlock: state.xcmBlock,
         xcmHash: state.xcmHash,
         arrived: state.arrived,
@@ -1425,7 +1443,7 @@ async function tickRecord(record, nowMs) {
             record.txs.push(info);
           },
           onTransientError: (error) => {
-            record.lastError = String(error?.message ?? error);
+            record.lastError = errorText(error);
           },
         },
         state,
@@ -1522,7 +1540,7 @@ export async function tickAllWithdraw() {
             fail(record, "unfundable", error.message);
           } else {
             // Other errors are transient; the next wake retries.
-            record.lastError = String(error?.message ?? error);
+            record.lastError = errorText(error);
           }
         }
         if (judged) judgeBounds(record, nowMs, read);
@@ -1534,7 +1552,7 @@ export async function tickAllWithdraw() {
           await settlePayment(record);
           delete record.residueError;
         } catch (error) {
-          record.residueError = String(error?.message ?? error);
+          record.residueError = errorText(error);
         }
       }
       // Off the payment's path, and tried again on every pass until it is over, whatever became of
@@ -1545,7 +1563,7 @@ export async function tickAllWithdraw() {
           await settleInFlight(record);
           delete record.residueError;
         } catch (error) {
-          record.residueError = String(error?.message ?? error);
+          record.residueError = errorText(error);
         }
       }
       const kind = returnDue(record);
@@ -1555,7 +1573,7 @@ export async function tickAllWithdraw() {
           else await keepWayHome(record);
           delete record.residueError;
         } catch (error) {
-          record.residueError = String(error?.message ?? error);
+          record.residueError = errorText(error);
         }
       }
       ticked += 1;

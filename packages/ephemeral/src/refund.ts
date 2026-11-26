@@ -97,7 +97,7 @@ function evmAddressBytes(secret: Uint8Array): Uint8Array {
 }
 
 /** EIP-55 mixed-case checksum. */
-function checksumAddress(bytes: Uint8Array): string {
+export function checksumAddress(bytes: Uint8Array): string {
   const lower = bytesToHex(bytes);
   const hash = bytesToHex(keccak_256(utf8ToBytes(lower)));
   let out = "0x";

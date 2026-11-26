@@ -12,13 +12,13 @@ set -euo pipefail
 NAME="${1:-getcash.paseo}"
 OUT=".output/public"
 
-# Deployer seed: MNEMONIC env wins; otherwise read VITE_DEPLOYER_SEED from .env.local or .env.
+# Deployer seed: MNEMONIC env wins; otherwise read DEPLOYER_SEED from .env.local or .env.
 if [ -z "${MNEMONIC:-}" ]; then
   for f in .env.local .env; do
     if [ -f "$f" ]; then
-      line="$(grep -m1 '^VITE_DEPLOYER_SEED=' "$f" || true)"
+      line="$(grep -m1 '^DEPLOYER_SEED=' "$f" || true)"
       if [ -n "$line" ]; then
-        MNEMONIC="${line#VITE_DEPLOYER_SEED=}"
+        MNEMONIC="${line#DEPLOYER_SEED=}"
         MNEMONIC="${MNEMONIC%\"}"; MNEMONIC="${MNEMONIC#\"}"
         MNEMONIC="${MNEMONIC%\'}"; MNEMONIC="${MNEMONIC#\'}"
         export MNEMONIC
@@ -28,7 +28,7 @@ if [ -z "${MNEMONIC:-}" ]; then
   done
 fi
 if [ -z "${MNEMONIC:-}" ]; then
-  echo "Error: set MNEMONIC or VITE_DEPLOYER_SEED (.env.local/.env)." >&2
+  echo "Error: set MNEMONIC or DEPLOYER_SEED (.env.local/.env)." >&2
   exit 1
 fi
 

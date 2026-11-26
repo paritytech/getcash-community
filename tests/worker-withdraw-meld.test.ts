@@ -1297,13 +1297,17 @@ describe("a sale's way to the provider and back", () => {
     expect(storedJob().leg.handoff.expiresAt).toBe(later);
   });
 
-  it("refuses the stand-in sale's hand-off on a live network", async () => {
+  it("refuses the stand-in sale's hand-off and the demo skip on a live network", async () => {
     vi.doMock("@getsome/core", async (importOriginal) => {
       const actual = await importOriginal<typeof import("@getsome/core")>();
       return { ...actual, NETWORK: { ...actual.NETWORK, testnet: false } };
     });
     const engine = await engineWith({});
     expect(await engine.startWithdraw(handoff({ meld: { offline: true } }))).toMatchObject({
+      error: "invalid",
+      reason: expect.stringMatching(/test network/),
+    });
+    expect(await engine.skipWithdrawRail({ sessionId: "s-1" })).toMatchObject({
       error: "invalid",
       reason: expect.stringMatching(/test network/),
     });

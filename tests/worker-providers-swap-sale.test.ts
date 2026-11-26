@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
   saleChannel: vi.fn(),
 }));
 
-vi.mock("@getsome/chainflip/swap-status", () => ({
+vi.mock("@getsome/chainflip/swap-status", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   readSwapStatus: mocks.readSwapStatus,
   readChannelRecord: mocks.readChannelRecord,
 }));
@@ -43,7 +44,14 @@ describe("a lane sale's provider", () => {
     for (const fn of Object.values(mocks)) fn.mockReset();
   });
 
-  const flip = { depositAddress: record.swap.address, destinationAddress: record.channel.address };
+  const flip = {
+    depositAddress: record.swap.address,
+    destinationAddress: record.channel.address,
+    sourceChain: "Assethub",
+    sourceAsset: "DOT",
+    commissionBps: 5,
+    minPrice: 1,
+  };
   const order = {
     depositAddress: record.channel.address,
     payout: "off-chain",
@@ -77,6 +85,31 @@ describe("a lane sale's provider", () => {
     const read = railFor("meld", record)!.channel!("cf-channel-7");
     await expect(read).rejects.toThrow(message);
     await expect(read).rejects.toBeInstanceOf(ChannelMismatchError);
+  });
+
+  it.each([
+    ["takes another asset", { sourceAsset: "USDT" }, /takes 'USDT'/],
+    ["pays its brokers too much", { commissionBps: 21 }, /brokers take 21 bps/],
+    ["has no minimum price", { minPrice: 0 }, /minimum price is 0/],
+  ])("refuses a Chainflip channel that %s", async (_, terms, message) => {
+    const { railFor } = await import("../worker/src/providers.js");
+    mocks.readChannelRecord.mockResolvedValue({ ...flip, ...terms });
+    mocks.saleChannel.mockResolvedValue(order);
+    await expect(railFor("meld", record)!.channel!("cf-channel-7")).rejects.toThrow(message);
+  });
+
+  it.each([
+    ["a swap sale", "meld", { ...record, swap: { ...record.swap, minPrice: 2 } }],
+    ["a crypto withdrawal", "chainflip", { channel: { ...record.swap, minPrice: 2 } }],
+  ])("refuses the channel of %s under the minimum price it asked for", async (_, rail, job) => {
+    const { railFor } = await import("../worker/src/providers.js");
+    mocks.saleChannel.mockResolvedValue(order);
+    mocks.readChannelRecord.mockResolvedValue(flip);
+    await expect(railFor(rail, job)!.channel!("cf-channel-7")).rejects.toThrow(
+      /minimum price is 1, under 2/,
+    );
+    mocks.readChannelRecord.mockResolvedValue({ ...flip, minPrice: 2 });
+    expect(await railFor(rail, job)!.channel!("cf-channel-7")).toMatchObject({ minPrice: 2 });
   });
 
   it("reads the channel as expired once Meld has closed the sale", async () => {

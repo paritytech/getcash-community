@@ -6,13 +6,91 @@ import {
   BAAS_COMMISSION_BPS,
   baasBrokerUrl,
   createSwapSdk,
+  requestedMinPrice,
   type ChainflipNetworkId,
   type SwapSdkLike,
 } from "@getsome/chainflip";
-import { NETWORK as CHAIN_NETWORK } from "@getsome/core";
+import {
+  channelTermsFault,
+  readChannelRecord,
+  type ChainflipChannelRecord,
+  type ChannelSource,
+} from "@getsome/chainflip/swap-status";
+import {
+  NETWORK as CHAIN_NETWORK,
+  type ChainflipRail,
+  type DepositChannel,
+  type OpenChannelArgs,
+} from "@getsome/core";
+import { sameChannelAddress } from "@getsome/withdraw";
 import { devLog } from "./log";
 
 export const NETWORK: ChainflipNetworkId = "mainnet";
+
+const CHANNEL_READ_WINDOW_MS = 120_000;
+const CHANNEL_READ_WAIT_MS = 2_000;
+
+type ChannelRead = (id: string) => Promise<ChainflipChannelRecord | null>;
+
+async function readOpenedChannel(id: string, read: ChannelRead, waitMs: number, windowMs: number) {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    try {
+      return await read(id);
+    } catch (error) {
+      if (Date.now() + waitMs >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
+function channelMismatch(
+  record: ChainflipChannelRecord | null,
+  channel: DepositChannel,
+  args: OpenChannelArgs,
+  source: ChannelSource,
+  egress: ChannelSource,
+): string | null {
+  if (record === null) return "Chainflip cannot name it";
+  const addresses = [
+    ["deposit", record.depositAddress, channel.deposit.address, source.chain],
+    ["payout", record.destinationAddress, args.destAddress, egress.chain],
+    ["refund", record.refundAddress, args.refundAddress ?? "", source.chain],
+  ] as const;
+  for (const [name, served, asked, chain] of addresses) {
+    if (asked.trim() === "" || !sameChannelAddress(served, asked, chain)) {
+      return `its ${name} address is '${served}', not '${asked}'`;
+    }
+  }
+  if (record.destinationChain !== egress.chain || record.destinationAsset !== egress.asset) {
+    return `it pays out '${record.destinationAsset}' on '${record.destinationChain}', not ${egress.asset} on ${egress.chain}`;
+  }
+  return channelTermsFault(record, source, requestedMinPrice(args));
+}
+
+export function checkedAgainstChainflip(
+  rail: ChainflipRail,
+  source: ChannelSource,
+  egress: ChannelSource,
+  read: ChannelRead = (id) => readChannelRecord(id, undefined, NETWORK),
+  waitMs = CHANNEL_READ_WAIT_MS,
+  windowMs = CHANNEL_READ_WINDOW_MS,
+): ChainflipRail {
+  return {
+    ...rail,
+    async requestDepositAddress(args) {
+      const channel = await rail.requestDepositAddress(args);
+      const record = await readOpenedChannel(channel.depositChannelId, read, waitMs, windowMs);
+      const mismatch = channelMismatch(record, channel, args, source, egress);
+      if (mismatch !== null) {
+        throw new Error(
+          `Chainflip's record of channel ${channel.depositChannelId} does not match the top-up: ${mismatch}`,
+        );
+      }
+      return channel;
+    },
+  };
+}
 
 /** The BaaS API key the build was given, or null when it has none. */
 function brokerApiKey(): string | null {
