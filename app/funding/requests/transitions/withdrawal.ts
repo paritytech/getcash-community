@@ -23,7 +23,6 @@ import {
   SELL_TOKEN,
   type MeldToken,
 } from "@getsome/meld";
-import { laneById, laneSellToken } from "@getsome/offramp";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
@@ -173,17 +172,8 @@ function arrived(record: WithdrawalRecord, at: number): WithdrawalRecord {
 }
 
 /** The provider's endings, in the withdrawal's own names; anything else is unknown. */
-function railFailureKind(kind: FailureKind): WithdrawalFailureKind {
-  switch (kind) {
-    case "deposit-rejected":
-    case "egress-failed":
-    case "fallback-egress":
-    case "refunded":
-      return kind;
-    default:
-      return "unknown";
-  }
-}
+const railFailureKind = (kind: FailureKind): WithdrawalFailureKind =>
+  kind === "deposit-rejected" ? kind : "unknown";
 
 /** The rail's first report of each stage and of sending on, carried past later reads and the
  *  failure that overwrites `updatedAt`. */
@@ -203,8 +193,8 @@ function stageStamps(
   return Object.keys(stageAt).length === 0 ? {} : { stageAt };
 }
 
-/** The provider's word on the swap, folded onto the rail: delivered completes the request, a
- *  failure ends the rail leg, and only a refund can be tried again. */
+/** The provider's word on the sale, folded onto the rail: delivered completes the request, and a
+ *  failure ends the rail leg for good. */
 function railRead(
   record: WithdrawalRecord,
   reading: NonNullable<WithdrawJobView["rail"]>,
@@ -220,22 +210,11 @@ function railRead(
     return rank < 4 && !isWithdrawalSideExit(next) ? sent(next, at) : next;
   if (rail.stage === "failed" && rail.failure !== undefined) {
     if (rank >= 4 || isWithdrawalSideExit(next)) return next;
-    // A sale's swap refunds its USDT to the key, and the worker brings it home itself: nothing
-    // reached the provider, there is nothing for the seller to move, and the order cannot be
-    // tried again.
-    if (record.rail.provider === "meld" && rail.failure.kind === "refunded") {
-      return failed(next, at, {
-        kind: "sale-closed",
-        step: "send",
-        message: rail.failure.message,
-        recoverable: false,
-      });
-    }
     return failed(next, at, {
       kind: railFailureKind(rail.failure.kind),
       step: "send",
       message: rail.failure.message,
-      recoverable: rail.failure.kind === "refunded",
+      recoverable: false,
     });
   }
   return next;
@@ -321,24 +300,6 @@ function applyWorker(
         });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
-      case "channel-expired":
-        // The provider closed the channel before the key paid it, so nothing moved. A retry
-        // opens a fresh one for what is still sitting on the key.
-        return failed(next, at, {
-          kind: "channel-expired",
-          step: "send",
-          message: job.lastError ?? "the provider closed the channel before it was paid",
-          recoverable: true,
-        });
-      case "channel-mismatch":
-        // The provider's own record of the channel disagreed with the withdrawal, so the key
-        // never paid it. A retry opens a fresh channel from the record's own details.
-        return failed(next, at, {
-          kind: "channel-mismatch",
-          step: "send",
-          message: job.lastError ?? "the provider's channel did not match this withdrawal",
-          recoverable: true,
-        });
       case "no-rail":
         // Nothing in this build can carry the PAS on; the provider's reading, when there is
         // one, already spoke above.
@@ -487,12 +448,10 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   return next;
 }
 
-/** What a sale sells: its offramp lane's asset, or the Asset Hub asset it opened on, PAS unless
- *  it names another. Read by the asset, not the code, which Meld may have renamed since; a record
- *  from before the asset was kept falls back to its code. The code was checked when the sale
- *  opened; this never throws. */
+/** What a sale sells: the Asset Hub asset it opened on, PAS unless it names another. Read by the
+ *  asset, not the code, which Meld may have renamed since; a record from before the asset was kept
+ *  falls back to its code. The code was checked when the sale opened; this never throws. */
 export function sellTokenOf(sale: MeldSale): MeldToken {
-  if (sale.lane !== undefined) return laneSellToken(laneById(sale.lane));
   if (sale.asset !== undefined) return directSellTokenOf(sale.asset) ?? SELL_TOKEN;
   const code = sale.sellCode;
   return code !== undefined && isDirectSellCode(code) ? directSellToken(code) : SELL_TOKEN;
@@ -661,16 +620,6 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
           handoff: { ...record.handoff, paymentExpiresAt },
         };
       }
-      if (record.failure?.step === "send") {
-        // The PAS is back on the key: the rail leg starts over with a fresh channel and a fresh
-        // job, so the old job's payment and failure say nothing about it.
-        return {
-          ...rest,
-          status: { kind: "sending", at },
-          rail: { provider: record.rail.provider, stage: "waiting", updatedAt: at },
-          witnesses: { ...rest.witnesses, worker: { known: false, at } },
-        };
-      }
       const worker = record.witnesses.worker;
       const step: SendingStep =
         worker?.known && isSendingStep(worker.phase) ? worker.phase : "swap";
@@ -683,14 +632,6 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
         witnesses: { ...rest.witnesses, worker: kept },
       };
     }
-    case "channel-opened":
-      // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
-      return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
-    case "swap-opened":
-      // Only before the purse is asked: a key already paying keeps the swap it was handed.
-      if (record.sale?.lane === undefined || record.payment.requestedAt !== undefined)
-        return record;
-      return { ...record, handoff: { ...record.handoff, swap: observation.channel } };
     case "sale-unfundable":
       // Only before the purse was asked: after that the worker's own floor decides.
       if (

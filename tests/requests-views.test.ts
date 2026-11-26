@@ -2,7 +2,7 @@
 // values the session store exposed before them.
 
 import { describe, expect, it } from "vitest";
-import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { fundingSelectorConfig } from "../app/funding/config";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -234,7 +234,7 @@ describe("request views", () => {
     expect(phaseLike(credited)).toBe("done");
     expect(claimingOf(credited)).toBe(false);
     const sections = projectFundingTopUps(
-      projectChainflipTopUps([credited], now),
+      projectCryptoTopUps([credited], now),
       fundingSelectorConfig,
     );
     expect(sections.inProgress).toEqual([]);
@@ -370,7 +370,7 @@ describe("request views", () => {
         {
           ...crypto(),
           status: { kind: "deposit-seen", at: AT, assurance: "provisional", via: "rail" },
-          rail: rail("chainflip", "received", "receiving"),
+          rail: rail("manual", "received", "receiving"),
         },
         AT,
       ),

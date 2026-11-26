@@ -1,10 +1,10 @@
-// The rail leg: a provider's normalised swap status folded onto the generic stage the shell
+// The rail leg: a provider's normalised status folded onto the generic stage the shell
 // reads, and the merge that keeps that stage monotonic. Shared by the deposit and the
 // withdrawal, whose rails differ only in the providers they name.
 
 import {
-  CHAINFLIP_SEND_FAILED_MESSAGE,
-  type ChainflipFailureInfo,
+  RAIL_FAILED_MESSAGE,
+  type RailFailureInfo,
   type SwapProgress,
   type SwapStatusResult,
 } from "@getsome/core";
@@ -43,8 +43,8 @@ const STAGE_RANK: Record<RailStage, number> = {
 export const stageRank = (stage: RailStage): number => STAGE_RANK[stage];
 
 function stageOf(result: SwapStatusResult): RailStage {
-  // The SDK leaves its top-level status on the happy path for these.
-  if (result.depositFailure || result.swapEgressFailure || result.fallbackEgress) return "failed";
+  // A failure the rail names ends the leg whatever its top-level status says.
+  if (result.depositFailure) return "failed";
   switch (result.status) {
     case "waiting":
       return "waiting";
@@ -61,42 +61,22 @@ function stageOf(result: SwapStatusResult): RailStage {
   }
 }
 
-/** The ending's own code, when the rail named one. The fallback egress and the plain SDK failure
- *  below carry none: neither is a verdict the provider reported. */
-const code = (failure: ChainflipFailureInfo): { code?: string } =>
+/** The ending's own code, when the rail named one. */
+const code = (failure: RailFailureInfo): { code?: string } =>
   failure.reason?.code === undefined ? {} : { code: failure.reason.code };
 
-/** `mapSwapFailure` from `packages/core/src/session.ts`, which core does not export, reduced
+/** `mapRailFailure` from `packages/core/src/session.ts`, which core does not export, reduced
  *  to the kind and message. Keep the two in step. */
 function railFailure(result: SwapStatusResult): RailFailure {
   if (result.depositFailure) {
-    // The rail's own kind, code and message take precedence over the Chainflip defaults.
+    // The rail's own kind, code and message take precedence over the defaults.
     return {
       kind: result.depositFailure.kind ?? "deposit-rejected",
-      message:
-        result.depositFailure.reason?.message ??
-        "Deposit rejected by Chainflip; funds not recoverable",
+      message: result.depositFailure.reason?.message ?? RAIL_FAILED_MESSAGE,
       ...code(result.depositFailure),
     };
   }
-  if (result.swapEgressFailure) {
-    return {
-      kind: result.swapEgressFailure.kind ?? "egress-failed",
-      message: result.swapEgressFailure.reason?.message ?? CHAINFLIP_SEND_FAILED_MESSAGE,
-      ...code(result.swapEgressFailure),
-    };
-  }
-  if (result.fallbackEgress) {
-    return {
-      kind: "fallback-egress",
-      message: CHAINFLIP_SEND_FAILED_MESSAGE,
-    };
-  }
-  // Plain SDK failed: Chainflip streams the deposit back to the refund address.
-  return {
-    kind: "refunded",
-    message: "The deposit didn't go through. It is being returned to your recovery address.",
-  };
+  return { kind: "unknown", message: RAIL_FAILED_MESSAGE };
 }
 
 export function railFromSwapStatus<P extends string>(

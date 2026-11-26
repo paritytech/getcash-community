@@ -1,9 +1,10 @@
-// A stored top-up under a swap source has no rail to run on: no world is built for it, so the
-// worker is handed nothing and it cannot be opened. Its record and its row stay.
+// A stored top-up under a source this build no longer serves (a Chainflip swap from before the
+// removal) has no rail to run on: no world is built for it, so the worker is handed nothing and it
+// cannot be opened. Its record stays in storage, untouched, and no list shows it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { setRequestsClock } from "../app/funding/requests/model";
 import {
   createMemoryKeyedStorage,
@@ -47,7 +48,7 @@ const SWAP: ActiveFlowRecord = { ...awaitingDepositCryptoRecord, sourceId: "btc"
 const REF = requestRefOf("btc", 3);
 const REFUSED = "live mode does not serve source 'btc'";
 
-describe("a stored top-up under a swap source", () => {
+describe("a stored top-up under a source this build no longer serves", () => {
   beforeEach(async () => {
     setActivePinia(createPinia());
     const host = createMemoryKeyedStorage();
@@ -67,7 +68,7 @@ describe("a stored top-up under a swap source", () => {
     setRequestsClock(Date.now);
   });
 
-  it("is kept through boot and stays on the list, with no world to hand over or open", async () => {
+  it("is kept through boot, off the list, with no world to hand over or open", async () => {
     const requests = useRequestsStore();
     const session = useSessionStore();
 
@@ -79,13 +80,8 @@ describe("a stored top-up under a swap source", () => {
     expect(requests.foregroundRecord).toBeNull();
     expect(session.resuming).toBe(false);
 
-    expect(projectChainflipTopUps(requests.openTopUps, FIXTURE_NOW)).toMatchObject([
-      {
-        id: "crypto:btc#3",
-        details: { network: { label: "Bitcoin" }, provider: { label: "Chainflip" } },
-        state: { kind: "awaiting-transfer", status: "Waiting for your deposit" },
-      },
-    ]);
+    expect(requests.entries[requestRefKey(REF)]).toBeDefined();
+    expect(projectCryptoTopUps(requests.openTopUps, FIXTURE_NOW)).toEqual([]);
     // Joins the background pass the open started.
     await requests.reconcile("refresh");
   });

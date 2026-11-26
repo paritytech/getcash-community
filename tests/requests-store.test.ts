@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { projectMeldTopUps } from "../app/funding/meld-top-ups";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import { reduce } from "../app/funding/requests/reducer";
@@ -55,8 +55,6 @@ vi.mock("../lib/coinage-live", () => ({
     session: { ready: Promise.resolve(), peek: () => null, dispose() {} },
     sourceId: args.sourceId ?? "dot-assethub",
     tradeN: args.tradeN ?? 1,
-    refundAddress: null,
-    revealRefundKey: () => null,
     dispose() {},
   }),
 }));
@@ -241,8 +239,8 @@ describe("requests store", () => {
           ? reduce(migrated(record), { source: "clock", at: FIXTURE_NOW })
           : migrated(record),
       );
-    expect(projectChainflipTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
-      projectChainflipTopUps(open, FIXTURE_NOW),
+    expect(projectCryptoTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
+      projectCryptoTopUps(open, FIXTURE_NOW),
     );
     expect(projectMeldTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
       projectMeldTopUps(open, FIXTURE_NOW),
@@ -462,35 +460,6 @@ describe("requests store", () => {
     await requests.flush();
     expect(host.writesTo(key)).toBe(before + 3);
     expect(await stored(AWAITING_REF)).toMatchObject({ rev: 4 });
-  });
-
-  it("a Chainflip read that moves only Chainflip's clock is witness-only", async () => {
-    const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
-    const read = (time: number): Observation => ({
-      source: "core",
-      at: time,
-      state: {
-        phase: "swapping",
-        sourceId: "dot-assethub",
-        quote: null,
-        deposit: { address: "bc1q", amount: 1n, formatted: "1", assetSymbol: "BTC", expiresAt: 0 },
-        swap: "receiving",
-        progress: { depositConfirmations: 1, lastStatechainUpdateAt: time },
-      },
-    });
-    await requests.observe(AWAITING_REF, read(at(1)));
-    await requests.flush();
-    const rev = requests.get(AWAITING_REF)?.rev;
-    const writes = host.writesTo(requestKey(AWAITING_REF));
-
-    await requests.observe(AWAITING_REF, read(at(2)));
-    expect(requests.get(AWAITING_REF)).toMatchObject({
-      rev,
-      witnesses: { chainflip: { lastStatechainUpdateAt: at(2) } },
-    });
-    expect(host.writesTo(requestKey(AWAITING_REF))).toBe(writes);
-    expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(false);
   });
 
   it("a pressed Skip is persisted critically and survives a re-open", async () => {

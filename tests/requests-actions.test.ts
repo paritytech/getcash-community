@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { PaymentState } from "@getsome/core";
 import type { MeldCancelResult } from "@getsome/meld";
-import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { fundingSelectorConfig } from "../app/funding/config";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -106,7 +106,7 @@ const workerDone = (time: number, fundsSeenAt: number): Observation => ({
 const providerReceiving = (time: number): Observation => ({
   source: "provider",
   at: time,
-  provider: "chainflip",
+  provider: "meld",
   result: { status: "receiving" },
 });
 const workerFailed = (time: number, fundsSeenAt: number): Observation => ({
@@ -268,7 +268,7 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(requests.foregroundTimeline(at(1))).toBeUndefined();
 
     await requests.observe(AWAITING_REF, workerSwap(at(2)));
-    const [row] = projectChainflipTopUps(requests.openTopUps, at(3), requests.topUpTimelineOf);
+    const [row] = projectCryptoTopUps(requests.openTopUps, at(3), requests.topUpTimelineOf);
     const listed = row?.timeline?.view;
     expect(listed).toMatchObject({ state: "active", phase: 3 });
     expect(listed?.lines[3]).toBeGreaterThan(0);
@@ -317,7 +317,7 @@ describe("requests store: foreground, clock and user actions", () => {
       const record = requests.get(AWAITING_REF);
       if (record?.kind !== "top-up") throw new Error("the top-up is gone");
       const { past } = projectFundingTopUps(
-        projectChainflipTopUps([record], at(5)),
+        projectCryptoTopUps([record], at(5)),
         fundingSelectorConfig,
       );
       const live = requests.foregroundTimeline(at(5))?.view;
@@ -325,41 +325,6 @@ describe("requests store: foreground, clock and user actions", () => {
       expect(past[0]?.timeline?.view).toEqual(live);
     },
   );
-
-  it("draws a swap from Bitcoin the same live and from history", async () => {
-    setRequestsClock(() => FIXTURE_NOW);
-    const requests = useRequestsStore();
-    const swap: ActiveFlowRecord = { ...awaitingDepositCryptoRecord, sourceId: "btc" };
-    const ref = refOf(swap);
-    await requests.create(ref, migrated(swap));
-    requests.setForeground(ref);
-    await requests.observe(ref, {
-      source: "core",
-      at: at(2),
-      state: {
-        phase: "swapping",
-        sourceId: "btc",
-        quote: null,
-        deposit: DEPOSIT,
-        swap: "receiving",
-        progress: { requiredConfirmations: 3, depositConfirmations: 1 },
-      },
-    });
-
-    const record = requests.get(ref);
-    if (record?.kind !== "top-up") throw new Error("the top-up is gone");
-    const { inProgress } = projectFundingTopUps(
-      projectChainflipTopUps([record], at(3)),
-      fundingSelectorConfig,
-    );
-    const live = requests.foregroundTimeline(at(3));
-    expect(live).toMatchObject({
-      view: { state: "active", phase: 0 },
-      message: { text: "Confirming your BTC deposit" },
-      detail: "Confirmation 2 of 3",
-    });
-    expect(inProgress[0]?.timeline).toEqual(live);
-  });
 
   it("cancel refuses on funds in the burner read", async () => {
     setRequestsClock(() => FIXTURE_NOW);

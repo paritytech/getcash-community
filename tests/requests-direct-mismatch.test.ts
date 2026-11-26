@@ -1,8 +1,8 @@
 // A Polkadot deposit is only a deposit once the picked token reaches what the worker converts at.
 // Less than that, or a balance in another direct token, keeps the request waiting and records what
 // arrived. It still expires at its deadline, and a short balance never brings an ended one back.
-// Accepting a mismatch rewrites the request's terms. Chainflip and Meld picks are left alone:
-// there any balance is the deposit, since the provider delivers what was asked.
+// Accepting a mismatch rewrites the request's terms. Meld picks are left alone: there any balance
+// is the deposit, since the provider delivers what was asked.
 
 import { describe, expect, it } from "vitest";
 import { DIRECT_SLIPPAGE_PCT, withHeadroom } from "@getsome/funding";
@@ -239,9 +239,9 @@ describe("a Polkadot deposit", () => {
     expect(reduce(accepted, reading(8_000_000n, 30, null)).status.kind).toBe("deposit-seen");
   });
 
-  it("gives a Chainflip pick none of this: any balance is its deposit", () => {
-    const btc = reduce(record("btc", { asset: "BTC", chain: "Bitcoin" }), reading(1n, 10));
-    expect(btc.status.kind).toBe("deposit-seen");
-    expect(btc.depositMismatch).toBeUndefined();
+  it("gives a Meld pick none of this: any balance is its deposit", () => {
+    const card = reduce(record("meld-card", { asset: "DOT", chain: "Polkadot" }), reading(1n, 10));
+    expect(card.status.kind).toBe("deposit-seen");
+    expect(card.depositMismatch).toBeUndefined();
   });
 });

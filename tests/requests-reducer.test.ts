@@ -1,8 +1,7 @@
 // The top-up transition table through the reducer: one `it` per transition of the design's table.
 
 import { describe, expect, it } from "vitest";
-import type { ChainflipProgressFacts, PaymentState, SwapStatusResult } from "@getsome/core";
-import { chainflipObserved } from "../app/funding/requests/facts";
+import type { PaymentState, SwapStatusResult } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   buyerPaid,
@@ -11,7 +10,6 @@ import {
   FUNDING_HELD_REASON,
   paymentWatchUntil,
   PROVISIONAL_REVERT_MS,
-  type ChainflipFacts,
   type DepositSeenVia,
   type Observation,
   type RequestRecord,
@@ -45,12 +43,6 @@ const DECLINED = "Your bank declined the payment. Check your card details or try
 const declined: SwapStatusResult = {
   status: "failed",
   depositFailure: { reason: { code: "declined", message: DECLINED }, kind: "deposit-rejected" },
-};
-const RETURNED = "The deposit didn't go through. It is being returned to your recovery address.";
-/** A Chainflip refund as `recordFailureReason` reports it through the provider path. */
-const returned: SwapStatusResult = {
-  status: "failed",
-  depositFailure: { reason: { message: RETURNED }, kind: "refunded" },
 };
 
 /** A fixture as the reducer first sees it: migrated at the fixture instant. */
@@ -318,26 +310,6 @@ describe("request reducer: top-up transitions", () => {
     expect(railOnly.failure).toBeUndefined();
     expect(railOnly.failureReason).toBeUndefined();
     expect(railOnly.rail.stage).toBe("failed");
-
-    // A refund-like failure marks the record refunded, as core's own failure does. The record's
-    // rail keeps its own provider.
-    const refunded = reduce(awaiting(), {
-      source: "provider",
-      at: at(1),
-      provider: "chainflip",
-      result: returned,
-    });
-    expect(refunded.status).toEqual({ kind: "failed", at: at(1), recoverable: false });
-    expect(refunded.refunded).toBe(true);
-    expect(refunded.failure).toEqual({
-      kind: "refunded",
-      step: "deposit",
-      message: RETURNED,
-      recoverable: false,
-      refunded: true,
-    });
-    expect(refunded.failureReason).toBe(RETURNED);
-    expect(refunded.rail.provider).toBe("manual");
   });
 
   it("provider received then failed → failed non-recoverable; after a worker sighting the failure is rail only", () => {
@@ -794,25 +766,18 @@ describe("request reducer: top-up transitions", () => {
 
 describe("request reducer: top-up timeline facts", () => {
   type Swap = Extract<PaymentState, { phase: "swapping" }>["swap"];
-  const chainflipRecord = () => migrated(awaitingDepositCryptoRecord, requestRefOf("btc", 3));
-  const deposit = { address: "bc1q", amount: 1n, formatted: "1", assetSymbol: "BTC", expiresAt: 0 };
-  const swapping = (
-    time: number,
-    swap: Swap,
-    progress?: ChainflipProgressFacts,
-    egressScheduledAt?: number,
-  ): Observation => ({
+  const deposit = {
+    address: "5Burner",
+    amount: 1n,
+    formatted: "1",
+    assetSymbol: "DOT",
+    expiresAt: 0,
+  };
+  /** Core's view of the rail, as a session reports it before any provider poll has. */
+  const swapping = (time: number, swap: Swap): Observation => ({
     source: "core",
     at: time,
-    state: {
-      phase: "swapping",
-      sourceId: "btc",
-      quote: null,
-      deposit,
-      swap,
-      progress,
-      egressScheduledAt,
-    },
+    state: { phase: "swapping", sourceId: "dot-assethub", quote: null, deposit, swap },
   });
   const topUp = (record: RequestRecord): TopUpRecord => {
     if (record.kind !== "top-up") throw new Error("not a top-up");
@@ -836,7 +801,7 @@ describe("request reducer: top-up timeline facts", () => {
 
   it("stamps each provider status at its first read; a later read never moves a stamp", () => {
     const statuses: Swap[] = ["receiving", "swapping", "swapping", "sending", "sent", "complete"];
-    const chainflip = statuses.map((status, i) => swapping(at(i + 1), status));
+    const core = statuses.map((status, i) => swapping(at(i + 1), status));
     const meldStatuses: Swap[] = ["waiting", "receiving", "sending", "receiving", "sending"];
     // The second `receiving` is Meld's ERROR after SETTLING.
     const meldReads = meldStatuses.map((status, i) => ({
@@ -845,8 +810,8 @@ describe("request reducer: top-up timeline facts", () => {
     }));
     const cases: [RequestRecord, Observation[], TopUpRecord["observedAt"]][] = [
       [
-        chainflipRecord(),
-        chainflip,
+        awaiting(),
+        core,
         { receiving: at(1), swapping: at(2), sending: at(4), sent: at(5), complete: at(6) },
       ],
       [
@@ -860,80 +825,22 @@ describe("request reducer: top-up timeline facts", () => {
     }
   });
 
-  it("keeps Chainflip's progress facts, and no later read moves one back", () => {
-    const first = {
-      depositConfirmations: 1,
-      requiredConfirmations: 3,
-      estimatedDurationsSeconds: { deposit: 600, swap: 12, egress: 30 },
-    };
-    const second = { depositConfirmations: 2, boostedAt: 5 };
-    const swap = {
-      chunks: { executed: 1, remaining: 3 },
-      swapScheduledAt: 7,
-      estimatedDurationsSeconds: { swap: 15 },
-      lastStatechainUpdateAt: 10,
-    };
-    // Fewer confirmations and chunks, an earlier schedule and clock and a second boost move
-    // nothing back.
-    const stale = {
-      depositConfirmations: 1,
-      boostedAt: 6,
-      swapScheduledAt: 6,
-      chunks: { executed: 0, remaining: 4 },
-      swapRescheduledAt: 8,
-      lastStatechainUpdateAt: 9,
-    };
-    const factsAndClock = (record: TopUpRecord) => ({
-      ...record.chainflip,
-      ...record.witnesses.chainflip,
-    });
-    replay(chainflipRecord(), factsAndClock, [
-      [swapping(at(1), "receiving", first), { ...first, confirmationsAt: at(1) }],
-      [swapping(at(2), "receiving", second), { ...second, confirmationsAt: at(2) }],
-      [
-        swapping(at(3), "swapping", swap),
-        {
-          ...swap,
-          chunksAt: at(3),
-          estimatedDurationsSeconds: { deposit: 600, swap: 15, egress: 30 },
-        },
-      ],
-      [swapping(at(4), "swapping", stale), { swapRescheduledAt: 8 }],
-      [swapping(at(5), "sending", undefined, 9), { egressScheduledAt: 9 }],
-    ]);
-  });
-
-  it("returns the record a repeated Chainflip read leaves as it was; the clock is a witness", () => {
-    const progress = (clock: number): ChainflipProgressFacts => ({
-      depositConfirmations: 1,
-      chunks: { executed: 1, remaining: 3 },
-      estimatedDurationsSeconds: { swap: 12 },
-      lastStatechainUpdateAt: clock,
-    });
-    const first = chainflipObserved(topUp(chainflipRecord()), { progress: progress(10) }, at(1));
-    expect(chainflipObserved(first, { progress: progress(10) }, at(2))).toBe(first);
-
-    const ticked = chainflipObserved(first, { progress: progress(11) }, at(3));
-    expect(ticked.chainflip).toBe(first.chainflip);
-    expect(ticked.witnesses.chainflip).toEqual({ lastStatechainUpdateAt: 11 });
-  });
-
-  it("keeps Chainflip's code for a rejected deposit on the failure", () => {
+  it("keeps the rail's code for a rejected deposit on the failure", () => {
     const failure = {
       kind: "deposit-rejected",
       step: "deposit",
-      message: "below minimum",
+      message: "declined",
       recoverable: false,
-      code: "BelowMinimumDeposit",
+      code: "declined",
     } as const;
-    const state: PaymentState = { phase: "failed", sourceId: "btc", failure };
-    const record = reduce(chainflipRecord(), { source: "core", at: at(1), state });
-    expect(topUp(record).failure?.code).toBe("BelowMinimumDeposit");
+    const state: PaymentState = { phase: "failed", sourceId: "dot-assethub", failure };
+    const record = reduce(awaiting(), { source: "core", at: at(1), state });
+    expect(topUp(record).failure?.code).toBe("declined");
   });
 
   it.each([
     ["Meld", card, meld(at(1), { status: "receiving" }), "rail"],
-    ["Chainflip", chainflipRecord, swapping(at(1), "receiving"), "core"],
+    ["core", awaiting, swapping(at(1), "receiving"), "core"],
   ] satisfies [string, () => RequestRecord, Observation, DepositSeenVia][])(
     "stamps the app's burner reads after %s saw the deposit; only a final one reaches Received",
     (_, start, providerSaw, via) => {

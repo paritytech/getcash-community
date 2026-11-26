@@ -13,11 +13,6 @@ export type FundingTopUpState =
       /** The deposit window closed with nothing paid, rather than a payment going wrong. A journey
        *  opened from history has only the record to tell the two endings apart. */
       expired?: boolean;
-      refunded?: boolean;
-      /** What came back and the transaction that returned it, for a refund with no live request
-       *  left to ask. Absent on records written before either was kept. */
-      refundAmount?: string;
-      refundTxRef?: string;
       /** What the Host credited before the claim failed. */
       creditedAmount?: string;
     };
@@ -75,8 +70,8 @@ export type FundingTopUp = Readonly<{
    *  not (yet) live in the store — and for the fee breakdown behind it, which is why the fee's
    *  own components ride along. */
   quote?: StoredQuote;
-  /** The request this top-up is, as the store names it. Lets a screen reach the request's own
-   *  derived material — the refund key — without a live world behind it. */
+  /** The request this top-up is, as the store names it, so a screen can reach the request without
+   *  a live world behind it. */
   request?: Readonly<{ sourceId: string; tradeN: number }>;
   /** The rail's own id for the payment, as the buyer would quote it to support. Persisted with
    *  the request, so a journey opened long after the session that made it still carries it. */
@@ -114,7 +109,7 @@ export type FailedFundingTopUp = FundingTopUpBase &
   Readonly<{
     state: {
       kind: "failed";
-      status: "Payment failed" | "Refunded" | "Expired";
+      status: "Payment failed" | "Expired";
       at: number;
       reason?: string;
     };
@@ -211,11 +206,7 @@ export function projectFundingTopUps(
             kind: "failed",
             // "Payment failed" claims a payment existed and went wrong; an expiry means nobody
             // ever paid, and the row must not contradict the journey it opens.
-            status: topUp.state.expired
-              ? "Expired"
-              : topUp.state.refunded
-                ? "Refunded"
-                : "Payment failed",
+            status: topUp.state.expired ? "Expired" : "Payment failed",
             at: topUp.state.at ?? topUp.startedAt,
             ...(topUp.state.reason === undefined ? {} : { reason: topUp.state.reason }),
           },

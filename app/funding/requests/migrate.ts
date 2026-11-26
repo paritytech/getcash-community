@@ -1,7 +1,7 @@
 // Reads a stored record into the schema 2 shape. A legacy `ActiveFlowRecord` is upgraded from
 // its fields, which are kept as they are; a schema 2 top-up is taken as stored, with any missing
 // additive field filled by the same rules. A withdrawal has no legacy form: it is taken as
-// stored when it carries what the reducer reads, and dropped otherwise.
+// stored when it carries what the reducer reads on a rail this build runs, and dropped otherwise.
 
 import type { ActiveFlowRecord } from "../../stores/session";
 import { toCashBase } from "../../utils/cash";
@@ -10,6 +10,7 @@ import {
   DEFAULT_DEPOSIT_WINDOW_MS,
   DEPOSIT_EXPIRED_REASON,
   effectiveSourceId,
+  isWithdrawalRail,
   railProviderOf,
   routeOf,
   type RequestFailure,
@@ -32,8 +33,8 @@ function isStoredRecord(raw: unknown): raw is StoredRecord {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-/** A stored withdrawal with every field the reducer and the drivers read. The key the record
- *  was read under is its identity. */
+/** A stored withdrawal with every field the reducer and the drivers read, on a rail this build
+ *  runs. The key the record was read under is its identity. */
 function withdrawalRecord(raw: StoredRecord, ref: RequestRef): WithdrawalRecord | null {
   const stored = raw as unknown as Partial<WithdrawalRecord>;
   if (
@@ -47,6 +48,7 @@ function withdrawalRecord(raw: StoredRecord, ref: RequestRef): WithdrawalRecord 
     !isObject(stored.destination) ||
     !isObject(stored.deadline) ||
     !isObject(stored.rail) ||
+    !isWithdrawalRail(stored.rail.provider) ||
     typeof stored.startedAt !== "number"
   ) {
     return null;
@@ -122,20 +124,10 @@ function legacyStatus(raw: ActiveFlowRecord): { status: RequestStatus; failure?:
     return {
       status: { kind: "failed", at: raw.startedAt, recoverable: false },
       failure: {
-        kind: raw.refunded ? "refunded" : "unknown",
+        kind: "unknown",
         step: "deposit",
         message: raw.failureReason,
         recoverable: false,
-        ...(raw.refunded === undefined ? {} : { refunded: raw.refunded }),
-        // A legacy record kept the refund's figures flat; the record keeps them on the failure.
-        ...(raw.refundAmount === undefined && raw.refundTxRef === undefined
-          ? {}
-          : {
-              refund: {
-                ...(raw.refundAmount === undefined ? {} : { amount: raw.refundAmount }),
-                ...(raw.refundTxRef === undefined ? {} : { txRef: raw.refundTxRef }),
-              },
-            }),
       },
     };
   }
