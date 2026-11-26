@@ -148,8 +148,6 @@ describe("a hosted Polkadot pick", () => {
     await session.start();
     expect(requests.phase).toBe("awaiting-deposit");
     expect(requests.foregroundRecord).toMatchObject({ rail: { provider: "manual" } });
-    // A direct deposit has no refund leg.
-    expect(session.refundAddress).toBeNull();
   });
 
   it("fails the quote its world refuses, and lets the world go", async () => {

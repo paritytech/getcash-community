@@ -94,8 +94,8 @@ const busy = computed(() => Boolean(props.openingTopUpId));
           </ul>
         </section>
 
-        <!-- A finished top-up opens its journey too: what it cost, and for a refunded one the
-             way to the recovery guide. -->
+        <!-- A finished top-up opens its journey too: what it cost, and for one whose deposit
+             stayed on its own account the way to the recovery guide. -->
         <section v-if="past.length > 0" :class="{ 'mt-8': inProgress.length > 0 }">
           <h2 class="text-heading-l text-fg-primary">Completed</h2>
           <ul class="mt-4 flex flex-col gap-2">

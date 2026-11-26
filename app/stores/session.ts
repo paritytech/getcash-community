@@ -6,14 +6,13 @@ import { computed, ref, shallowRef, watch } from "vue";
 import {
   NETWORK,
   TOKENS,
-  type ChainflipRail,
+  type FundingRail,
   type MeldAssetId,
   type PaymentState,
   type Quote,
   type SourceId,
   type TokenSpec,
 } from "@getsome/core";
-import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
   NoCashTransferError,
@@ -67,7 +66,6 @@ import {
 } from "~~/lib/supported";
 import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
 import { estimateSourceFromCash } from "~~/lib/demo-rates";
-import type { SourcePriceResult } from "~~/lib/source-price";
 import {
   createMockCoinageSession,
   depositTokenOf,
@@ -117,7 +115,7 @@ function meldTokenOf(token: TokenSpec): MeldRailToken {
 type LiveQuote = { world: HostedCoinageWorld; quote: Quote };
 
 /** A Meld rail for one payment method. */
-type MeldMethodRail = { paymentMethodType: string; rail: ChainflipRail };
+type MeldMethodRail = { paymentMethodType: string; rail: FundingRail };
 
 /** A Meld quote on a route, with the region's corridor for that route's token and the country
  *  it was priced in. */
@@ -167,15 +165,6 @@ export interface ActiveFlowRecord {
    *  concluded journey names it, and a refund is theirs to trace. */
   meldServiceProvider?: string;
   failureReason?: string;
-  /** True when the failed swap was refunded to the request's own key. */
-  refunded?: boolean;
-  /** What actually came back, in the source asset's BASE units as the rail reports them (not a
-   *  decimal string — `formatSourceAmount` renders it), and the chain transaction that returned
-   *  it. Less than the deposit: the refund pays its own network fees. Both live on the request's
-   *  `refund` progress, so without them a journey reopened from history can say only that a refund
-   *  happened, not how much or where to look for it. */
-  refundAmount?: string;
-  refundTxRef?: string;
   /** Timestamp of the user's cancel. Marks a tombstone: hidden from every list, never driven,
    *  resurrected or deleted by the sweep. */
   cancelledAt?: number;
@@ -369,7 +358,7 @@ export const useSessionStore = defineStore("session", () => {
   const lastState = shallowRef<PaymentState | null>(null);
   const amountHuman = ref("");
   const amountBase = ref<bigint | null>(null);
-  /** Pay method: crypto (Chainflip/manual) or a Meld fiat rail (card / bank). */
+  /** Pay method: crypto (a direct deposit on Asset Hub) or a Meld fiat rail (card / bank). */
   const method = ref<"crypto" | "card" | "bank">("crypto");
   /** Buyer's country for the Meld rail as an ISO code; null means the US default. */
   const meldCountry = ref<string | null>(null);
@@ -411,8 +400,6 @@ export const useSessionStore = defineStore("session", () => {
   const meldPayUrlPending = ref(false);
   /** Latched once the settled payment has been credited to the coinage leg. */
   let meldCredited = false;
-  /** The swap network's price for the selected source; `pending` while asking. */
-  const sourcePrice = shallowRef<SourcePriceResult | null>(null);
   const loading = ref(false);
   const resuming = ref(false);
   const faucetState = ref<"idle" | "funding" | "sent">("idle");
@@ -462,34 +449,6 @@ export const useSessionStore = defineStore("session", () => {
   );
   /** The on-screen request has its live session, so a cancel can clear the slot it holds. */
   const cancelReady = computed(() => live.value !== null || mock.value !== null);
-  /** Where a failed swap refunds the request on screen; null on the manual rail. */
-  const refundAddress = computed(() => (mock.value ?? live.value)?.refundAddress ?? null);
-  /** Reads the refund key from the world on demand. */
-  function revealRefundKey(): RefundKey | null {
-    return (mock.value ?? live.value)?.revealRefundKey() ?? null;
-  }
-
-  /**
-   * The recovery key for a request that is not on screen, re-derived from its own identity.
-   *
-   * For a refund opened out of history, where there is no world to ask. The host derives the same
-   * seed it did when the request was opened, so this is the key the rail was handed. Null off-host
-   * — a dev build has no entropy root, and the deck's scenes install a mock world instead.
-   */
-  async function recoverRefundKeyFor(sourceId: string, tradeN: number): Promise<RefundKey | null> {
-    if (!isHosted()) return null;
-    try {
-      const { probeRefundKey } = await import("~~/lib/coinage-live");
-      // A record's source id is a plain string on disk, and nothing narrows it here because the
-      // derivation fails closed on its own: an id with no refund chain, or one the source registry
-      // does not know, comes back null rather than deriving against the wrong chain.
-      return await probeRefundKey(sourceId as SourceId, tradeN);
-    } catch (e) {
-      devLog("coinage", "refund key recovery failed", e, "warn");
-      return null;
-    }
-  }
-
   /** The trade number the next mock request takes: one past the highest this source has a record
    *  for, so a browser session's requests never share a key. */
   function nextMockTradeN(sourceId: string): number {
@@ -504,7 +463,6 @@ export const useSessionStore = defineStore("session", () => {
     amountHuman.value = human;
     amountBase.value = toCashBase(human);
     quoted.value = null;
-    sourcePrice.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
     quoteAmountRejected.value = false;
@@ -554,8 +512,6 @@ export const useSessionStore = defineStore("session", () => {
     live.value = null;
     lastState.value = null;
     quoted.value = null;
-    // Cleared with the epoch bump: a `pending` set by the outgoing quote is never resolved.
-    sourcePrice.value = null;
     faucetState.value = "idle";
     foregroundRef = null;
     requests.leave();
@@ -659,7 +615,7 @@ export const useSessionStore = defineStore("session", () => {
     staleFlowMs: number,
     route: ConversionRoute,
     tradeN?: number,
-    rail?: ChainflipRail,
+    rail?: FundingRail,
     sourceId?: SourceId,
   ): Promise<HostedCoinageWorld | null> {
     // No account lookup: the burner comes from the host's entropy root and the claim credits
@@ -1421,9 +1377,6 @@ export const useSessionStore = defineStore("session", () => {
     await quoting;
     const world = mock.value ?? live.value;
     if (!world || !quoted.value) return;
-    // The channel refunds to this request's own key on the source chain; a rail with no refund
-    // leg gets none.
-    const { refundAddress } = world;
     const startedAt = Date.now();
     // The request's identity for every record write from here on.
     foregroundRef = requestRefOf(world.sourceId, world.tradeN);
@@ -1434,7 +1387,7 @@ export const useSessionStore = defineStore("session", () => {
     sub = world.session.subscribe((state) => {
       observePaymentState(state, ref);
     });
-    await world.session.start(refundAddress === null ? {} : { refundAddress });
+    await world.session.start();
     // The slot exists, so the number is taken for good: the next request derives a fresh burner.
     await world.advanceTrade();
     await persistActiveFlow(startedAt);
@@ -1504,16 +1457,6 @@ export const useSessionStore = defineStore("session", () => {
   function sourceDisplayForRecord(): { sourceAmount: string; sourceSymbol: string } | null {
     const sourceSymbol = lastQuoteParams?.asset ?? quoted.value?.sourceAsset;
     if (!sourceSymbol) return null;
-    const priced = sourcePrice.value;
-    if (priced?.kind === "price") {
-      return { sourceAmount: priced.price.formatted, sourceSymbol };
-    }
-    if (priced?.kind === "minimum") {
-      return {
-        sourceAmount: `≈ ${priced.minimum.neededFormatted}`,
-        sourceSymbol: priced.minimum.assetSymbol,
-      };
-    }
     // A direct Polkadot pick is paid in the token the rail quoted: the figure is exact, not an
     // estimate.
     const picked = lastQuoteParams
@@ -1609,7 +1552,6 @@ export const useSessionStore = defineStore("session", () => {
               },
         handoff: await world.handoffPayload(),
         conversion: world.route,
-        refundAddress: world.refundAddress ?? undefined,
         status: { kind: "awaiting-deposit" },
         rail: {
           provider: railProviderOf(world.sourceId),
@@ -1794,7 +1736,7 @@ export const useSessionStore = defineStore("session", () => {
       /**
        * The browser has no host to derive this request's burner from, so there is no hosted world
        * to rebuild. A mock one under the record's own source and trade number gives the screens
-       * what they ask a world for — a cancel to perform, a refund key to reveal, a harness the
+       * what they ask a world for — a cancel to perform, a harness the
        * demo's Skip can credit — so a top-up opened from the list is as live off-host as it is
        * inside the app. Without this every row answered "Top-up unavailable", which was never
        * true: the record is right there, and the mock flow that wrote it persists the same shape.
@@ -2551,7 +2493,6 @@ export const useSessionStore = defineStore("session", () => {
     meldResumeWidgetUrl,
     meldPayUrlPending,
     meldPayUrl,
-    sourcePrice,
     loading,
     resuming,
     faucetState,
@@ -2561,9 +2502,6 @@ export const useSessionStore = defineStore("session", () => {
     cancelNotice,
     mock,
     live,
-    refundAddress,
-    revealRefundKey,
-    recoverRefundKeyFor,
     // derived helpers
     isFaucetConfigured,
     // actions

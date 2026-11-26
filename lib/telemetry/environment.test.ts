@@ -1,4 +1,3 @@
-import { deriveRefundKey, REFUND_CHAINS } from "@getsome/ephemeral";
 import { describe, expect, it } from "vitest";
 import { environmentFor, ingestHost } from "./environment";
 import { describeError, maskSafe, reasonOf, safeStringify, scrubText, scrubUrl } from "./scrub";
@@ -102,10 +101,20 @@ describe("the text guards", () => {
     expect(scrubbed).not.toMatch(/[0-9a-f]{8}/);
   });
 
-  it("As a person topping up, a log line names a signing key or a refund key by mistake and it never leaves, while the refund address stays", () => {
-    const seed = new Uint8Array(32).fill(7);
-    const keys = REFUND_CHAINS.map((chain) => deriveRefundKey(chain, seed));
+  it("As a person topping up, a log line names a signing key or a wallet key by mistake and it never leaves, while the address stays", () => {
     const signingKey = safeStringify({ secretKey: new Uint8Array(64).fill(9) });
+    // An address and a secret key each, in the encodings wallets use.
+    const keys = [
+      { address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db", secret: `0x${"7".repeat(64)}` },
+      {
+        address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+        secret: "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn",
+      },
+      {
+        address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        secret: "5".repeat(43) + "J".repeat(44),
+      },
+    ];
 
     const scrubbed = keys.map((key) => scrubText(`${key.address} ${key.secret}`));
 

@@ -1,18 +1,16 @@
-// The reveal state behind a return-funds guide: the address on sight, the secret behind a tap.
+// The reveal state behind a recovery guide: the address on sight, the secret behind a tap.
 //
-// Shared by the top-up and withdrawal guides because the mistake it prevents is the same one on
-// both: address and secret must come out of a single derivation. A screen that sources them apart
-// can show a funded address beside a key that opens a different, empty account — on the one screen
+// Address and secret must come out of a single derivation. A screen that sources them apart can
+// show a funded address beside a key that opens a different, empty account — on the one screen
 // whose job is getting money back.
 
 import { computed, readonly, ref, watch } from "vue";
 import { devLog } from "~~/lib/log";
 
-/** Address and secret from one derivation. `RefundKey` and `WithdrawRefundKey` both satisfy it. */
+/** Address and secret from one derivation. */
 export interface RecoveryKeyMaterial {
   readonly address: string;
   readonly secret: string;
-  readonly format?: "wif" | "hex" | "base58";
 }
 
 export interface RecoveryKeyOptions {
@@ -101,7 +99,6 @@ export function useRecoveryKey(options: RecoveryKeyOptions) {
     address: computed(() => held.value?.address ?? knownAddress.value),
     /** Null until revealed: deriving the address up front must not put the secret on the screen. */
     secret: computed(() => (masked.value ? null : (held.value?.secret ?? null))),
-    format: computed(() => held.value?.format),
     masked: readonly(masked),
     /** Whether there is anything to show; false leaves the guide with no address and no key. */
     material: computed(() => held.value !== null || knownAddress.value !== null),

@@ -3,14 +3,13 @@
 // This module owns the hand-off to the worker and the settle and isSettled seams.
 
 import {
-  createFlowStore,
   createPayment,
   TOKENS,
   type ActionCall,
-  type ChainflipRail,
   type ChainPort,
   type EntropyPort,
   type EphemeralSigner,
+  type FundingRail,
   type HandoffAction,
   type PaymentSession,
   type SettlementAsset,
@@ -20,16 +19,7 @@ import {
   type Subscription,
   type TokenSpec,
 } from "@getsome/core";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import {
-  deriveKeypairWithSecret,
-  deriveRefundKey,
-  isRefundChain,
-  toHandoffKey,
-  type BitcoinNetwork,
-  type RefundChain,
-  type RefundKey,
-} from "@getsome/ephemeral";
+import { deriveKeypairWithSecret, toHandoffKey } from "@getsome/ephemeral";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
@@ -71,11 +61,9 @@ import {
   type FakeHandoff,
   type Harness,
 } from "@getsome/testing";
-import { NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import { devLog } from "./log";
 
-const BITCOIN_NETWORK: BitcoinNetwork = NETWORK === "mainnet" ? "mainnet" : "testnet";
 const PURSE_BALANCE_TIMEOUT_MS = 10_000;
 
 interface PaymentsLike {
@@ -333,133 +321,6 @@ export function tradeEntropyLabel(sourceId: string, n: number): Uint8Array {
   return new TextEncoder().encode(tradeEntropyLabelString(sourceId, n));
 }
 
-/** The refund key's entropy label for trade `n`. */
-export function refundEntropyLabel(sourceId: string, n: number): Uint8Array {
-  return new TextEncoder().encode(`onramp:rf:${sourceId}:${n}`);
-}
-
-export function refundStorageKey(sourceId: string, n: number): string {
-  return `coinage:refund:${sourceId}:${n}`;
-}
-
-/** The chain a source's refund key lives on; null for the manual rail. */
-export function refundChainFor(sourceId: SourceId): RefundChain | null {
-  const chain = SOURCE_CONFIG_BY_ID.get(sourceId)?.chain;
-  return chain !== undefined && isRefundChain(chain) ? chain : null;
-}
-
-/**
- * Derives trade `n`'s refund key and records its address. A stored record that disagrees
- * with the derivation is refused. The secret is held in memory only.
- */
-export async function provisionRefundKey(
-  deps: { entropy: Pick<EntropyPort, "deriveSeed">; storage: StorageLike },
-  sourceId: SourceId,
-  n: number,
-  bitcoinNetwork: BitcoinNetwork,
-): Promise<RefundKey | null> {
-  const chain = refundChainFor(sourceId);
-  if (chain === null) return null;
-  const seed = await deps.entropy.deriveSeed(refundEntropyLabel(sourceId, n));
-  const key = deriveRefundKey(chain, seed, { bitcoinNetwork });
-  if (!SOURCE_CONFIG_BY_ID.get(sourceId)?.validateRefundAddress(key.address)) {
-    throw new Error(`refund address ${key.address} is not valid for ${sourceId}`);
-  }
-  const slot = refundStorageKey(sourceId, n);
-  const matches = (raw: string | null): boolean => {
-    try {
-      return (JSON.parse(raw ?? "") as Partial<RefundKey>).address === key.address;
-    } catch {
-      return false;
-    }
-  };
-  const stored = await deps.storage.read(slot);
-  if (stored === null) {
-    const record = { chain: key.chain, address: key.address, format: key.format };
-    await deps.storage.write(slot, JSON.stringify(record));
-    if (!matches(await deps.storage.read(slot))) {
-      throw new Error(`refund key for trade ${n} could not be stored`);
-    }
-  } else if (!matches(stored)) {
-    throw new Error(`stored refund key for trade ${n} does not match its derivation`);
-  }
-  return key;
-}
-
-/**
- * Re-derives a request's refund key from its identity alone — no session, no storage read.
- *
- * `provisionRefundKey` above is the write path, used while a request is being opened: it records
- * the address so a later derivation can be checked against what was handed to the rail. This is
- * the read path, for a refunded request being looked at after the fact. The key is a pure function
- * of (sourceId, n), both of which the durable record carries, so a request whose world is long
- * gone can still be walked back to the funds.
- *
- * Deliberately does not touch storage. The slot is written when a request opens and cleared once
- * its deposit lands; re-creating one here for a request that should not have it would leave a
- * dangling secret behind a screen that only meant to read.
- */
-export async function recoverRefundKey(
-  entropy: Pick<EntropyPort, "deriveSeed">,
-  sourceId: SourceId,
-  n: number,
-): Promise<RefundKey | null> {
-  const chain = refundChainFor(sourceId);
-  if (chain === null) return null; // the manual rail has no refund key
-  const seed = await entropy.deriveSeed(refundEntropyLabel(sourceId, n));
-  const key = deriveRefundKey(chain, seed, { bitcoinNetwork: BITCOIN_NETWORK });
-  // The check `provisionRefundKey` makes on the way in, repeated on the way out: an address that
-  // does not validate for its own source means the derivation is wrong, and pointing a buyer at
-  // an address their money is not at is worse than telling them nothing.
-  if (!SOURCE_CONFIG_BY_ID.get(sourceId)?.validateRefundAddress(key.address)) {
-    devLog("coinage", `recovered refund address is not valid for ${sourceId}`, undefined, "warn");
-    return null;
-  }
-  return key;
-}
-
-/** True once the deposit is on the burner. */
-export function depositLanded(phase: string | undefined): boolean {
-  return phase === "funded" || phase === "working" || phase === "done";
-}
-
-export interface RefundKeyHold {
-  /** The Chainflip refund address; null on the manual rail or once the deposit has landed. */
-  refundAddress: string | null;
-  /** The key behind it, for the recovery screen; null once the deposit has landed. */
-  revealRefundKey(): RefundKey | null;
-}
-
-/**
- * Holds a request's refund key and forgets it, in memory and storage, once the deposit has landed.
- */
-function holdRefundKey(
-  session: PaymentSession<never>,
-  storage: Pick<StorageAdapter, "clear">,
-  sourceId: SourceId,
-  n: number,
-  key: RefundKey | null,
-): RefundKeyHold {
-  let held = key;
-  let cleared = key === null;
-  const forget = async () => {
-    if (cleared) return;
-    cleared = true;
-    held = null;
-    try {
-      await storage.clear(refundStorageKey(sourceId, n));
-      devLog("coinage", `refund key for trade #${n} forgotten: the deposit has landed`);
-    } catch (e) {
-      cleared = false;
-      devLog("coinage", "refund key clear failed (retried on the next update)", e, "warn");
-    }
-  };
-  session.subscribe((s) => {
-    if (depositLanded(s.phase)) void forget();
-  });
-  return { refundAddress: key?.address ?? null, revealRefundKey: () => held };
-}
-
 /** Current trade number from host storage; anything missing or malformed means 1. */
 export async function readTradeCounter(storage: StorageLike, sourceId: string): Promise<number> {
   const raw = await storage.read(tradeCounterKey(sourceId)).catch(() => null);
@@ -686,7 +547,7 @@ export interface CoinageSessionArgs {
   amount: bigint;
   sourceId: SourceId;
   /** Override the funding rail. Omitted, the mock world uses the scriptable fake rail. */
-  rail?: ChainflipRail;
+  rail?: FundingRail;
   /**
    * Budget in the route's deposit token (the native, 10 decimals, on the pool tier), for a rail
    * that delivers that token rather than CASH. Omitted, the budget is the CASH settle amount
@@ -706,13 +567,13 @@ export interface CoinageSessionArgs {
   staleFlowMs?: number;
 }
 
-export interface MockCoinageWorld extends RefundKeyHold {
+export interface MockCoinageWorld {
   session: PaymentSession<never>;
   /** The sizing the caller priced this world with; zeroes when it priced against nothing. */
   fundingSizing: FundingSizing;
   handoff: FakeHandoff;
   harness: Harness;
-  rail: ChainflipRail;
+  rail: FundingRail;
   storage: StorageAdapter;
   sourceId: SourceId;
   /** This request's trade number, which keys its record. */
@@ -812,17 +673,11 @@ export async function createMockCoinageSession(
   const storage = createMemoryAdapter();
   const entropy = mockEntropy();
   const tradeN = args.tradeN ?? 1;
-  const refundKey = await provisionRefundKey(
-    { entropy, storage },
-    args.sourceId,
-    tradeN,
-    BITCOIN_NETWORK,
-  );
   const session = createPayment({
     recipient: args.recipient,
     handoff: handoff.handoff,
     deriveKey: (seed) => toHandoffKey(deriveKeypairWithSecret(seed)),
-    deps: { chain: harness.chain, chainflip: rail, storage, entropy },
+    deps: { chain: harness.chain, rail, storage, entropy },
     // A rail that egresses CASH takes the settle amount as its budget; one that egresses the
     // route's deposit token needs a budget in it and an explicit CASH settle leg. See
     // `nativeBudget`.
@@ -836,7 +691,6 @@ export async function createMockCoinageSession(
     conversion: route,
     sourceId: args.sourceId,
   });
-  const refund = holdRefundKey(session, storage, args.sourceId, tradeN, refundKey);
   // The burner as the live world derives it: the entropy port's seed for the trade's label.
   const burnerAddress = deriveKeypairWithSecret(
     await entropy.deriveSeed(tradeEntropyLabel(args.sourceId, tradeN)),
@@ -861,7 +715,6 @@ export async function createMockCoinageSession(
     storage,
     sourceId: args.sourceId,
     tradeN,
-    ...refund,
     handoffPayload,
     route,
     async advanceTrade() {},
@@ -875,7 +728,7 @@ export function burnerSecretOf(seed: Uint8Array): string {
   return `0x${Array.from(mini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export interface CoinageWorld extends RefundKeyHold {
+export interface CoinageWorld {
   session: PaymentSession<never>;
   /** The live sizing the deposit was built on: the funding leg's costs in the tier's own
    *  composition. The quote prices its fee rows off these. */
@@ -1090,12 +943,9 @@ export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
   };
 }
 
-/** The rail a source runs on: the manual rail, a direct deposit of the route's deposit token to
- *  the burner. Throws for a swap source, which no rail serves. */
-export function railFor(sourceId: SourceId, route: ConversionRoute): ChainflipRail {
-  if (SOURCE_CONFIG_BY_ID.has(sourceId)) {
-    throw new Error(`no rail serves swap source '${sourceId}'`);
-  }
+/** The rail a direct deposit runs on: the manual rail, the route's deposit token sent to the
+ *  burner. */
+export function railFor(route: ConversionRoute): FundingRail {
   return createManualRail({ token: depositTokenOf(route) });
 }
 
@@ -1118,7 +968,7 @@ export async function createCoinageSession(
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }
   // The Meld rail when the fiat route injected one; the source's own rail otherwise.
-  const chainflip = args.rail ?? railFor(args.sourceId, args.route);
+  const rail = args.rail ?? railFor(args.route);
   const { connectChain, evictChains, PEOPLE, ASSET_HUB } = await import("./host-chain");
   await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
   const peoplePort = resilientPeoplePort();
@@ -1126,7 +976,7 @@ export async function createCoinageSession(
   const assetHubApi = async () => (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   const { deps: hostDeps } = createHostDeps({
     chain: peoplePort,
-    chainflip,
+    rail,
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
       typeof createHostDeps
@@ -1155,20 +1005,6 @@ export async function createCoinageSession(
 
   const burnerHex = burnerSecretOf(seed);
 
-  // A re-opened request whose deposit has landed gets no refund key.
-  const stored = await stage(
-    "flow slot read",
-    10_000,
-    createFlowStore(deps.storage, args.sourceId, burnerKey.address).load(),
-  );
-  const refundKey = depositLanded(stored?.phase)
-    ? null
-    : await stage(
-        "refund key",
-        10_000,
-        provisionRefundKey(deps, args.sourceId, tradeN, BITCOIN_NETWORK),
-      );
-
   // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
   // tier's own costs. The same figures feed the worker hand-off below.
   const {
@@ -1185,8 +1021,8 @@ export async function createCoinageSession(
     settleAmount: args.amount,
     probeAddress: burnerKey.address,
   };
-  // A direct deposit lands as soon as it is sent and has its own headroom; a swap or a bank
-  // transfer, which give the pool longer to move, take the pool tier's.
+  // A direct deposit lands as soon as it is sent and has its own headroom; a card or a bank
+  // payment, which give the pool longer to move, take the pool tier's.
   const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
   let sizing: FundingSizing;
   let budget: bigint;
@@ -1353,7 +1189,6 @@ export async function createCoinageSession(
     fundingSizing: sizing,
     burnerAddress: burnerKey.address,
     budget,
-    ...holdRefundKey(session, deps.storage, args.sourceId, tradeN, refundKey),
     sourceId: args.sourceId,
     tradeN,
     runFunding,

@@ -27,7 +27,7 @@ const JOURNEY_PHASES = new Set([
  * read behind `isDemoBuild()` and null in every build that is not the deck's.
  */
 export type PreviewDrillIn =
-  "currency" | "fees" | "refund" | "recovery-fee" | "recovery-token" | "recovery-deposit";
+  "currency" | "fees" | "recovery-fee" | "recovery-token" | "recovery-deposit";
 
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();
