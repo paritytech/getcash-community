@@ -30,7 +30,7 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => ({
 
 const KEY_HEX = `0x${"07".repeat(32)}`;
 const record = {
-  rail: "chainflip",
+  rail: "meld",
   tier: "psm",
   external: "USDT",
   feeRate: 5_000,
@@ -38,8 +38,8 @@ const record = {
   assetHubGenesis: "0xah",
 };
 const SEEN = { number: 7, hash: "0xseen" };
-/** The sweep's effect: the key holds none of the token. */
-const swept = (key: { free: bigint }) => key.free === 0n;
+/** The payment's effect, as the test reads it: the key holds none of the token. */
+const paidOut = (key: { free: bigint }) => key.free === 0n;
 
 describe("a payment seen in a best block", () => {
   let heads: Record<"best" | "finalized", bigint>;
@@ -62,7 +62,7 @@ describe("a payment seen in a best block", () => {
 
   const outcome = async () => {
     const { paymentOutcome } = await import("../worker/src/providers.js");
-    return paymentOutcome(record, SEEN, swept);
+    return paymentOutcome(record, SEEN, paidOut);
   };
 
   it("is what the finalized chain says of its block while it can say it, reading nothing more", async () => {
@@ -85,18 +85,6 @@ describe("a payment seen in a best block", () => {
       TOKENS.USDT,
       { at: "finalized" },
     );
-  });
-
-  it("judges a replaced block by the read it is given, in place of the key's balance and nonce", async () => {
-    mocks.settleBlock.mockResolvedValue("dropped");
-    const readKey = vi.fn(async () => 0n);
-    const { paymentOutcome } = await import("../worker/src/providers.js");
-    const shows = (unswept: bigint) => unswept === 0n;
-    expect(await paymentOutcome(record, SEEN, shows, { readKey })).toBe("final");
-    expect(readKey).toHaveBeenCalledWith(expect.anything(), KEY_HEX, TOKENS.USDT, {
-      at: "finalized",
-    });
-    expect(mocks.readAssetHubAccount).not.toHaveBeenCalled();
   });
 
   it("waits while it shows only at the best head, and is gone when it shows nowhere", async () => {

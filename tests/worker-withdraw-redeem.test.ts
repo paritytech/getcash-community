@@ -191,7 +191,7 @@ function convertingJob(exit?: "psm" | "pool"): StoredJob {
       ...(exit === undefined ? {} : { exit }),
       workedMs: 0,
     },
-    leg: { handoff: null, paid: false, sweep: { attempts: 0, rejections: 0 }, reading: null },
+    leg: { handoff: null, paid: false, reading: null },
     txs: [],
   };
 }
