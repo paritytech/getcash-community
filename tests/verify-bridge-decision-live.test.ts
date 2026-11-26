@@ -1,13 +1,12 @@
 // The choice of the bridge route from live reads, printed for five amounts paid in USDC on
 // Solana. Every read is a read and every quote is dry: nothing is sent, and no deposit address is
 // opened. Then three cases where a read is made to fail, to show what the chooser does next.
+// Every read goes over HTTPS, as it must inside the host app.
 //   VERIFY_BRIDGE_DECISION=1 pnpm vitest run tests/verify-bridge-decision-live.test.ts
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { concatBytes } from "@noble/hashes/utils.js";
-import { createClient } from "polkadot-api";
-import { getWsProvider } from "polkadot-api/ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   askBase,
   askSnowbridge,
@@ -17,10 +16,10 @@ import {
   type BridgeAnswer,
   type BridgeChoice,
   type BridgeRoute,
-  chainReader,
   chooseBridgeRoute,
   createEvmRpc,
   type Delivery,
+  httpChainReader,
   nearDelivery,
   quoteEthIn,
   readSnowbridgeCosts,
@@ -31,15 +30,16 @@ import {
   snowbridgeRefusal,
 } from "@getsome/bridge";
 import { createIntentsClient, INTENTS_ETH, INTENTS_SOURCES } from "@getsome/intents";
+import { BRIDGE_CHECK_DOMAINS, runBridgeCheck, type BridgeCheckLine } from "../lib/bridge-check";
 
 const ON = process.env.VERIFY_BRIDGE_DECISION === "1";
 
-const ASSET_HUB = "wss://polkadot-asset-hub-rpc.polkadot.io";
-const BRIDGE_HUB = "wss://polkadot-bridge-hub-rpc.polkadot.io";
-const HYDRATION = "wss://rpc.hydradx.cloud";
+const ASSET_HUB = "https://polkadot-asset-hub-rpc.polkadot.io";
+const BRIDGE_HUB = "https://polkadot-bridge-hub-rpc.polkadot.io";
+/** Hydration's node answers the calls of both of its sides at one address. */
+const HYDRATION = "https://rpc.hydradx.cloud";
 const ETHEREUM = "https://ethereum-rpc.publicnode.com";
 const BASE = "https://mainnet.base.org";
-const HYDRATION_EVM = "https://rpc.hydradx.cloud";
 
 /** An account that holds nothing, as the account of a new request does. */
 const ACCOUNT = `0x${"42".repeat(32)}`;
@@ -78,25 +78,18 @@ function describeAnswer(answer: Answer): string {
 }
 
 describe.skipIf(!ON)("the choice of the bridge route, from live reads", () => {
-  const clients: { destroy(): void }[] = [];
   const near = createIntentsClient();
   const ethereum = createEvmRpc(ETHEREUM);
   const base = createEvmRpc(BASE);
-  const hydrationEvm = createEvmRpc(HYDRATION_EVM);
-  let chains: SnowbridgeChains;
+  const hydrationEvm = createEvmRpc(HYDRATION);
+  const chains: SnowbridgeChains = {
+    assetHub: httpChainReader(ASSET_HUB),
+    bridgeHub: httpChainReader(BRIDGE_HUB),
+    hydration: httpChainReader(HYDRATION),
+  };
   let usdtPerEther: bigint;
 
   beforeAll(async () => {
-    const reader = async (url: string) => {
-      const client = createClient(getWsProvider(url));
-      clients.push(client);
-      return chainReader(client.getUnsafeApi());
-    };
-    chains = {
-      assetHub: await reader(ASSET_HUB),
-      bridgeHub: await reader(BRIDGE_HUB),
-      hydration: await reader(HYDRATION),
-    };
     const ether = (await near.tokens()).find((token) => token.asset === INTENTS_ETH.ethereum);
     if (ether?.priceUsd === undefined) throw new Error("NEAR lists no price for ETH");
     usdtPerEther = BigInt(Math.round(ether.priceUsd * 1_000_000));
@@ -106,7 +99,6 @@ describe.skipIf(!ON)("the choice of the bridge route, from live reads", () => {
       `the room of the Base route: ${units(vault.depositAllowance)} USDC by the vault, ${units(vault.mintHeadroom)} USDC by Hydration`,
     );
   }, 120_000);
-  afterAll(() => clients.forEach((client) => client.destroy()));
 
   const delivery = (start: "ethereum" | "base"): Delivery =>
     nearDelivery({
@@ -223,6 +215,28 @@ describe.skipIf(!ON)("the choice of the bridge route, from live reads", () => {
       route: "snowbridge",
       decline: { kind: "no-answer", from: "route" },
     });
+  }, 180_000);
+
+  it("runs the checks of the page for developers, and each one gets its answer", async () => {
+    const lines: BridgeCheckLine[] = [];
+    const asked = new Set<string>();
+    const realFetch = globalThis.fetch;
+    // The page may only reach the domains it asks the host for.
+    globalThis.fetch = (input, init) => {
+      asked.add(new URL(String(input)).hostname);
+      return realFetch(input, init);
+    };
+    try {
+      await runBridgeCheck((line) => lines.push(line));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    for (const line of lines) {
+      console.log(`  ${line.ok ? "ok" : "FAILED"} in ${line.ms} ms: ${line.label}: ${line.detail}`);
+    }
+    expect(lines).toHaveLength(10);
+    expect(lines.filter((line) => !line.ok)).toEqual([]);
+    expect([...asked].sort()).toEqual([...BRIDGE_CHECK_DOMAINS].sort());
   }, 180_000);
 
   it("stops with no route when the provider gives no answer three times", async () => {

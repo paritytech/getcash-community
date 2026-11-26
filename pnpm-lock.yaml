@@ -156,6 +156,12 @@ importers:
       '@polkadot-api/descriptors':
         specifier: file:../../.papi/descriptors
         version: file:.papi/descriptors(polkadot-api@2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6))
+      '@polkadot-api/metadata-builders':
+        specifier: 0.14.3
+        version: 0.14.3
+      '@polkadot-api/substrate-bindings':
+        specifier: 0.20.3
+        version: 0.20.3
       polkadot-api:
         specifier: 2.2.2
         version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)

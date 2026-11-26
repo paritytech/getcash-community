@@ -91,6 +91,7 @@ export type { SnowbridgeChains, SnowbridgeTrial } from "./snowbridge/costs";
 export { decodeXcm, encodeXcm } from "./snowbridge/codec";
 export type { XcmInstruction, XcmValue } from "./snowbridge/codec";
 export { runSnowbridgeHops } from "./snowbridge/hops";
+export { httpChainReader } from "./snowbridge/http-chain";
 export type { SnowbridgeHops } from "./snowbridge/hops";
 export {
   ACCEPTED_TOPIC,
