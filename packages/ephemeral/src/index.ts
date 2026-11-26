@@ -1,3 +1,5 @@
+export { deriveBridgeSigner } from "./bridge-signer";
+export type { BridgeSigner } from "./bridge-signer";
 export {
   ASSET_HUB_SS58_PREFIX,
   deriveKeypair,
