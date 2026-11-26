@@ -255,7 +255,7 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | Variable               | Purpose                                                                                                                                                                                                                         |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                                                     |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                          |
+| `DEPLOYER_SEED`        | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                          |
 | `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                       |
 | `VITE_MELD_PRODUCT_ID` | this product's id, which the adapter's `allowed_products` must list; in `personhood` mode, the id the Host gives getcash (its domain)                                                                                           |
 | `VITE_ADAPTER_AUTH`    | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                             |
@@ -285,7 +285,7 @@ deployment would do. Each is marked `TODO(production)` at its definition:
 ```
 
 Builds the worker and the site and publishes both with `bulletin-deploy`, which must be
-installed globally. The deploying account comes from `MNEMONIC`, or from `VITE_DEPLOYER_SEED`
+installed globally. The deploying account comes from `MNEMONIC`, or from `DEPLOYER_SEED`
 in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a

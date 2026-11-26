@@ -33,8 +33,10 @@ import {
   anchorFor,
   asBig,
   bounded,
+  brief,
   connectChain,
   createJobStore,
+  errorText,
   fromHex,
   keypairFor,
   toHex,
@@ -306,7 +308,7 @@ export async function startFunding(params) {
   } catch (error) {
     // Refusals are returned as data; the surface receives them as WorkerCallError("invalid",
     // reason).
-    return { error: "invalid", reason: String(error?.message ?? error) };
+    return { error: "invalid", reason: errorText(error) };
   }
   const burner = await keypairFor(record.label);
   if (burner.address !== record.burnerAddress) {
@@ -383,7 +385,7 @@ function rearm(record, nowMs) {
 function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
-  record.lastError = reason;
+  record.lastError = brief(reason);
   unwatchClaim(record.sessionId);
 }
 
@@ -453,7 +455,7 @@ export async function amendFunding(params) {
     // The same checks a new hand-off gets, route included.
     terms = newRecord({ ...input, label: record.label }, Date.now());
   } catch (error) {
-    return { error: "invalid", reason: String(error?.message ?? error) };
+    return { error: "invalid", reason: errorText(error) };
   }
   for (const field of ["tier", "external", "feeRate", "quotedDeposit"]) delete record[field];
   Object.assign(record, {
@@ -602,7 +604,7 @@ async function registerClaim(record, burner) {
       return;
     }
     if (!(error instanceof PaymentTopUpErr.AlreadyExists)) {
-      record.claim = { ...record.claim, error: String(error?.message ?? error) };
+      record.claim = { ...record.claim, error: errorText(error) };
       throw error;
     }
     // The host holds this attempt as it was first sized: that amount is the claim's.
@@ -643,7 +645,7 @@ function watchClaim(record) {
       if (error instanceof PaymentTopUpStatusErr.NotFound) {
         record.claim = { ...record.claim, phase: "registering", at: 0 };
       } else {
-        record.claim = { ...record.claim, error: String(error?.message ?? error) };
+        record.claim = { ...record.claim, error: errorText(error) };
         record.lastError = record.claim.error;
       }
       void saveJobs();
@@ -1341,7 +1343,7 @@ async function fundRecovery(record, env, feeCash) {
       delete recovery.depositGate;
       delete recovery.depositHeld;
     }
-    throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
+    throw new Error(`recovery deposit: ${errorText(error)}`);
   }
   recovery.deposit = outcome.step;
   if (outcome.step === "done") {
@@ -1467,7 +1469,7 @@ export async function tickAllFunding() {
         if (error instanceof FundingShortfallError && conversionPending(record)) {
           // The verdict is on a block the chain can still discard: it stands only once the
           // block is final, and a discarded block sends the conversion again instead.
-          record.lastError = `shortfall: ${error.message}`;
+          record.lastError = brief(`shortfall: ${error.message}`);
         } else if (error instanceof FundingShortfallError) {
           fail(record, "shortfall", `shortfall: ${error.message}`);
         } else if (error instanceof FundingTrappedError) {
@@ -1487,7 +1489,7 @@ export async function tickAllFunding() {
           fail(record, "held", error.message);
         } else {
           // Other errors are transient; the next wake retries.
-          record.lastError = String(error?.message ?? error);
+          record.lastError = errorText(error);
         }
       }
       judgeBounds(record, nowMs, read);

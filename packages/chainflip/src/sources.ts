@@ -2,7 +2,9 @@
 // is gated at runtime per source by probeLiquidity.
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import type { SourceDescriptor, SourceId, TokenSpec } from "@getsome/core";
+import { hexToBytes } from "@noble/hashes/utils.js";
+import type { EvmChain, SourceDescriptor, SourceId, TokenSpec } from "@getsome/core";
+import { checksumAddress } from "@getsome/ephemeral";
 
 function validateBtcRefundAddress(addr: string): boolean {
   const trimmed = addr.trim();
@@ -11,9 +13,15 @@ function validateBtcRefundAddress(addr: string): boolean {
   );
 }
 
-// Shape-only: 0x + 40 hex. The checksum is not enforced.
+// 0x + 40 hex. A mixed-case address must carry its EIP-55 checksum.
 function validateEvmRefundAddress(addr: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(addr.trim());
+  const trimmed = addr.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(trimmed)) return false;
+  const hex = trimmed.slice(2);
+  const lower = hex.toLowerCase();
+  return (
+    hex === lower || hex === hex.toUpperCase() || trimmed === checksumAddress(hexToBytes(lower))
+  );
 }
 
 function validateSolanaAddress(addr: string): boolean {
@@ -98,7 +106,7 @@ export const EVM_CHAINS: Readonly<Record<string, { id: number; shortName: string
   Ethereum: { id: 1, shortName: "eth" },
   Arbitrum: { id: 42161, shortName: "arb1" },
   Bsc: { id: 56, shortName: "bnb" },
-};
+} satisfies Record<EvmChain, unknown>;
 
 /** The token contracts a payment URI names, on mainnet, as the Chainflip SDK lists them. */
 export const TOKEN_CONTRACTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {

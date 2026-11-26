@@ -2,7 +2,13 @@
 // a 2xx.
 
 import { describe, expect, it } from "vitest";
-import { readChannelRecord, readSwapStatus, type FetchLike } from "./swap-status";
+import {
+  channelTermsFault,
+  readChannelRecord,
+  readSwapStatus,
+  type ChainflipChannelRecord,
+  type FetchLike,
+} from "./swap-status";
 
 function answering(status: number, body: unknown) {
   const urls: string[] = [];
@@ -31,6 +37,12 @@ describe("reading a swap's status with fetch", () => {
 describe("the channel record read", () => {
   const record = {
     destAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+    destChain: "Bitcoin",
+    destAsset: "BTC",
+    srcChain: "Assethub",
+    srcAsset: "DOT",
+    brokers: [{ commissionBps: 5 }, { commissionBps: 2 }],
+    fillOrKillParams: { refundAddress: "5Key", minPrice: "0.99" },
     depositChannel: { depositAddress: "5Channel", isExpired: false },
   };
   const serving =
@@ -45,6 +57,13 @@ describe("the channel record read", () => {
     expect(await readChannelRecord("42", serving(record))).toEqual({
       depositAddress: "5Channel",
       destinationAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
+      sourceChain: "Assethub",
+      sourceAsset: "DOT",
+      commissionBps: 7,
+      minPrice: 0.99,
       expired: false,
     });
   });
@@ -68,5 +87,29 @@ describe("the channel record read", () => {
 
   it("throws on a read that failed, so the tick retries rather than paying unchecked", async () => {
     await expect(readChannelRecord("42", serving({}, 503))).rejects.toThrow(/HTTP 503/);
+  });
+});
+
+describe("a channel's minimum price against the one asked for", () => {
+  const usdt = { chain: "Assethub", asset: "USDT" };
+  const served = (minPrice: number, chain: string, asset: string) =>
+    ({
+      sourceChain: "Assethub",
+      sourceAsset: "USDT",
+      destinationChain: chain,
+      destinationAsset: asset,
+      commissionBps: 5,
+      minPrice,
+    }) as ChainflipChannelRecord;
+
+  it("allows for the rounding to the paid asset's decimals, and no more", () => {
+    const asked = 0.0000154849;
+    expect(channelTermsFault(served(0.00001548, "Bitcoin", "BTC"), usdt, asked)).toBeNull();
+    expect(channelTermsFault(served(0.00001547, "Bitcoin", "BTC"), usdt, asked)).toMatch(
+      /minimum price is 0.00001547/,
+    );
+    expect(channelTermsFault(served(0.9946, "Ethereum", "USDC"), usdt, 0.9948)).toMatch(
+      /minimum price is 0.9946/,
+    );
   });
 });

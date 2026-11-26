@@ -5,10 +5,11 @@
  * Two different guards, for two different reasons:
  *
  *  - `scrubText` takes out what must never leave the device: a recovery
- *    phrase (nothing should log one; defense in depth), a 32-byte hex value
- *    (the shape of a key's entropy or a seed, so a transaction or block hash
- *    goes too), and the query and hash of any URL (where a provider's widget
- *    token or session travels). A phrase is only what BIP39 accepts, words
+ *    phrase (nothing should log one; defense in depth), a 32- or 64-byte hex
+ *    value (the shape of a key's entropy, a seed or a signing key, so a
+ *    transaction or block hash goes too), a Bitcoin or Solana secret key in
+ *    its own encoding, and the query and hash of any URL (where a provider's
+ *    widget token or session travels). A phrase is only what BIP39 accepts, words
  *    and checksum, so an ordinary sentence is never taken for one. Addresses
  *    stay: they are public, and a failed top-up is looked up on chain by
  *    them. Applied to every log line a sink sees, and to every event before
@@ -25,8 +26,10 @@ const REDACTIONS: ReadonlyArray<readonly [RegExp, string]> = [
   // first, so what the others write inside a URL cannot hide its query:
   // a URL keeps its scheme, host and path; the query and hash go
   [/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/gi, "$1"],
-  // 32 bytes of hex: a key's entropy or a seed has this shape, so a hash does too
-  [/\b0x[0-9a-fA-F]{64}\b/g, "[redacted: hash]"],
+  // 32 or 64 bytes of hex: a seed or a signing key has this shape, so a hash does too
+  [/\b(?:0x)?(?:[0-9a-fA-F]{64}){1,2}\b/g, "[redacted: hash]"],
+  [/\b[KLc][1-9A-HJ-NP-Za-km-z]{51}\b/g, "[redacted: key]"],
+  [/\b[1-9A-HJ-NP-Za-km-z]{86,88}\b/g, "[redacted: key]"],
 ];
 
 /** 12 or more lowercase words in a row: where a recovery phrase could be. */
@@ -62,15 +65,21 @@ function redactPhrases(run: string): string {
   return found ? out.join(" ") : run;
 }
 
+/** what a pattern scans; past it a hostile line costs time, not information */
+const MAX_SCRUBBED = 4_000;
+/** longer than any value a guard takes out, so one the cut split in two goes with the tail */
+const CUT_MARGIN = 256;
+
 export function scrubText(text: string): string {
+  const cut = text.length > MAX_SCRUBBED;
   WORD_RUN.lastIndex = 0;
-  let out = text.replace(WORD_RUN, redactPhrases);
+  let out = (cut ? text.slice(0, MAX_SCRUBBED) : text).replace(WORD_RUN, redactPhrases);
   for (const [pattern, replacement] of REDACTIONS) {
     // a global regex remembers where the last match stopped
     pattern.lastIndex = 0;
     out = out.replace(pattern, replacement);
   }
-  return out;
+  return cut ? `${out.slice(0, -CUT_MARGIN)}…` : out;
 }
 
 /** A URL without its query and hash, for a field that holds one URL. */

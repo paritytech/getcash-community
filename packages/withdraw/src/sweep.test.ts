@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
 import { bestBlockWatch } from "@getsome/testing";
-import { freshSweepState, sweepOnce, type SweepInput, type SweepState } from "./sweep";
+import { freshSweepState, readUnswept, sweepOnce, type SweepInput, type SweepState } from "./sweep";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 const CHANNEL = "5Channel";
@@ -126,6 +126,24 @@ describe("the sweep", () => {
     expect(submits).toEqual([]);
     // A swap's refund can fill the key again, so the key could not settle it later.
     expect(state.seen).toBeUndefined();
+  });
+
+  it("reads a native balance of no more than the existential deposit as nothing left, and a stable as its holding", async () => {
+    const existentialDeposit = 100_000_000n;
+    const keyHex = `0x${"07".repeat(32)}`;
+    const holding = (native: bigint, stable = 0n) =>
+      ({
+        query: {
+          System: { Account: { getValue: async () => ({ data: { free: native } }) } },
+          Assets: { Account: { getValue: async () => ({ balance: stable }) } },
+        },
+        constants: { Balances: { ExistentialDeposit: async () => existentialDeposit } },
+      }) as unknown as SweepInput["assetHubApi"];
+    expect(await readUnswept(holding(existentialDeposit), keyHex, TOKENS.PAS)).toBe(0n);
+    expect(await readUnswept(holding(existentialDeposit + 1n), keyHex, TOKENS.PAS)).toBe(
+      existentialDeposit + 1n,
+    );
+    expect(await readUnswept(holding(0n, 5n), keyHex, TOKENS.USDT)).toBe(5n);
   });
 
   it("refuses an empty key before any submit: there is nothing to move", async () => {

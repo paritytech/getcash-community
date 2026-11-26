@@ -163,6 +163,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5Channel",
       destinationAddress: "bc1qw508",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
@@ -222,12 +225,12 @@ describe("the worker's rail leg", () => {
       expect.objectContaining({ sessionId: "s-1" }),
       seen,
       expect.any(Function),
-      { unknownStands: true },
+      { unknownStands: true, readKey: expect.any(Function) },
     );
     // The sweep's effect: one was sent, and the key holds none of the token.
-    const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (key: object) => boolean;
-    expect(shows({ nonce: 0, free: 0n })).toBe(true);
-    expect(shows({ nonce: 0, free: 1n })).toBe(false);
+    const shows = mocks.paymentOutcome.mock.calls.at(-1)![2] as (unswept: bigint) => boolean;
+    expect(shows(0n)).toBe(true);
+    expect(shows(1n)).toBe(false);
     expect(mocks.submits).toHaveLength(1);
     expect(storedJob()).toMatchObject({ phase: "follow", leg: { paid: true, sweep: { seen } } });
 
@@ -342,6 +345,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5Fresh",
       destinationAddress: "bc1qw508",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     await engine.tickAllWithdraw();
@@ -354,6 +360,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5SomewhereElse",
       destinationAddress: "bc1qw508",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     const engine = await engineWith(landedJob());
@@ -371,6 +380,9 @@ describe("the worker's rail leg", () => {
     mocks.channel.mockResolvedValue({
       depositAddress: "5Channel",
       destinationAddress: "bc1qsomeoneelse",
+      destinationChain: "Bitcoin",
+      destinationAsset: "BTC",
+      refundAddress: "5Key",
       expired: false,
     });
     const engine = await engineWith(landedJob());

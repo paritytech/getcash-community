@@ -135,6 +135,19 @@ describe("the session log", () => {
       "funding step: swap",
     ]);
   });
+
+  it("As a developer reading Sentry, I open a failure late in a long session and the attached log is still whole", async () => {
+    // Given
+    for (let n = 0; n < 200; n += 1) devLog("requests", `poll ${n}: nothing new at the address`);
+
+    // When
+    fail("broke", "connect");
+    await Sentry.flush(1000);
+
+    // Then
+    const log = JSON.parse(sink.attachments()[0].data) as Payload;
+    expect(log.lines).toHaveLength(200);
+  });
 });
 
 describe("behaviour", () => {

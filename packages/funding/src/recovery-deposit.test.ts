@@ -29,6 +29,7 @@ const USDC_POOL = { native: NATIVE_LOC, underlying: TOKENS.USDC.location } as ne
 /** Native per unit of CASH or stable on the scripted pools. */
 const RATE = 1_000n;
 const MIN_BALANCE = 70_000n;
+const EXISTENTIAL_DEPOSIT = 100_000n;
 const DISPATCH_NATIVE = 1_000n;
 const LOCAL_FEE = 100n;
 const DELIVERY_FEE = 10n;
@@ -78,12 +79,18 @@ function scriptedAssetHub(balances: {
       },
       System: {
         Account: {
-          getValue: async (_who: string, options?: { at?: string }) => ({
-            data: { free: visible(options) ? (balances.native ?? 0n) : 0n },
-          }),
+          getValue: async (_who: string, options?: { at?: string }) => {
+            const free = visible(options) ? (balances.native ?? 0n) : 0n;
+            return {
+              consumers: 0,
+              providers: free > 0n ? 1 : 0,
+              data: { free, reserved: 0n, frozen: 0n },
+            };
+          },
         },
       },
     },
+    constants: { Balances: { ExistentialDeposit: async () => EXISTENTIAL_DEPOSIT } },
     apis: {
       AssetConversionApi: {
         // Native for an exact amount of CASH or a stable, or a stable for an exact native.
@@ -142,12 +149,13 @@ describe("recoveryMinimums", () => {
       USDC: USDC_POOL,
     });
     // The native: the headroomed quote plus what the program keeps for its own fees, the XCM's
-    // cushioned as the stable tiers' are. The deposit counts at the plain quote plus the same, as
-    // the pipeline's gate takes it.
+    // cushioned as the stable tiers' are, plus the existential deposit and one dispatch fee for a
+    // burner the chain keeps open. The deposit counts at the plain quote plus what the program
+    // keeps, as the pipeline's gate takes it.
     const nativeInMax = withHeadroom(TARGET * RATE, 1);
     const keep = withFeeMargin(LOCAL_FEE + DELIVERY_FEE) + DISPATCH_NATIVE;
     expect(sized.keepNativeForFees).toBe(keep);
-    expect(sized.minimums.PAS).toBe(nativeInMax + keep);
+    expect(sized.minimums.PAS).toBe(nativeInMax + keep + EXISTENTIAL_DEPOSIT + DISPATCH_NATIVE);
     expect(sized.gates.PAS).toBe(TARGET * RATE + keep);
     expect(sized.gates.PAS).toBeLessThan(sized.minimums.PAS!);
     // dotUSD: the fee itself, with what the program holds back, and no headroom either way.

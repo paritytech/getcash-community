@@ -3,7 +3,12 @@
 // behind it is going, one fetch per tick. Chainflip carries the crypto destinations, Meld the
 // fiat ones; the pickers grey a route until its provider is here.
 
-import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
+import {
+  assetHubSource,
+  channelTermsFault,
+  readChannelRecord,
+  readSwapStatus,
+} from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
 import {
@@ -22,7 +27,7 @@ import {
   finalizedChainOf,
   payExactOnce,
   readAssetHubAccount,
-  readDestinationBalance,
+  readUnswept,
   settleBlock,
   sweepOnce,
 } from "@getsome/withdraw";
@@ -66,7 +71,10 @@ export const PAY_TIMEOUT_MS =
  */
 export function railFor(provider, record) {
   if (provider === "chainflip") {
-    return { status: (id) => readSwapStatus(id), channel: (id) => readChannelRecord(id) };
+    return {
+      status: (id) => readSwapStatus(id),
+      channel: (id) => chainflipChannel(id, record, record?.channel),
+    };
   }
   if (provider === "meld") {
     const meld = record?.meld;
@@ -83,6 +91,19 @@ export function railFor(provider, record) {
     return withMeldAssets(rail, client);
   }
   return null;
+}
+
+/** Chainflip's record of a channel, refused unless its terms suit the token the key pays in. */
+async function chainflipChannel(id, record, opened, network) {
+  const channel = await readChannelRecord(id, undefined, network);
+  if (channel === null) return null;
+  const fault = channelTermsFault(
+    channel,
+    assetHubSource(depositTokenOf(recordedRoute(record))),
+    opened?.minPrice,
+  );
+  if (fault !== null) throw new ChannelMismatchError(`channel ${id}: ${fault}`);
+  return channel;
 }
 
 const personhoodFetches = new Map();
@@ -144,7 +165,7 @@ function swapSaleRail(sale, record) {
   return {
     channel: async (id) => {
       const [swap, order] = await Promise.all([
-        readChannelRecord(id, undefined, SWAP_NETWORK),
+        chainflipChannel(id, record, record.swap, SWAP_NETWORK),
         sale.channel(record.channel.id),
       ]);
       if (swap === null) return null;
@@ -253,11 +274,17 @@ export async function exactPaymentOut(record, amount, exact) {
  * is not past that block, or while the payment shows only at the best head; "gone" when it shows
  * nowhere, and the key pays again. A block that was replaced, or one too old for the chain to
  * name, says nothing of the payment itself, which usually landed in the block that took its
- * place: `shows(key)` reads its effect on the key, its balance in the sale's token and its nonce.
- * With `unknownStands`, a block too old to name stands without that read: a sweep empties the key
- * and a swap's refund can fill it again, so the key could not tell a sweep never left.
+ * place: `shows(key)` reads its effect on the key as `readKey` returns it, by default its balance
+ * in the sale's token and its nonce. With `unknownStands`, a block too old to name stands without
+ * that read: a sweep empties the key and a swap's refund can fill it again, so the key could not
+ * tell a sweep never left.
  */
-export async function paymentOutcome(record, seen, shows, { unknownStands = false } = {}) {
+export async function paymentOutcome(
+  record,
+  seen,
+  shows,
+  { unknownStands = false, readKey = readAssetHubAccount } = {},
+) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -271,7 +298,7 @@ export async function paymentOutcome(record, seen, shows, { unknownStands = fals
     const token = depositTokenOf(recordedRoute(record));
     const read = (at) =>
       bounded(
-        readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token, { at }),
+        readKey(assetHubApi, record.keyPublicKeyHex, token, { at }),
         DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         `key read on asset hub (${at})`,
       );
@@ -307,8 +334,7 @@ export async function payRail(record, handoff, sweep, hooks = {}) {
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
         signOptions: { ...feeOptions, ...(await signOptionsFor(client)) },
-        readKeyOnAssetHub: () =>
-          readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId),
+        readKeyOnAssetHub: () => readUnswept(assetHubApi, record.keyPublicKeyHex, token),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },

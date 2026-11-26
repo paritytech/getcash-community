@@ -94,7 +94,7 @@ async function onSkipSummary() {
     ...(amount.value === "" ? {} : { amountHuman: amount.value }),
     ...(picked === null || address.value === ""
       ? {}
-      : { destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value } }),
+      : { destination: { chain: picked.chain, asset: picked.asset, address: address.value } }),
   };
   step.value = "journey";
   const preview = await import("../../../utils/dev-preview");
@@ -256,7 +256,7 @@ async function confirm() {
     const outcome = await withdrawal.start({
       destinationId: picked.id,
       amount: base,
-      destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
+      destination: { chain: picked.chain, asset: picked.asset, address: address.value },
       landingHex,
       sale: shown,
     });

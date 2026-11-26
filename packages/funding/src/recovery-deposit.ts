@@ -3,10 +3,11 @@
 //
 // What the user is asked to send is the pipeline's own gate run forward with the fee as the
 // target, as the app sizes a top-up: the quote for the fee, the min_balance a stable keeps on the
-// burner, and one cushion over every fee the program pays. The program's fees are measured
-// against a probe carved from a deposit a little above the quote, since the estimators refuse a
-// probe that cannot cover its own fees. The pipeline converts whatever lands, so what the fee
-// does not take reaches the purse with the recovered CASH.
+// burner, one cushion over every fee the program pays, and on the native what a burner the chain
+// keeps open needs. The program's fees are measured against a probe carved from a deposit a
+// little above the quote, since the estimators refuse a probe that cannot cover its own fees. The
+// pipeline converts whatever lands, so what the fee does not take reaches the purse with the
+// recovered CASH.
 //
 // A stable tier leaves its min_balance and the unspent allowance on the burner, so a balance
 // alone does not say a deposit was made: the deposit is the first token held at or above what
@@ -24,6 +25,7 @@ import {
 import {
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
+  keepAliveNative,
   psmDepositNeeded,
   quoteNativeIn,
   quoteStableForUnderlying,
@@ -42,8 +44,8 @@ export type RecoveryToken = "PAS" | "DOTUSD" | Stable;
 
 export interface RecoveryMinimums {
   /** The least of each token, in its base units, to ask for: the pipeline's gate for the fee
-   *  with the pool tiers' slippage headroom on top, as a top-up is asked; null for a token the
-   *  chain cannot price today. */
+   *  with the pool tiers' slippage headroom on top and, on the native, `keepAliveNative`, as a
+   *  top-up is asked; null for a token the chain cannot price today. */
   minimums: Record<RecoveryToken, bigint | null>;
   /** The least of each token that counts as the deposit: the gate's own figure, the plain quote
    *  without the headroom, as the pipeline takes it. A deposit at the figure shown is not
@@ -116,13 +118,17 @@ export async function recoveryMinimums(args: {
       nativeBalance: nativeInMax + PROBE_NATIVE,
       minUnderlyingOut: target,
     });
+    const keepAlive = await keepAliveNative(api, fees.dispatchNative);
     // The XCM's fees cushioned as the stable tiers cushion theirs: at a deposit this small the
     // fees are most of it, so a delivery fee that moves a little between this pricing and the
     // conversion would leave the exchange short of the target. What the cushion does not use
     // lands as Cash.
     keepNativeForFees = withFeeMargin(fees.payFeesNative) + fees.dispatchNative;
     // The gate takes the plain quote plus what the program keeps, as the pipeline's does.
-    return { minimum: nativeInMax + keepNativeForFees, gate: nativeIn + keepNativeForFees };
+    return {
+      minimum: nativeInMax + keepNativeForFees + keepAlive,
+      gate: nativeIn + keepNativeForFees,
+    };
   });
   const dotUsd = priced(async () => {
     const fees = await estimateDotUsdProgramFees({

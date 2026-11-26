@@ -24,6 +24,7 @@ import {
   estimatePsmBatchFees,
   estimateStableProgramFees,
   estimateDotUsdProgramFees,
+  keepAliveNative,
   NoCashTransferError,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -51,6 +52,9 @@ export interface PoolFundingSizing {
   remoteFeeBuffer: bigint;
   /** Native the deposit carries for the program's dispatch fee and fee allowance. */
   keepNativeForFees: bigint;
+  /** Native the deposit carries on top for a burner the chain keeps open (`keepAliveNative`).
+   *  Absent on the static fallback, which has neither figure to add. */
+  keepAliveNative?: bigint;
 }
 
 /** The PSM tier's costs. */
@@ -147,6 +151,7 @@ export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundi
       tier: "pool",
       remoteFeeBuffer: destinationFee,
       keepNativeForFees: fees.payFeesNative + fees.dispatchNative,
+      keepAliveNative: await keepAliveNative(api, fees.dispatchNative),
     };
   } catch (e) {
     if (e instanceof NoCashTransferError) throw e;
