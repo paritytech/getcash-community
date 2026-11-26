@@ -1,36 +1,33 @@
-// The provider leg of a withdrawal. Once the PAS sits on the key's own Asset Hub account, a
-// provider carries it to the destination the user named. Two moves, at most one per tick: pay
-// the provider's channel, then read the swap until the provider says it is delivered or that it
-// failed. Chainflip takes everything the key holds; a fiat sale through Meld takes the exact
-// figure it was quoted, and what the sale landed above it stays on the key.
+// The provider leg of a withdrawal to a bank or a card. Once the sale's token sits on the key's
+// own Asset Hub account, the provider of the sale carries it to the seller. Two moves, at most one
+// per tick: pay the provider's channel the exact figure it was quoted, then read the sale until
+// the provider says it is delivered or that it failed. What the sale landed above the figure
+// stays on the key.
 //
 // THE CHANNEL IS OPENED ELSEWHERE. The page opens it at confirm, while the user is there and
 // with the quote they were shown, and the hand-off carries it here. This leg never opens one.
 //
-// THE KEY PAYS, THE MESSAGE DOES NOT. Chainflip credits a deposit on Asset Hub only from a
-// balance transfer event inside an extrinsic. The message lands the native by XCM, which mints
-// it without such an event, so native landed in the channel that way is never witnessed and is
-// lost. The message therefore lands on the key, and the key pays the channel with a transfer.
+// THE KEY PAYS, THE MESSAGE DOES NOT. What the message lands moves with the price, and the
+// provider is owed an exact figure, paid only once its order has been checked. So the message
+// lands the sale's token on the key, and the key pays the channel with a transfer.
 //
 // PROVIDER AGNOSTIC. The provider is a client with two calls, status and channel, and the payment
-// is a hand the driver supplies: the sweep of the key for Chainflip, the exact figure for Meld.
-// Each plugs in behind that shape; nothing here knows which one it is talking to.
+// is a hand the driver supplies. Nothing here knows which provider it is talking to.
 //
 // THE HAND-OFF IS NOT TRUSTED FOR THE PAYMENT. The channel was opened by the page and has been
 // through storage since, and the transfer it names cannot be undone. So before the key pays, the
 // provider is asked what it holds for that channel id and the answer is checked against the
-// withdrawal: the address about to be paid, where the provider pays out (the address the user
-// asked for, or for a bank or card the exact amount), and whether the channel is still open. A
-// provider with no such read is trusted as the hand-off describes it.
+// withdrawal: the address about to be paid, the exact amount the payout to a bank or a card is
+// held to, and whether the channel is still open. A provider with no such read is trusted as the
+// hand-off describes it.
 //
 // RE-ENTRANT, like the message leg. The state is the driver's to persist; a tick that throws is
 // retried on the next tick. Terminal is the provider's own verdict: delivered, or a failure it
 // names.
 
-import { isEvmChain, type SwapStatusResult } from "@getsome/core";
+import type { SwapStatusResult } from "@getsome/core";
 import { AccountId } from "polkadot-api";
 import { bounded } from "./bounded";
-import { freshSweepState, type SweepState } from "./sweep";
 import { DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS, DEFAULT_WITHDRAW_TICK_TIMEOUT_MS } from "./tick";
 
 /** Decodes an Asset Hub address to the account it names, whatever prefix it was written with. */
@@ -52,12 +49,12 @@ export interface RailHandoff {
 /**
  * How close to a channel's expiry the key may still pay it. The payment has to be read, submitted,
  * included and then witnessed by the provider before the channel closes, and a deposit into a
- * closed one is neither swapped nor refunded. So the margin is a tick, a submit and ten minutes,
+ * closed one is not paid out. So the margin is a tick, a submit and ten minutes,
  * which outlasts the driver's whole bound on a payment and still leaves the provider minutes to
  * see the transfer.
  *
- * Erring long is cheap: refusing early costs a retry on a fresh channel, with nothing moved.
- * Erring short costs the whole withdrawal.
+ * Erring long is cheap: refusing early sends the key home with nothing moved. Erring short costs
+ * the whole withdrawal.
  */
 export const CHANNEL_EXPIRY_MARGIN_MS =
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS + 600_000;
@@ -68,16 +65,13 @@ export interface RailLegState {
   handoff: RailHandoff | null;
   /** The key paid the channel. */
   paid: boolean;
-  /** The sweep's own memory, for the hand that pays. */
-  sweep: SweepState;
-  /** The provider's latest word on the swap. */
+  /** The provider's latest word on the sale. */
   reading: SwapStatusResult | null;
 }
 
 export const freshRailLegState = (): RailLegState => ({
   handoff: null,
   paid: false,
-  sweep: freshSweepState(),
   reading: null,
 });
 
@@ -85,13 +79,8 @@ export const freshRailLegState = (): RailLegState => ({
 export interface RailChannelRecord {
   /** Where the provider expects the deposit. */
   depositAddress: string;
-  /** Where the swap pays out. Absent for a provider that pays out off chain, a bank or a card. */
-  destinationAddress?: string;
-  /** `off-chain` when the payout has no address to compare; absent for a payout to an address. */
+  /** `off-chain` for a payout to a bank or a card, which has no address to compare. */
   payout?: "off-chain";
-  destinationChain?: string;
-  destinationAsset?: string;
-  refundAddress?: string;
   /** The provider's own word on the channel being closed. */
   expired: boolean;
   /** What the provider expects to receive, base units, for a provider that holds the key to an
@@ -99,7 +88,7 @@ export interface RailChannelRecord {
   expectedAmount?: bigint;
 }
 
-/** A provider, bound to one network: the swap behind a channel, as it stands. */
+/** A provider, bound to one network: the sale behind a channel, as it stands. */
 export interface RailClient {
   status(id: string): Promise<SwapStatusResult>;
   /**
@@ -114,44 +103,14 @@ export interface RailClient {
 
 /**
  * The provider's record of the channel does not match the withdrawal, or the provider does not
- * know the channel at all. Nothing has moved. Terminal for this channel: Chainflip recovers
- * through a fresh one, like an expiry, while a sale has its one order and its key goes home.
+ * know the channel at all. Nothing has moved. Terminal: a sale has its one order, and its key
+ * goes home.
  */
 export class ChannelMismatchError extends Error {
   constructor(readonly detail: string) {
     super(`the provider's channel does not match this withdrawal: ${detail}`);
     this.name = "ChannelMismatchError";
   }
-}
-
-const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
-const BECH32_ADDRESS = /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]+$/;
-
-const isBech32 = (address: string): boolean =>
-  (address === address.toLowerCase() || address === address.toUpperCase()) &&
-  BECH32_ADDRESS.test(address.toLowerCase());
-
-/** The formats that define the same address in either case: Ethereum, whose checksum is carried in
- *  the casing, and bech32, which is specified in both. Base58 has no such rule, and a Solana
- *  address is a bare public key with no checksum at all, so a case variant of one is simply a
- *  different account. Judged by the chain's format, or by the address's own shape without one. */
-function eitherCase(address: string, chain?: string): boolean {
-  const evm = chain === undefined || isEvmChain(chain);
-  const bitcoin = chain === undefined || chain === "Bitcoin";
-  return (evm && EVM_ADDRESS.test(address)) || (bitcoin && isBech32(address));
-}
-
-/** Addresses on `chain`, compared as the provider may hand them back: exactly, unless the format
- *  itself says the two spellings are one address. */
-function sameAddress(a: string, b: string, chain?: string): boolean {
-  const left = a.trim();
-  const right = b.trim();
-  if (left === right) return true;
-  return (
-    eitherCase(left, chain) &&
-    eitherCase(right, chain) &&
-    left.toLowerCase() === right.toLowerCase()
-  );
 }
 
 /**
@@ -171,34 +130,21 @@ function sameAccount(a: string, b: string): boolean {
   }
 }
 
-export const sameChannelAddress = (a: string, b: string, chain?: string): boolean =>
-  sameAccount(a, b) || sameAddress(a, b, chain);
-
 export interface RailLegInput {
   rail: RailClient;
-  /** Pays the channel from the key on Asset Hub: everything it holds, or the exact `amount` for a
-   *  provider that expects one. Resolves once the payment is on chain. The sweep state is its to
-   *  keep across ticks; an exact payment keeps its own with the driver. */
-  pay: (handoff: RailHandoff, sweep: SweepState) => Promise<void>;
+  /** Pays the channel the exact `amount` from the key on Asset Hub. Resolves once the payment is
+   *  on chain. The payment keeps its own memory with the driver. */
+  pay: (handoff: RailHandoff) => Promise<void>;
   /** Bound on a provider call. */
   tickTimeoutMs: number;
   /** Bound on the payment's resolution. */
   payTimeoutMs: number;
   /** Read once per tick, to judge the channel against its expiry. */
   now: () => number;
-  /** The address the withdrawal is for, checked against the provider's own record of the channel
-   *  before the key pays. Required: a leg that cannot say where the money is going has no business
-   *  sending it, so a missing or empty one refuses rather than skipping the check. The driver is
-   *  not always typed against this, so the refusal is enforced at run time too. Not read for an
-   *  `off-chain` payout, which is checked by its amount instead. */
-  destinationAddress: string;
-  /** `off-chain` for a payout to a bank or a card, which names no address. The provider's record
-   *  must say the same, and must expect exactly `amount`. Absent for a payout to an address. */
-  payout?: "off-chain";
-  /** The exact amount the key pays, base units, for a provider that expects one. */
-  amount?: bigint;
-  refundAddress?: string;
-  payoutAsset?: { chain: string; asset: string };
+  /** The exact amount the key pays, base units. The provider's record must expect exactly this,
+   *  for a payout off chain. The driver is not always typed against this, so a missing one is
+   *  refused at run time too. */
+  amount: bigint;
   /** For a payment that keeps its own memory of an attempt that may have left (the exact
    *  payment's nonce): whether that attempt landed, from the chain alone. Asked before anything
    *  else while the key is unpaid, since a provider that saw the funds may already have closed the
@@ -215,9 +161,8 @@ export interface RailLegOutcome {
 
 /**
  * The channel is at or past its expiry, so the key must not pay it: the provider does not witness
- * a deposit into a closed channel, and what lands there is neither swapped nor refunded. Terminal
- * for this channel. Nothing has moved: a Chainflip withdrawal recovers through a fresh channel, and
- * a fiat sale, whose order cannot be opened again, sends the key home.
+ * a deposit into a closed channel, and what lands there is not paid out. Terminal. Nothing has
+ * moved: the sale, whose order cannot be opened again, sends the key home.
  */
 export class ChannelExpiredError extends Error {
   constructor(
@@ -234,17 +179,14 @@ export class ChannelExpiredError extends Error {
 /** The provider reported an ending that is not a delivery. Terminal for this channel. */
 export class RailFailedError extends Error {
   constructor(readonly reading: SwapStatusResult) {
-    super(`the provider reported the swap failed: ${describeFailure(reading)}`);
+    super(`the provider reported the sale failed: ${describeFailure(reading)}`);
     this.name = "RailFailedError";
   }
 }
 
 /** The provider's ending, in a line; mirrors how the surface reads a status. */
 export function describeFailure(reading: SwapStatusResult): string {
-  const failure = reading.depositFailure ?? reading.swapEgressFailure;
-  if (failure?.reason?.message) return failure.reason.message;
-  if (reading.fallbackEgress) return "the funds were routed to a fallback";
-  return "the deposit is being refunded";
+  return reading.depositFailure?.reason?.message ?? "the provider named no reason";
 }
 
 /** An ms instant for a message. Never throws: a nonsense time must not turn a refusal to pay
@@ -255,16 +197,13 @@ function stamp(ms: number): string {
 }
 
 export const readingFailed = (reading: SwapStatusResult): boolean =>
-  reading.status === "failed" ||
-  reading.depositFailure !== undefined ||
-  reading.swapEgressFailure !== undefined ||
-  reading.fallbackEgress !== undefined;
+  reading.status === "failed" || reading.depositFailure !== undefined;
 
 /**
  * Holds the channel against the provider's own record of it, before the key pays. A provider with
  * no such read is trusted as the hand-off describes it. Refuses when the provider cannot name the
- * channel, has closed it, has an address the withdrawal does not, or when either side cannot name
- * the payout address. A read that did not answer throws on its own and the tick retries.
+ * channel, has closed it, takes deposits at another address, or does not expect the exact figure
+ * off chain. A read that did not answer throws on its own and the tick retries.
  */
 async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): Promise<void> {
   if (input.rail.channel === undefined) return;
@@ -282,40 +221,7 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
       `channel ${handoff.id} takes deposits at ${record.depositAddress}, not ${handoff.address}`,
     );
   }
-  if (
-    input.refundAddress !== undefined &&
-    !sameAccount(record.refundAddress ?? "", input.refundAddress)
-  ) {
-    throw new ChannelMismatchError(
-      `channel ${handoff.id} refunds to '${record.refundAddress ?? ""}', not ${input.refundAddress}`,
-    );
-  }
-  const asset = input.payoutAsset;
-  if (
-    asset !== undefined &&
-    (record.destinationChain !== asset.chain || record.destinationAsset !== asset.asset)
-  ) {
-    throw new ChannelMismatchError(
-      `channel ${handoff.id} pays out '${record.destinationAsset ?? ""}' on '${record.destinationChain ?? ""}', not ${asset.asset} on ${asset.chain}`,
-    );
-  }
-  if (input.payout === "off-chain") {
-    checkOffChainPayout(input, handoff, record);
-  } else {
-    // Both sides must name a payout address. An empty one on either side means the check cannot
-    // be made, which is a refusal here and not a pass: this is the only thing standing between a
-    // hand-off and an irreversible transfer.
-    const wanted = input.destinationAddress ?? "";
-    const named = record.destinationAddress ?? "";
-    if (wanted.trim() === "" || named.trim() === "") {
-      throw new ChannelMismatchError(
-        `channel ${handoff.id} cannot be checked: it pays out to '${named}' and the withdrawal names '${wanted}'`,
-      );
-    }
-    if (!sameAddress(named, wanted, asset?.chain)) {
-      throw new ChannelMismatchError(`channel ${handoff.id} pays out to ${named}, not ${wanted}`);
-    }
-  }
+  checkOffChainPayout(input, handoff, record);
   // The provider's own word outranks our stored clock.
   if (record.expired) throw new ChannelExpiredError(handoff, input.now());
 }
@@ -323,8 +229,7 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
 /**
  * A payout to a bank or a card has no address to compare, so the amount stands in for it: the
  * provider holds the key to an exact figure, and a record that expects another one, or none, is
- * not this withdrawal's. Both sides must agree the payout is off chain, so a provider record that
- * lost its payout address cannot slip through here.
+ * not this withdrawal's. The provider's record must say the payout is off chain.
  */
 function checkOffChainPayout(
   input: RailLegInput,
@@ -379,14 +284,14 @@ export async function railTickOnce(
     // to throw, so the next tick retries rather than paying unchecked.
     await checkAgainstProvider(input, state.handoff);
     await input.onBeforePay?.(state.handoff);
-    await bounded(input.pay(state.handoff, state.sweep), input.payTimeoutMs, "channel payment");
+    await bounded(input.pay(state.handoff), input.payTimeoutMs, "channel payment");
     state.paid = true;
     return { step: "handoff", reading: null };
   }
   const reading = await bounded(
     input.rail.status(state.handoff.id),
     input.tickTimeoutMs,
-    "swap status read",
+    "sale status read",
   );
   state.reading = reading;
   if (readingFailed(reading)) throw new RailFailedError(reading);

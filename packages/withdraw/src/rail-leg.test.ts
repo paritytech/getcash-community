@@ -36,12 +36,14 @@ const reading = (status: SwapStatusResult["status"], extra: Partial<SwapStatusRe
 /** A leg whose channel the hand-off already named. */
 const seeded = (): RailLegState => ({ ...freshRailLegState(), handoff: CHANNEL });
 
-const DESTINATION = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
-/** The provider's record of the channel, as it really has it. */
+const AMOUNT = 20_000_000_000n;
+/** The provider's record of the channel, as it really has it: a sale's, with no payout address
+ *  and an exact figure instead. */
 const RECORD: RailChannelRecord = {
   depositAddress: CHANNEL.address,
-  destinationAddress: DESTINATION,
+  payout: "off-chain",
   expired: false,
+  expectedAmount: AMOUNT,
 };
 
 /** A provider that also answers the channel read, from a fixed record. */
@@ -81,7 +83,7 @@ function world(rail: RailClient, overrides: Partial<RailLegInput> = {}) {
     tickTimeoutMs: 1_000,
     payTimeoutMs: 1_000,
     now: () => NOW,
-    destinationAddress: DESTINATION,
+    amount: AMOUNT,
     onBeforePay: (handoff) => {
       persisted.push(handoff);
     },
@@ -91,7 +93,7 @@ function world(rail: RailClient, overrides: Partial<RailLegInput> = {}) {
 }
 
 describe("the provider leg", () => {
-  it("pays once, persisted first, then follows the swap to delivered", async () => {
+  it("pays once, persisted first, then follows the sale to delivered", async () => {
     const provider = scripted([reading("waiting"), reading("swapping"), reading("complete")]);
     const { input, paid, persisted } = world(provider.rail);
     const state = seeded();
@@ -136,22 +138,21 @@ describe("the provider leg", () => {
     expect(state.paid).toBe(false);
   });
 
-  it("ends with the provider's verdict when the swap fails, keeping the reading", async () => {
-    const refund = reading("failed", { refundEgress: { amount: "1" } });
-    const provider = scripted([reading("receiving"), refund]);
+  it("ends with the provider's verdict when the sale fails, keeping the reading", async () => {
+    const ended = reading("failed", { depositFailure: { reason: { message: "declined" } } });
+    const provider = scripted([reading("receiving"), ended]);
     const { input } = world(provider.rail);
     const state = seeded();
     await railTickOnce(input, state);
     expect((await railTickOnce(input, state)).step).toBe("follow");
     await expect(railTickOnce(input, state)).rejects.toBeInstanceOf(RailFailedError);
-    expect(state.reading).toBe(refund);
+    expect(state.reading).toBe(ended);
   });
 
-  it("reads a failure off the SDK's side fields as well as its status", () => {
+  it("reads a failure off the rail's named failure as well as its status", () => {
     expect(readingFailed(reading("swapping"))).toBe(false);
     expect(readingFailed(reading("failed"))).toBe(true);
-    expect(readingFailed(reading("sending", { swapEgressFailure: {} }))).toBe(true);
-    expect(readingFailed(reading("complete", { fallbackEgress: {} }))).toBe(true);
+    expect(readingFailed(reading("sending", { depositFailure: {} }))).toBe(true);
   });
 
   it("bounds a provider that never answers", async () => {
@@ -188,7 +189,7 @@ describe("the provider leg", () => {
     expect((await railTickOnce(input, state)).step).toBe("handoff");
     expect(paid).toHaveLength(1);
 
-    // A channel that expires while the swap runs is the provider's business, not ours: the
+    // A channel that expires while the sale runs is the provider's business, not ours: the
     // deposit is already in and the leg must keep following it.
     const later = world(provider.rail, { now: () => CHANNEL.expiresAt + DAY });
     expect((await railTickOnce(later.input, state)).step).toBe("follow");
@@ -244,64 +245,10 @@ describe("the provider leg", () => {
     expect(elsewhere.paid).toEqual([]);
   });
 
-  it("refuses when the provider would pay out to another address", async () => {
-    const wrong = world(checking({ ...RECORD, destinationAddress: "bc1qsomeoneelse" }).rail);
-    await expect(railTickOnce(wrong.input, seeded())).rejects.toThrow(/pays out to/);
-    expect(wrong.paid).toEqual([]);
-  });
-
-  it("refuses a channel that refunds elsewhere or pays out another asset", async () => {
-    const KEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
-    const KEY_OTHER_PREFIX = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
-    const asked = { refundAddress: KEY, payoutAsset: { chain: "Bitcoin", asset: "BTC" } };
-    const served = { ...RECORD, destinationChain: "Bitcoin", destinationAsset: "BTC" };
-
-    const ours = world(checking({ ...served, refundAddress: KEY_OTHER_PREFIX }).rail, asked);
-    expect((await railTickOnce(ours.input, seeded())).step).toBe("handoff");
-
-    for (const record of [served, { ...served, refundAddress: KEY.replace(/.$/, "2") }]) {
-      const theirs = world(checking(record).rail, asked);
-      await expect(railTickOnce(theirs.input, seeded())).rejects.toThrow(/refunds to/);
-      expect(theirs.paid).toEqual([]);
-    }
-
-    const swapped = { ...served, refundAddress: KEY, destinationAsset: "USDT" };
-    const other = world(checking(swapped).rail, asked);
-    await expect(railTickOnce(other.input, seeded())).rejects.toThrow(/pays out 'USDT' on/);
-    expect(other.paid).toEqual([]);
-  });
-
   it("takes the provider's word that a channel is closed, whatever our clock says", async () => {
     const closed = world(checking({ ...RECORD, expired: true }).rail);
     await expect(railTickOnce(closed.input, seeded())).rejects.toBeInstanceOf(ChannelExpiredError);
     expect(closed.paid).toEqual([]);
-  });
-
-  it("reads the payout address back in any casing, where the format allows both", async () => {
-    // Ethereum's checksum is casing and bech32 is specified in both, so an address the user gave
-    // in one form and the provider hands back in another is the same address.
-    for (const address of [DESTINATION, "0x52908400098527886E0F7030069857D2E4169EE7"]) {
-      const cased = checking({ ...RECORD, destinationAddress: address.toUpperCase() }, [
-        reading("swapping"),
-      ]);
-      const { input, paid } = world(cased.rail, { destinationAddress: address });
-      await railTickOnce(input, seeded());
-      expect(paid).toHaveLength(1);
-    }
-  });
-
-  it("holds a base58 payout address to its exact spelling, since a case variant is another account", async () => {
-    // Solana addresses are bare public keys with no checksum, so nothing rejects a case variant
-    // for us: the comparison has to.
-    for (const solana of [
-      "4Nd1mYQx3sABznWXpq2mV3G7iC6nnZq6dvGnHLm2rrDF",
-      "bc1mYQx3sABznWXpq2mV3G7iC6nnZq6dvGnHLm2rrDFa",
-    ]) {
-      const provider = checking({ ...RECORD, destinationAddress: solana.toLowerCase() });
-      const { input, paid } = world(provider.rail, { destinationAddress: solana });
-      await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelMismatchError);
-      expect(paid).toEqual([]);
-    }
   });
 
   it("leaves a provider that cannot be reached for the next tick, unpaid", async () => {
@@ -318,9 +265,9 @@ describe("the provider leg", () => {
     expect(state.paid).toBe(false);
   });
   it("reads the channel's own address as an account, whatever prefix it is written with", async () => {
-    // The same Asset Hub account under the Polkadot, Kusama and generic prefixes. The address is
-    // issued by one Chainflip endpoint and read back from another, so the two must not have to
-    // agree on how to write it.
+    // The same Asset Hub account under the Polkadot, Kusama and generic prefixes. The address the
+    // hand-off carries and the one the provider reads back must not have to agree on how to
+    // write it.
     const polkadot = "1ADRXEpxCcHPze36zV1imej5DNcGZ8puqopyUhbppXyGuhP";
     const kusama = "CjXwWKdinMji7Sxv4F4UaBaNBfCNvPsHiv6CqzCkXiwqerR";
     const generic = "5CDvHBym6RLoxTdX9MS1acpaDbNxaFagqM5LpBiFGjWT6o1n";
@@ -340,36 +287,14 @@ describe("the provider leg", () => {
     ).rejects.toBeInstanceOf(ChannelMismatchError);
     expect(other.paid).toEqual([]);
   });
-
-  it("refuses when either side cannot name the payout address", async () => {
-    const silentProvider = world(checking({ ...RECORD, destinationAddress: "" }).rail);
-    await expect(railTickOnce(silentProvider.input, seeded())).rejects.toBeInstanceOf(
-      ChannelMismatchError,
-    );
-    expect(silentProvider.paid).toEqual([]);
-
-    // A driver that names no destination does not get a free pass: the check is the only thing
-    // between a hand-off and an irreversible transfer.
-    const silentDriver = world(checking(RECORD).rail, { destinationAddress: "" });
-    await expect(railTickOnce(silentDriver.input, seeded())).rejects.toThrow(/cannot be checked/);
-    expect(silentDriver.paid).toEqual([]);
-  });
 });
 
-describe("the rail leg, for a payout off chain", () => {
-  const AMOUNT = 20_000_000_000n;
-  /** A fiat sale's record: no payout address, an exact figure instead. */
-  const SALE: RailChannelRecord = {
-    depositAddress: CHANNEL.address,
-    payout: "off-chain",
-    expired: false,
-    expectedAmount: AMOUNT,
-  };
-  const offChain = { payout: "off-chain" as const, amount: AMOUNT, destinationAddress: "" };
+describe("the rail leg's exact figure", () => {
+  const SALE = RECORD;
 
   it("pays a sale whose provider expects exactly the figure the key pays", async () => {
     const provider = checking(SALE);
-    const { input, paid } = world(provider.rail, offChain);
+    const { input, paid } = world(provider.rail);
     await railTickOnce(input, seeded());
     expect(paid).toEqual([CHANNEL]);
   });
@@ -379,34 +304,30 @@ describe("the rail leg, for a payout off chain", () => {
       { ...SALE, expectedAmount: AMOUNT + 1n },
       { ...SALE, expectedAmount: undefined },
     ]) {
-      const { input, paid } = world(checking(record).rail, offChain);
+      const { input, paid } = world(checking(record).rail);
       await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelMismatchError);
       expect(paid).toEqual([]);
     }
   });
 
   it("refuses when the leg names no amount of its own", async () => {
-    const { input, paid } = world(checking(SALE).rail, { ...offChain, amount: undefined });
+    const { input, paid } = world(checking(SALE).rail, {
+      amount: undefined as unknown as bigint,
+    });
     await expect(railTickOnce(input, seeded())).rejects.toThrow(/cannot be checked/);
     expect(paid).toEqual([]);
   });
 
-  it("refuses a record that pays out on chain while the withdrawal pays out off it", async () => {
-    const onChain = { ...RECORD, expectedAmount: AMOUNT };
-    const { input, paid } = world(checking(onChain).rail, offChain);
+  it("refuses a record that pays out on chain", async () => {
+    const { payout: _payout, ...onChain } = RECORD;
+    const { input, paid } = world(checking(onChain).rail);
     await expect(railTickOnce(input, seeded())).rejects.toThrow(/pays out on chain/);
     expect(paid).toEqual([]);
   });
 
   it("still refuses a sale the provider has closed", async () => {
-    const { input, paid } = world(checking({ ...SALE, expired: true }).rail, offChain);
+    const { input, paid } = world(checking({ ...SALE, expired: true }).rail);
     await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelExpiredError);
-    expect(paid).toEqual([]);
-  });
-
-  it("does not let an off-chain record through a withdrawal that pays out to an address", async () => {
-    const { input, paid } = world(checking(SALE).rail);
-    await expect(railTickOnce(input, seeded())).rejects.toThrow(/cannot be checked/);
     expect(paid).toEqual([]);
   });
 
@@ -415,7 +336,6 @@ describe("the rail leg, for a payout off chain", () => {
     // its record would read as unpaid, and the channel is past its expiry too. The chain decides.
     const provider = checking(null);
     const { input, paid } = world(provider.rail, {
-      ...offChain,
       landed: async () => true,
       now: () => CHANNEL.expiresAt + DAY,
     });
@@ -428,7 +348,7 @@ describe("the rail leg, for a payout off chain", () => {
 
   it("checks the provider and pays as usual while the chain shows nothing landed", async () => {
     const provider = checking(SALE);
-    const { input, paid } = world(provider.rail, { ...offChain, landed: async () => false });
+    const { input, paid } = world(provider.rail, { landed: async () => false });
     await railTickOnce(input, seeded());
     expect(provider.asked).toEqual(["ch-1"]);
     expect(paid).toEqual([CHANNEL]);
@@ -436,7 +356,6 @@ describe("the rail leg, for a payout off chain", () => {
 
   it("stops on what the chain cannot tell, and bounds the read", async () => {
     const unresolved = world(checking(SALE).rail, {
-      ...offChain,
       landed: async () => {
         throw new Error("the key moved on");
       },
@@ -445,7 +364,6 @@ describe("the rail leg, for a payout off chain", () => {
     expect(unresolved.paid).toEqual([]);
 
     const hung = world(checking(SALE).rail, {
-      ...offChain,
       payTimeoutMs: 5,
       landed: () => new Promise<boolean>(() => {}),
     });
