@@ -241,7 +241,7 @@ async function lostRequestFees(
   address: string,
   route: ConversionRoute,
   settleAmount: bigint,
-): Promise<Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit">> {
+): Promise<ReturnType<typeof handoffFees>> {
   const defaults = {
     remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
     // Only a native deposit carries fee native; the other tiers price their fees live.

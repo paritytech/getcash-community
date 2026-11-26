@@ -172,7 +172,7 @@ function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
 export interface WithdrawXcmArgs {
   /** All the CASH the key holds after the swap. */
   cashToSend: bigint;
-  /** The PAS the XCM withdraws: what the key holds less the transaction fee and its margin. */
+  /** The PAS the XCM withdraws: what the key can send less the transaction fee and its margin. */
   pasToWithdraw: bigint;
   /** People's XCM fee allowance, in PAS. The unspent part travels on with the rest. */
   payFeesPas: bigint;

@@ -35,6 +35,8 @@ import {
   type RefundChain,
   type RefundKey,
 } from "@getsome/ephemeral";
+import { blake2b } from "@noble/hashes/blake2.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
@@ -74,7 +76,7 @@ import {
   type FakeHandoff,
   type Harness,
 } from "@getsome/testing";
-import { mainnetSdk, NETWORK } from "./chainflip-backend";
+import { checkedAgainstChainflip, mainnetSdk, NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import { devLog } from "./log";
 
@@ -670,10 +672,16 @@ function depositBudget(
  *  quoted instead, which is what the worker's gate waits for. */
 export function handoffFees(
   sizing: FundingSizing,
-): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
+): Pick<
+  WorkerHandoffPayload,
+  "remoteFeeBuffer" | "keepNativeForFees" | "keepAliveNative" | "quotedDeposit"
+> {
   return {
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
     keepNativeForFees: ("keepNativeForFees" in sizing ? sizing.keepNativeForFees : 0n).toString(),
+    ...("keepAliveNative" in sizing && sizing.keepAliveNative !== undefined
+      ? { keepAliveNative: sizing.keepAliveNative.toString() }
+      : {}),
     ...("quotedDeposit" in sizing ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
   };
 }
@@ -751,16 +759,36 @@ function handoffPayloadOnce(
   };
 }
 
-/** Deterministic 32-byte seed from a label, for mock mode. */
+const MOCK_ROOT_KEY = "getsome.mock.entropy";
+let mockRoot: Uint8Array | undefined;
+
+function storedMockRoot(): Uint8Array | null {
+  try {
+    const stored = window.localStorage.getItem(MOCK_ROOT_KEY) ?? "";
+    return /^[0-9a-f]{64}$/.test(stored) ? hexToBytes(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function newMockRoot(): Uint8Array {
+  const root = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    window.localStorage.setItem(MOCK_ROOT_KEY, bytesToHex(root));
+  } catch {
+    return root;
+  }
+  return root;
+}
+
+/** 32-byte seed from a label and a random root kept in this browser, for mock mode. */
 function mockEntropy(): EntropyPort {
+  mockRoot ??= storedMockRoot() ?? newMockRoot();
+  const key = mockRoot;
   return {
     deterministic: true,
     async deriveSeed(label: Uint8Array): Promise<Uint8Array> {
-      const out = new Uint8Array(32);
-      label.forEach((b, i) => {
-        out[i % 32] = (out[i % 32] ?? 0) ^ b;
-      });
-      return out;
+      return blake2b(label, { key, dkLen: 32 });
     },
   };
 }
@@ -1071,10 +1099,16 @@ export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
  *  for a swap source; the manual rail, a direct deposit of that token, for every other. */
 export async function railFor(sourceId: SourceId, route: ConversionRoute): Promise<ChainflipRail> {
   const token = depositTokenOf(route);
-  if (!SOURCE_CONFIG_BY_ID.has(sourceId)) return createManualRail({ token });
+  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
+  if (source === undefined) return createManualRail({ token });
   const delivered = chainflipTokenOf(token);
   if (delivered === undefined) throw new Error(`Chainflip cannot deliver ${token.symbol}`);
-  return createChainflipRail({ sdk: await mainnetSdk(), egress: egressFor(delivered) });
+  const egress = egressFor(delivered);
+  return checkedAgainstChainflip(
+    createChainflipRail({ sdk: await mainnetSdk(), egress }),
+    source,
+    egress,
+  );
 }
 
 export async function createCoinageSession(
@@ -1214,10 +1248,12 @@ export async function createCoinageSession(
     });
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
+    const keepAliveNative = pool?.keepAliveNative;
+    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees, keepAliveNative };
     // Size the native budget the user must deposit from the live pool quote for the CASH
     // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
-    // the pool moves, plus the retained fee native.
+    // the pool moves, plus the retained fee native, plus what a burner the chain keeps open needs
+    // where the estimate measured it.
     budget = await stage(
       "pool budget sizing",
       15_000,
@@ -1227,6 +1263,7 @@ export async function createCoinageSession(
         settleAmount: args.amount,
         remoteFeeBuffer,
         keepNativeForFees,
+        keepAliveNative,
         slippagePct,
       }),
     );

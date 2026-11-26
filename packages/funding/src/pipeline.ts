@@ -91,7 +91,12 @@
 // (trap.ts). FundingTrappedError then ends the run as a recovery, never as a timeout, and nothing
 // is converted twice: the trap waits for the burner's claim.
 
-import { TOKENS, assetHubAssetLocation } from "@getsome/core";
+import {
+  assetHubAssetLocation,
+  sendableNative,
+  TOKENS,
+  type SendableNativeOptions,
+} from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
   HexString,
@@ -264,8 +269,8 @@ export class FundingHeldError extends Error {
 }
 
 export interface FundingBalances {
-  /** The deposit on Asset Hub in the asset the route expects: the native on the pool tier, the
-   *  external on the PSM tier, the stable on the stable pool tier. */
+  /** The deposit on Asset Hub in the asset the route expects: the native the burner can send on
+   *  the pool tier, the external on the PSM tier, the stable on the stable pool tier. */
   depositAh: bigint;
   underlyingPeople: bigint;
 }
@@ -321,8 +326,8 @@ export function withHeadroom(amount: bigint, slippagePct: number): bigint {
   return (amount * BigInt(Math.round((100 + slippagePct) * 100))) / 10_000n;
 }
 
-/** Fresh exact-IN quote: the underlying `nativeIn` buys right now. The funding program gives the
- *  burner's whole native balance above its fees; this asks whether the pool can take that much.
+/** Fresh exact-IN quote: the underlying `nativeIn` buys right now. The funding program gives all
+ *  the native the burner can send above its fees; this asks whether the pool can take that much.
  *
  *  `null` when the pool cannot price this much (too shallow for the amount): that is an
  *  answer about the pool, not a transport failure, so it is returned rather than thrown and
@@ -372,10 +377,19 @@ export async function quoteNativeInMax(
   return withHeadroom(await quoteNativeIn(api, pool, underlyingOut), slippagePct);
 }
 
+/** Native the ask carries on top of the headroom for a burner the chain keeps open: the
+ *  existential deposit that stays on it, and the dispatch fee of the one attempt the chain may
+ *  refuse before the pipeline holds that deposit back. The gate counts neither, so they stay out
+ *  of keepNativeForFees. */
+export async function keepAliveNative(api: AssetHubApi, dispatchNative: bigint): Promise<bigint> {
+  return (await api.constants.Balances.ExistentialDeposit()) + dispatchNative;
+}
+
 /** The native budget the rail must deliver for `settleAmount` to be claimable on the pool tier:
  *  the pool quote for settle+buffer plus the headroom (DEFAULT_SLIPPAGE_PCT), plus the native
- *  the funding program spends on its own fees. The single source of truth for app-side budget
- *  sizing; uses the same defaults as the pipeline.
+ *  the funding program spends on its own fees, plus `keepAliveNative` where the caller measured
+ *  it. The single source of truth for app-side budget sizing; uses the same defaults as the
+ *  pipeline.
  *
  *  No credit is netted off. Each request has its own burner, so there is nothing on it to
  *  net against, and a quote that shrinks itself against a balance the buyer cannot see is
@@ -387,6 +401,7 @@ export async function sizeNativeBudget(input: {
   remoteFeeBuffer?: bigint;
   slippagePct?: number;
   keepNativeForFees?: bigint;
+  keepAliveNative?: bigint;
 }): Promise<bigint> {
   const keep = input.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
   const buyTarget = input.settleAmount + (input.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER);
@@ -398,7 +413,7 @@ export async function sizeNativeBudget(input: {
     buyTarget,
     input.slippagePct ?? DEFAULT_SLIPPAGE_PCT,
   );
-  return nativeInMax + keep;
+  return nativeInMax + keep + (input.keepAliveNative ?? 0n);
 }
 
 /** Fresh exact-out quote on the stable/native pool: the stable that buys `nativeOut` right now.
@@ -620,18 +635,22 @@ export interface TickOutcome {
 type BlockTag = "best" | "finalized";
 
 /** The burner's deposit on Asset Hub in the asset the route expects, at a block tag or a block
- *  hash: the native's free balance, or the holding of the pallet-assets id the route's token
- *  names. */
+ *  hash: the native the account can send (`sendableNative`), or the holding of the pallet-assets
+ *  id the route's token names. */
 export async function readDeposit(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
   at: BlockTag | HexString,
+  options?: SendableNativeOptions,
 ): Promise<bigint> {
   const token = depositTokenOf(route);
   if (token.assetHubId === undefined) {
-    const account = await api.query.System.Account.getValue(address, { at });
-    return account?.data.free ?? 0n;
+    const [account, existentialDeposit] = await Promise.all([
+      api.query.System.Account.getValue(address, { at }),
+      api.constants.Balances.ExistentialDeposit(),
+    ]);
+    return sendableNative(account, existentialDeposit, options);
   }
   const held = await api.query.Assets.Account.getValue(token.assetHubId, address, { at });
   return held?.balance ?? 0n;
@@ -831,7 +850,7 @@ function rejected(
 }
 
 /** The last submit's answer was lost, to a worker killed mid-send or to the inclusion bound. The
- *  chain says whether it landed: People up, or the burner reaped, or the nonce moved with the
+ *  chain says whether it landed: People up, or the burner emptied, or the nonce moved with the
  *  deposit short of what the program needs, and it did. The nonce alone cannot tell, since a
  *  program that reaped the burner starts its nonce over; the deposit alone cannot either, since
  *  a dearer program leaves an intact deposit short. Nothing landed and the nonce unmoved, the
@@ -952,7 +971,11 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   const readStartedAt = input.now();
   const [depositAh, peopleHeld] = await bounded(
     Promise.all([
-      readDeposit(api, route, address, "best"),
+      // What keeps an account open can land after this read and be gone by the next, so a refused
+      // withdrawal holds the existential deposit back whatever the account shows.
+      readDeposit(api, route, address, "best", {
+        keepAlive: state.lastRejection === WITHDRAWAL_REFUSED,
+      }),
       input.readUnderlyingOnPeople(address, "best"),
     ]),
     input.tickTimeoutMs,
@@ -975,9 +998,9 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       "trap read",
     );
   // The program ran on People: People's finalized block holds the CASH it sent, or a trap holds
-  // it there. Asked only of a burner the program would have reaped, since a fork can take the
-  // deposit, the program and the arrival People saw at its best block all together. A claim the
-  // host made final since leaves nothing there, and ends the run on its own.
+  // it there. Asked only of a burner found empty, since a fork can take the deposit, the program
+  // and the arrival People saw at its best block all together. A claim the host made final since
+  // leaves nothing there, and ends the run on its own.
   const ranOnPeople = async (): Promise<boolean> => {
     const held = await bounded(
       input.readUnderlyingOnPeople(address, "finalized"),
@@ -999,7 +1022,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     );
   }
   // The program's block was replaced. An empty burner then means either that the chain put the
-  // program back into a later block, which reaps the burner too, or that the fork took the
+  // program back into a later block, which empties the burner too, or that the fork took the
   // deposit with it. Only People tells them apart, so the run waits for its CASH there: a burner
   // still empty with nothing on People a while later is a deposit gone and a program that never
   // ran. Its submit is settled as such, and the run waits for the deposit as before it came.
@@ -1246,8 +1269,8 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
 
   if (effective === "swap") {
     const pool = poolOf(input);
-    // Withdraw the whole native balance minus the dispatch fee, pay the XCM's fees in native,
-    // exchange the rest inside the holding, and send the result to the burner on People.
+    // Withdraw all the native the burner can send minus the dispatch fee, pay the XCM's fees in
+    // native, exchange the rest inside the holding, and send the result to the burner on People.
     const fees = await bounded(
       estimateFundingProgramFees({
         api,
@@ -1382,6 +1405,9 @@ export function exchangeFloor(target: bigint, quoted: bigint, floorPct: number):
  *  exchange, and the stable tier's second. */
 const POOL_EXCHANGE_MISSED = "ExchangeAsset failed with NoDeal";
 const STABLE_EXCHANGE_MISSED = "ExchangeAsset #2 failed with NoDeal";
+/** How a rejection reads when the chain would not let the pool tier's program withdraw what it
+ *  named. The program withdraws once, so the instruction carries no number. */
+const WITHDRAWAL_REFUSED = "WithdrawAsset failed with FailedToTransactAsset";
 
 interface ExchangeFloor {
   amount: bigint;

@@ -5,7 +5,7 @@
 // there any balance is the deposit, since the provider delivers what was asked.
 
 import { describe, expect, it } from "vitest";
-import { DIRECT_SLIPPAGE_PCT } from "@getsome/funding";
+import { DIRECT_SLIPPAGE_PCT, withHeadroom } from "@getsome/funding";
 import { reduce } from "../app/funding/requests/reducer";
 import type {
   AcceptedDepositTerms,
@@ -113,6 +113,24 @@ describe("a Polkadot deposit", () => {
       keep + ((askedDot - keep) * 10_000n) / BigInt(Math.round((100 + DIRECT_SLIPPAGE_PCT) * 100));
     expect(reduce(native, reading(plain, 10, null)).status.kind).toBe("deposit-seen");
     expect(reduce(native, reading(plain - 1n, 10, null)).depositMismatch?.kind).toBe("short");
+
+    // What the ask carries for a burner the chain keeps open is not in the gate either: the
+    // worker converts at the quote plus the fee native.
+    const quoted = 29_500_000_000n;
+    const keepAlive = 118_000_000n;
+    const keptOpen = record("dot-assethub", {
+      asset: "DOT",
+      amount: withHeadroom(quoted, DIRECT_SLIPPAGE_PCT) + keep + keepAlive,
+      handoff: {
+        tier: "pool",
+        keepNativeForFees: keep.toString(),
+        keepAliveNative: keepAlive.toString(),
+      },
+    });
+    expect(reduce(keptOpen, reading(quoted + keep, 10, null)).status.kind).toBe("deposit-seen");
+    expect(reduce(keptOpen, reading(quoted + keep - 1n, 10, null)).depositMismatch?.kind).toBe(
+      "short",
+    );
   });
 
   it("records a balance in another direct token as a wrong-token deposit", () => {

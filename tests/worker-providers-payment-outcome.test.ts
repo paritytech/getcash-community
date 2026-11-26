@@ -87,6 +87,18 @@ describe("a payment seen in a best block", () => {
     );
   });
 
+  it("judges a replaced block by the read it is given, in place of the key's balance and nonce", async () => {
+    mocks.settleBlock.mockResolvedValue("dropped");
+    const readKey = vi.fn(async () => 0n);
+    const { paymentOutcome } = await import("../worker/src/providers.js");
+    const shows = (unswept: bigint) => unswept === 0n;
+    expect(await paymentOutcome(record, SEEN, shows, { readKey })).toBe("final");
+    expect(readKey).toHaveBeenCalledWith(expect.anything(), KEY_HEX, TOKENS.USDT, {
+      at: "finalized",
+    });
+    expect(mocks.readAssetHubAccount).not.toHaveBeenCalled();
+  });
+
   it("waits while it shows only at the best head, and is gone when it shows nowhere", async () => {
     mocks.settleBlock.mockResolvedValue("dropped");
     heads = { best: 0n, finalized: 20_000_000n };

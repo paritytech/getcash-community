@@ -6,7 +6,7 @@
  * The log leaves the device only attached to the first AUTO_ATTACH unexpected
  * errors of a page load (init.ts), as `log-<app>-<session>.json`:
  * `{ meta, lines: [{ t, level, tag, message, data? }] }`, cut from its oldest
- * end to MAX_ATTACHMENT_CHARS and scrubbed once more as a whole. Never throws.
+ * end to MAX_ATTACHMENT_CHARS, each line scrubbed once more. Never throws.
  */
 import type * as Sentry from "@sentry/vue";
 import { addLogSink, type LogEntry } from "../log";
@@ -44,6 +44,12 @@ const toLine = (entry: LogEntry): Line => ({
   tag: entry.tag,
   message: entry.message,
   ...(entry.data !== undefined ? { data: entry.data } : {}),
+});
+
+const scrubbed = (line: Line): Line => ({
+  ...line,
+  message: scrubText(line.message),
+  ...(line.data !== undefined ? { data: scrubText(line.data) } : {}),
 });
 
 /** Start keeping this page's lines; returns the remover. */
@@ -86,7 +92,7 @@ function sessionLogAttachment(): Attachment | null {
   }
   return {
     filename: `log-${product}-${sessionId.slice(0, 8)}.json`,
-    data: scrubText(data),
+    data: body(kept.map(scrubbed)),
     contentType: "application/json",
   };
 }

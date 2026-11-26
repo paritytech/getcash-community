@@ -43,6 +43,7 @@ runs:
         MNEMONIC: ${{ inputs.mnemonic }}
         DEPLOY_DOMAIN: ${{ inputs.domain }} # read by bulletin-deploy.config.ts
         DEPLOY_ENV: ${{ inputs.env }}
+        BULLETIN_DEPLOY_TELEMETRY: "0"
       with:
         timeout_minutes: 30
         max_attempts: 3

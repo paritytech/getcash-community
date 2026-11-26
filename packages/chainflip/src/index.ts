@@ -36,7 +36,7 @@ export {
   type QuoteBackend,
 } from "./quote";
 export { getSwapStatus, isImplicitFailure, type StatusBackend } from "./status";
-export { requestDepositAddress, type DepositBackend } from "./deposit";
+export { requestDepositAddress, requestedMinPrice, type DepositBackend } from "./deposit";
 export { createLiquidityGate, type LiquidityGate } from "./gate";
 export {
   learnFloors,

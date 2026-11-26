@@ -928,13 +928,12 @@ describe("what a withdrawal delivered", () => {
     expect(receivedText(sale({ status: sent }))).toBe("≈ €24.20");
   });
 
-  it("reads the token off the destination's id, whatever the screens call its network", () => {
-    // BNB Chain is the screens' name for the network Chainflip calls Bsc, and its USDT counts
-    // 18 decimals.
+  it("reads the token off the destination's id", () => {
+    // USDT counts 18 decimals on Bsc.
     const bnbChain = chainflip({
       ref: requestRefOf("wd:usdt-bsc", 3),
       status: sent,
-      destination: { ...chainflip().destination, chain: "BNB Chain", asset: "USDT" },
+      destination: { ...chainflip().destination, chain: "Bsc", asset: "USDT" },
       handoff: {
         ...chainflip().handoff,
         channel: { ...chainflip().handoff.channel!, expectedEgress: "24440000000000000000" },
