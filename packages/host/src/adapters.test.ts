@@ -17,20 +17,20 @@ describe("requestPaymentPermissions", () => {
         asked.push(item);
         return ok(true);
       },
-      { chainSubmit: true, remote: ["*.chainflip.io", "chainflip.io"] },
+      { chainSubmit: true, remote: ["*.example.org", "example.org"] },
     );
 
     expect(res).toEqual({ granted: true, denied: [] });
     expect(asked).toEqual([
       { tag: "ChainSubmit" },
-      { tag: "Remote", value: ["*.chainflip.io", "chainflip.io"] },
+      { tag: "Remote", value: ["*.example.org", "example.org"] },
     ]);
   });
 
   it("a denial is a normal outcome, not an error", async () => {
     const res = await requestPaymentPermissions(
       (item) => ok(item.tag !== "ChainSubmit"), // user denies chain submit
-      { chainSubmit: true, remote: ["chainflip.io"] },
+      { chainSubmit: true, remote: ["example.org"] },
     );
     expect(res.granted).toBe(false);
     expect(res.denied).toEqual(["ChainSubmit"]);
@@ -43,7 +43,7 @@ describe("requestPaymentPermissions", () => {
         asked.push(item);
         return ok(true);
       },
-      { remote: ["chainflip.io"] },
+      { remote: ["example.org"] },
     );
     expect(asked.map((a) => a.tag)).toEqual(["Remote"]);
   });

@@ -1,9 +1,9 @@
-// Scriptable ChainflipRail fake: canned quote + channel, programmable status sequence.
+// Scriptable FundingRail fake: canned quote + channel, programmable status sequence.
 // Complements createFakeHarness (chain+action) for driving the session's dual-poll offline.
 
 import type {
-  ChainflipRail,
   DepositChannel,
+  FundingRail,
   OpenChannelArgs,
   Quote,
   ReverseQuoteInput,
@@ -31,7 +31,7 @@ export interface FakeRailOptions {
   sources?: SourceDescriptor[];
 }
 
-export interface FakeRail extends ChainflipRail {
+export interface FakeRail extends FundingRail {
   /** Live counters/args for assertions (same object across reads). */
   readonly stats: {
     quoteCalls: number;
@@ -44,8 +44,8 @@ export interface FakeRail extends ChainflipRail {
 }
 
 const DEFAULT_SOURCES: SourceDescriptor[] = [
-  { sourceId: "btc", chain: "Bitcoin", asset: "BTC", displayName: "Bitcoin", decimals: 8 },
-  { sourceId: "eth", chain: "Ethereum", asset: "ETH", displayName: "Ethereum", decimals: 18 },
+  { sourceId: "dot-assethub", chain: "AssetHub", asset: "DOT", displayName: "DOT", decimals: 10 },
+  { sourceId: "usdt-assethub", chain: "AssetHub", asset: "USDT", displayName: "USDT", decimals: 6 },
 ];
 
 export function createFakeRail(opts: FakeRailOptions = {}): FakeRail {
@@ -76,10 +76,10 @@ export function createFakeRail(opts: FakeRailOptions = {}): FakeRail {
       return {
         sourceId: req.sourceId,
         source: opts.quote?.source ?? {
-          amount: 100_000n,
-          formatted: "0.001 BTC",
-          assetSymbol: "BTC",
-          decimals: 8,
+          amount: 10_000_000_000n,
+          formatted: "1 DOT",
+          assetSymbol: "DOT",
+          decimals: 10,
         },
         ...(opts.quote?.expiresAt !== undefined ? { expiresAt: opts.quote.expiresAt } : {}),
         raw: opts.quote?.raw ?? {},
@@ -92,10 +92,10 @@ export function createFakeRail(opts: FakeRailOptions = {}): FakeRail {
       const expiresAt = channelExpiresAt ?? Date.now() + 86_400_000;
       return {
         deposit: {
-          address: opts.depositAddress ?? "bc1q-fake-deposit",
-          amount: 100_000n,
-          formatted: "0.001 BTC",
-          assetSymbol: "BTC",
+          address: opts.depositAddress ?? "fake-deposit",
+          amount: 10_000_000_000n,
+          formatted: "1 DOT",
+          assetSymbol: "DOT",
           expiresAt,
         },
         depositChannelId: `chan-${stats.channelsOpened}`,

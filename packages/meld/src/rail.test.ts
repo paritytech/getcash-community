@@ -84,7 +84,7 @@ describe("createMeldRail", () => {
     });
     expect(sentQuote).toEqual(["USDT_DOT"]);
 
-    await rail.requestDepositAddress({ quote, destAddress: BURNER, refundAddress: "" });
+    await rail.requestDepositAddress({ quote, destAddress: BURNER });
     expect(sentSession?.destinationCurrencyCode).toBe("USDT_DOT");
   });
 
@@ -116,7 +116,6 @@ describe("createMeldRail", () => {
     const channel = await rail.requestDepositAddress({
       quote,
       destAddress: BURNER,
-      refundAddress: "",
     });
 
     expect(channel.depositChannelId).toBe("funding-1");
@@ -157,7 +156,6 @@ describe("createMeldRail", () => {
     const channel = await rail.requestDepositAddress({
       quote,
       destAddress: BURNER,
-      refundAddress: "",
     });
 
     expect(sentMethod).toBe("SEPA");

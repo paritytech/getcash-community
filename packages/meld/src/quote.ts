@@ -11,9 +11,9 @@ import { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export interface MeldQuoteContext {
   readonly country: string;
   readonly fiat: string;
-  /** The token Meld delivers; its `meldCurrencyCode` is the wire destination, and its Chainflip
-   *  identifier is what the rail port's SourceDescriptor and Quote name delivered assets by. */
-  readonly token: MeldToken & Required<Pick<TokenSpec, "chainflipAsset">>;
+  /** The token Meld delivers; its `meldCurrencyCode` is the wire destination, and its rail name
+   *  is what the rail port's SourceDescriptor and Quote name delivered assets by. */
+  readonly token: MeldToken & Required<Pick<TokenSpec, "railAsset">>;
   readonly method: string;
   /** The method's fiat limits in `fiat`, from the corridor, when the caller has them. The rate
    *  probe starts at `min`; without one it starts at a guess and learns a bound from a refusal. */
@@ -206,7 +206,7 @@ export async function computeMeldQuote(
   // Only a clearing line may be quoted.
   if (cleared === null) {
     throw new Error(
-      `Meld could not price ${destinationAmount} ${ctx.token.chainflipAsset} in ${ctx.fiat}; the rate moved on every attempt. Please try again.`,
+      `Meld could not price ${destinationAmount} ${ctx.token.railAsset} in ${ctx.fiat}; the rate moved on every attempt. Please try again.`,
     );
   }
   best = cleared;
@@ -217,7 +217,7 @@ export async function computeMeldQuote(
     source: {
       amount: tokenAmount,
       formatted: destinationAmount,
-      assetSymbol: ctx.token.chainflipAsset,
+      assetSymbol: ctx.token.railAsset,
       decimals: ctx.token.decimals,
     },
     raw,

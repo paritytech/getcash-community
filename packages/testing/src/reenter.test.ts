@@ -10,7 +10,7 @@ function input(h: Harness): ReEnterInput<unknown> {
     action: h.action,
     chain: h.chain,
     signer: h.signer,
-    sourceId: "btc",
+    sourceId: "dot-assethub",
     recipient: RECIPIENT,
     settlement: { kind: "native" },
     key: "attempt-key-1",

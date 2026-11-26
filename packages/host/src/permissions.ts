@@ -14,7 +14,7 @@ export type RequestPermissionLike = (
 export interface PaymentPermissionsRequest {
   /** Ask for chain-submit. */
   chainSubmit?: boolean;
-  /** Remote domains to allowlist (e.g. ['*.chainflip.io', 'chainflip.io']). */
+  /** Remote domains to allowlist (e.g. ['*.example.org', 'example.org']). */
   remote?: string[];
 }
 

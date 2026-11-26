@@ -1,11 +1,11 @@
-// A ChainflipRail stand-in for networks Chainflip cannot reach: the user sends the rail's token
-// directly to the ephemeral's Asset Hub address. The quote is identity and the status poll stays
+// The rail for a direct deposit on Asset Hub: the user sends the rail's token straight to the
+// ephemeral's Asset Hub address. The quote is identity and the status poll stays
 // 'waiting'; the funding pipeline and the session's funded-gate own progress.
 
 import {
   TOKENS,
-  type ChainflipRail,
   type DepositChannel,
+  type FundingRail,
   type OpenChannelArgs,
   type Quote,
   type ReverseQuoteInput,
@@ -46,7 +46,7 @@ export const manualDepositOf = (sourceId: ManualSourceId): DepositAsset =>
 
 /** The name a direct token goes by on the deposit screen: the rails' name for it, so the native
  *  is named after its Polkadot counterpart. */
-export const directAssetName = (token: TokenSpec): string => token.chainflipAsset ?? token.symbol;
+export const directAssetName = (token: TokenSpec): string => token.railAsset ?? token.symbol;
 
 /** Exact base-units -> decimal string (trailing zeros trimmed). */
 function formatUnits(base: bigint, decimals: number): string {
@@ -74,7 +74,7 @@ export interface ManualRailOptions {
   now?: () => number;
 }
 
-export function createManualRail(opts: ManualRailOptions = {}): ChainflipRail {
+export function createManualRail(opts: ManualRailOptions = {}): FundingRail {
   const expiry = opts.depositExpiryMs ?? 86_400_000;
   const now = opts.now ?? Date.now;
   const token = opts.token ?? TOKENS.PAS;
