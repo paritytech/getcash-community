@@ -2,27 +2,25 @@
 // drive the requests store with the observations a real purchase would produce; Ctrl+Shift+R
 // reloads the page.
 
-import type {
-  ChainflipProgressFacts,
-  PaymentFailure,
-  PaymentState,
-  RefundProgress,
-  SourceId,
-} from "@getsome/core";
+import type { PaymentFailure, PaymentState, SourceId } from "@getsome/core";
 import { nextTick } from "vue";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
+import { cryptoTopUpId, projectCryptoTopUps } from "../funding/crypto-top-ups";
 import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
-import { CRYPTO_SOURCE_ID, isMeldSourceId, meldMethodFor } from "../funding/source-ids";
+import {
+  CRYPTO_SOURCE_ID,
+  isMeldSourceId,
+  meldMethodFor,
+  type MeldSourceId,
+} from "../funding/source-ids";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
   railProviderOf,
   routeOf,
   type Observation,
   type TopUpRecord,
+  type WithdrawalHandoffPayload,
   type WithdrawalRecord,
   type WithdrawalStatus,
-  type WorkerJobView,
 } from "../funding/requests/model";
 import { applyTopUp } from "../funding/requests/transitions/top-up";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
@@ -37,6 +35,7 @@ import { useFlowStore } from "../stores/flow";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 import type { RequestRef } from "../utils/request-index";
+import { ASSET_HUB_NETWORK } from "../withdraw/destinations";
 import { devLog } from "~~/lib/log";
 
 type Session = ReturnType<typeof useSessionStore>;
@@ -81,12 +80,13 @@ const DEPOSIT = {
   expiresAt: 0,
 } as const;
 
-/** The canned quote for 5 CASH from Bitcoin. Send and symbol are the source asset's. */
+/** The canned quote for 5 CASH in DOT, as the direct rail quotes it: the exact figure in the token
+ *  itself, the deposit's own. */
 const QUOTED = {
-  send: "0.00004545",
-  symbol: "BTC",
-  sourceAsset: "BTC",
-  sourceChain: "Bitcoin",
+  send: "0.29",
+  symbol: "DOT",
+  sourceAsset: "DOT",
+  sourceChain: "Polkadot",
 };
 
 function awaitingDeposit(
@@ -100,18 +100,15 @@ function awaitingDeposit(
     deposit: { ...DEPOSIT, expiresAt },
   } as PaymentState;
 }
-function swapping(
-  swap: "receiving" | "swapping" | "sending" | "complete",
-  sourceId: SourceId = CRYPTO_SOURCE_ID,
-  progress?: ChainflipProgressFacts,
-): PaymentState {
+/** A Meld rail's word on the payment, as core relays it from its poll of the provider. A direct
+ *  deposit has no provider to poll, so core never says this of one. */
+function swapping(swap: "receiving" | "complete", sourceId: MeldSourceId): PaymentState {
   return {
     phase: "swapping",
     sourceId,
     quote: null,
     deposit: DEPOSIT,
     swap,
-    ...(progress === undefined ? {} : { progress }),
   } as PaymentState;
 }
 function working(
@@ -263,8 +260,8 @@ function catalogMissing(session: Session, loading: boolean) {
   session.catalogLoading = loading;
 }
 
-/** What the record shows for each source the scenes use, unless a scene says what was sent. */
-const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
+/** What the record shows for each source: the network and token sent, or the Meld method. */
+const DISPLAY: Readonly<Record<SourceId, { chain: string; asset: string }>> = {
   "dot-assethub": { chain: "Polkadot", asset: "DOT" },
   "dotusd-assethub": { chain: "Polkadot", asset: "dotUSD" },
   "usdt-assethub": { chain: "Polkadot", asset: "USDT" },
@@ -272,6 +269,22 @@ const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   "meld-card": { chain: "Meld", asset: "Card" },
   "meld-bank": { chain: "Meld", asset: "Bank" },
 };
+
+/** DOT per CASH at the deck's canned price, the rate the deposit scenes quote at. */
+const DOT_PER_CASH = 0.059;
+
+/** The quote a preview record keeps for `amount` CASH: what a direct deposit asks in its own
+ *  token, DOT at the canned price and a stable one to one, or a fiat split as `previewQuote`
+ *  draws it. */
+function recordQuote(sourceId: SourceId, amount: string): StoredQuote | undefined {
+  const route = routeOf(sourceId);
+  if (route !== "crypto") return previewQuote(amount);
+  const cash = Number(amount.replace(/,/g, ""));
+  if (!Number.isFinite(cash) || cash <= 0) return undefined;
+  const { asset } = DISPLAY[sourceId];
+  const sent = asset === "DOT" ? Number((cash * DOT_PER_CASH).toFixed(4)) : cash;
+  return { amount: String(sent), symbol: asset };
+}
 
 /** The scene's synthetic request: its record and the handle the scene feeds observations through. */
 interface PreviewRequest {
@@ -288,10 +301,6 @@ interface PreviewRecordOptions {
   amountHuman: string;
   startedAt: number;
   deposit?: { expiresAt: number };
-  /** What the buyer sent, as the record names it. Defaults to what the source id implies; a
-   *  Chainflip swap's source id is the Asset Hub token it arrives as, so the coin has to be said
-   *  separately. */
-  display?: { chain: string; asset: string };
   /** The rail's persisted quote: what the list and a reopened journey read their money row off,
    *  and the split the fee breakdown behind it itemizes. */
   quote?: StoredQuote;
@@ -310,7 +319,7 @@ function previewRecord(opts: PreviewRecordOptions, now: number): TopUpRecord {
   const { sourceId, startedAt } = opts;
   const ref: RequestRef = { sourceId, tradeN: opts.tradeN };
   const expiresAt = opts.deposit?.expiresAt ?? 0;
-  const display = opts.display ?? DISPLAY[sourceId] ?? { chain: sourceId, asset: sourceId };
+  const display = DISPLAY[sourceId];
   return {
     schema: 2,
     kind: "top-up",
@@ -431,40 +440,23 @@ async function core(request: PreviewRequest, step: number, state: PaymentState) 
 }
 
 /**
- * A crypto withdrawal record in one journey state — $25 to USDC on Ethereum, as the section's
+ * A crypto withdrawal record in one journey state: $25 to USDC on Asset Hub, as the section's
  * frames draw it. Built by hand like the finished top-ups: the journey has to stand on the
  * record alone, with no live run behind it.
  */
-/** The crypto journey's states, each one frame of the section. */
+/** The crypto journey's states, each one frame of the section. The XCM reaches Asset Hub by
+ *  itself, so the funds are converted and then sent, with no provider in between. */
 type WithdrawalPreviewState =
   | "awaiting-payment"
   | "converting"
+  /** The XCM is carrying the funds to the address. */
+  | "arriving"
   | "redeeming"
   | "held"
-  | "sending"
-  | "handed"
-  | "rail-sending"
-  | "rail-sent"
   | "sent"
-  | "refunded"
   | "payment-failed"
   | "expired"
   | "cancelled";
-
-/** The worker's witness with the key's payment to the rail filed. */
-function paidRailWitness(at: number): WithdrawalRecord["witnesses"] {
-  return {
-    worker: {
-      known: true,
-      phase: "rail",
-      done: false,
-      fundsSeenAt: at,
-      lastTickAt: at,
-      at,
-      txs: [{ call: "pay", txHash: `0x${"7a".repeat(32)}`, ok: true }],
-    },
-  };
-}
 
 /** The worker's witness of a hold: the XCM left People and the PSM refused the redeem. */
 function heldWitness(at: number): WithdrawalRecord["witnesses"] {
@@ -492,69 +484,70 @@ async function previewWithdrawal(
   over?: {
     amountHuman?: string;
     destination?: WithdrawalRecord["destination"];
-    /** Straight to Polkadot, no provider: the worker's witness carries what arrived. */
-    direct?: { received: string };
+    /** What the worker saw arrive on the address, base units of its token, which the success
+     *  shows in place of the CASH that left. */
+    received?: string;
   },
-): Promise<void> {
+): Promise<RequestRef> {
   const requests = useRequestsStore();
-  const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + index };
+  // The redeem and its hold are the PSM tier's, which redeems the CASH for USDT.
+  const psm = state === "redeeming" || state === "held";
+  const destination = over?.destination ?? {
+    chain: "Polkadot",
+    asset: psm ? "USDT" : "USDC",
+    address: WITHDRAW_PREVIEW_ADDRESS,
+  };
+  const target = ASSET_HUB_NETWORK.destinations.find(({ asset }) => asset === destination.asset);
+  if (target === undefined) throw new Error(`preview: no destination takes ${destination.asset}`);
+  const ref: RequestRef = { sourceId: `wd:${target.id}`, tradeN: 950 + index };
   if (requests.has(ref)) await requests.remove(ref);
   const now = Date.now();
   const startedAt = now - 6 * 60_000;
   const at = now - 2 * 60_000;
-  const status: WithdrawalStatus =
-    state === "awaiting-payment"
-      ? { kind: "awaiting-payment" }
-      : state === "converting"
-        ? { kind: "converting", at, step: "swap" }
-        : state === "redeeming"
-          ? { kind: "converting", at, step: "redeem" }
-          : state === "sent"
-            ? { kind: "sent", at }
-            : state === "refunded" || state === "payment-failed" || state === "held"
-              ? { kind: "failed", at, recoverable: true }
-              : state === "expired"
-                ? { kind: "expired", at }
-                : state === "cancelled"
-                  ? { kind: "cancelled", at }
-                  : { kind: "sending", at };
+  const statuses: Record<WithdrawalPreviewState, WithdrawalStatus> = {
+    "awaiting-payment": { kind: "awaiting-payment" },
+    converting: { kind: "converting", at, step: "swap" },
+    arriving: { kind: "converting", at, step: "await-arrival" },
+    redeeming: { kind: "converting", at, step: "redeem" },
+    held: { kind: "failed", at, recoverable: true },
+    sent: { kind: "sent", at },
+    "payment-failed": { kind: "failed", at, recoverable: true },
+    expired: { kind: "expired", at },
+    cancelled: { kind: "cancelled", at },
+  };
   const failure: WithdrawalRecord["failure"] =
-    state === "refunded"
-      ? { kind: "refunded", step: "send", message: "the swap refunded", recoverable: true }
-      : state === "payment-failed"
+    state === "payment-failed"
+      ? {
+          kind: "payment-failed",
+          step: "payment",
+          message: "The payment from your balance did not go through.",
+          recoverable: true,
+        }
+      : state === "held"
         ? {
-            kind: "payment-failed",
-            step: "payment",
-            message: "The payment from your balance did not go through.",
+            kind: "held",
+            step: "convert",
+            message: "withdrawal held: the PSM refused the redeem 3 times",
             recoverable: true,
           }
-        : state === "held"
-          ? {
-              kind: "held",
-              step: "convert",
-              message: "withdrawal held: the PSM refused the redeem 3 times",
-              recoverable: true,
-            }
-          : state === "expired"
-            ? { kind: "expired", step: "payment", message: "expired", recoverable: false }
-            : undefined;
-  const railStatus =
-    state === "rail-sending" ? "sending" : state === "rail-sent" ? "sent" : undefined;
+        : state === "expired"
+          ? { kind: "expired", step: "payment", message: "expired", recoverable: false }
+          : undefined;
+  // The sale as the quote decides it with no chain read: the pool for DOT, dotUSD sent as it is,
+  // and a stable bought through the pool, unless the PSM redeems for it.
+  const { landing } = target;
+  const sale: Pick<WithdrawalHandoffPayload, "tier" | "external"> = psm
+    ? { tier: "psm", external: "USDT" }
+    : landing === "native"
+      ? { tier: "pool" }
+      : landing === "dotUSD"
+        ? { tier: "dotusd" }
+        : { tier: "pool", external: landing };
   const key = {
-    label: `wd:eph:usdc-eth:${ref.tradeN}`,
+    label: `wd:eph:${target.id}:${ref.tradeN}`,
     address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
     publicKeyHex: `0x${"6e".repeat(32)}`,
   };
-  const direct = over?.direct;
-  const destination =
-    over?.destination ??
-    (direct === undefined
-      ? { chain: "Ethereum", asset: "USDC", address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db" }
-      : {
-          chain: "Polkadot",
-          asset: "DOT",
-          address: WITHDRAW_PREVIEW_ADDRESS,
-        });
   const record: WithdrawalRecord = {
     schema: 2,
     kind: "withdrawal",
@@ -580,11 +573,8 @@ async function previewWithdrawal(
       amount: "25000000",
       destination,
       landingHex: `0x${"5d".repeat(32)}`,
-      rail: direct === undefined ? "chainflip" : "direct",
-      // The redeem and its hold are the PSM tier's.
-      ...(state === "redeeming" || state === "held"
-        ? { tier: "psm" as const, external: "USDT" as const }
-        : { tier: "pool" as const }),
+      rail: "direct",
+      ...sale,
       assetHubGenesis: "0xah",
       peopleGenesis: "0xpe",
       peopleParaId: 1004,
@@ -592,40 +582,14 @@ async function previewWithdrawal(
       poolAccount: "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB",
       slippagePct: 2,
       paymentExpiresAt: now + 3_600_000,
-      ...(direct === undefined
-        ? {
-            channel: {
-              id: "42",
-              address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
-              openedAt: startedAt,
-              expiresAt: now + 3_600_000,
-              expectedEgress: "24440000",
-            },
-          }
-        : {}),
     },
-    status,
-    rail: {
-      provider: direct === undefined ? "chainflip" : "direct",
-      stage:
-        state === "refunded"
-          ? "failed"
-          : state === "sent"
-            ? "delivered"
-            : railStatus === undefined
-              ? "waiting"
-              : "processing",
-      updatedAt: at,
-      ...(state === "refunded"
-        ? { status: "failed" as const, failure: { kind: "refunded", message: "refunded" } }
-        : railStatus === undefined
-          ? {}
-          : { status: railStatus }),
-    },
+    status: statuses[state],
+    // No provider reports on the direct rail: it is done once the funds land on the address.
+    rail: { provider: "direct", stage: state === "sent" ? "delivered" : "waiting", updatedAt: at },
     ...(failure === undefined ? {} : { failure }),
     ...(state === "awaiting-payment" ? {} : { paidAmount: "25000000" }),
     witnesses:
-      direct !== undefined
+      state === "sent"
         ? {
             worker: {
               known: true,
@@ -634,17 +598,16 @@ async function previewWithdrawal(
               fundsSeenAt: at,
               lastTickAt: at,
               at,
-              received: direct.received,
+              ...(over?.received === undefined ? {} : { received: over.received }),
             },
           }
-        : state === "handed"
-          ? paidRailWitness(at)
-          : state === "held"
-            ? heldWitness(at)
-            : {},
+        : state === "held"
+          ? heldWitness(at)
+          : {},
   };
   await requests.create(ref, record);
   requests.setForeground(ref);
+  return ref;
 }
 
 /**
@@ -852,9 +815,10 @@ export async function simulateSaleJourney(
 }
 
 /**
- * The summary's demo Skip: a simulated withdrawal walked through the journey — conversion,
- * sending, sent — a few seconds apart, on the sandbox. Stops early when something else takes the
- * screen. Demo builds only; the route gates the button on `isDemoBuild()`.
+ * The summary's demo Skip: a simulated withdrawal walked through the journey, converting, then
+ * sending to the address, then sent, a few seconds apart, on the sandbox. Stops early when
+ * something else takes the screen. Demo builds only; the route gates the button on
+ * `isDemoBuild()`.
  */
 export async function simulateWithdrawalJourney(over?: {
   amountHuman?: string;
@@ -862,15 +826,14 @@ export async function simulateWithdrawalJourney(over?: {
 }): Promise<void> {
   const requests = useRequestsStore();
   requests.enterSandbox();
-  const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + SKIP_SLOT };
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const ref = await previewWithdrawal(SKIP_SLOT, "converting", over);
   const stillUp = () =>
     requests.foregroundWithdrawal?.ref.tradeN === ref.tradeN &&
     requests.foregroundWithdrawal?.ref.sourceId === ref.sourceId;
-  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  await previewWithdrawal(SKIP_SLOT, "converting", over);
   await delay(3_000);
   if (!stillUp()) return;
-  await previewWithdrawal(SKIP_SLOT, "rail-sending", over);
+  await previewWithdrawal(SKIP_SLOT, "arriving", over);
   await delay(3_000);
   if (!stillUp()) return;
   await previewWithdrawal(SKIP_SLOT, "sent", over);
@@ -885,9 +848,8 @@ async function meldError(request: PreviewRequest, step: number, sourceId: Source
   await request.observe({ ...report(request.at(step + 1), "receiving"), delayed: true });
 }
 
-/** The worker's job at a step of the pipeline, its deposit in hand. */
-function worker(request: PreviewRequest, step: number, phase: string, done = false): Observation {
-  const at = request.at(step);
+/** The worker's job at `phase` at `at`, its deposit in hand. */
+function workerAt(at: number, phase: string, done = false): Observation {
   return {
     source: "worker",
     at,
@@ -895,8 +857,13 @@ function worker(request: PreviewRequest, step: number, phase: string, done = fal
   };
 }
 
+/** The worker's job at a step of the pipeline, its deposit in hand. */
+function worker(request: PreviewRequest, step: number, phase: string, done = false): Observation {
+  return workerAt(request.at(step), phase, done);
+}
+
 /** The worker's word at `at` that the deposit it took left the best chain at `leftAt`. */
-function depositLeft(at: number, leftAt: number, over: Partial<WorkerJobView> = {}): Observation {
+function depositLeft(at: number, leftAt: number): Observation {
   return {
     source: "worker",
     at,
@@ -907,37 +874,22 @@ function depositLeft(at: number, leftAt: number, over: Partial<WorkerJobView> = 
       depositLeftAt: leftAt,
       lastTickAt: at,
       claim: null,
-      ...over,
     },
   };
 }
 
-/** A swap that sent its deposit, which the worker took two minutes before a fork took it back,
- *  `leftMinutesAgo` minutes ago. Under Chainflip's own source when `chainflip`, the preview's
- *  direct one otherwise. Returns when it left. */
-async function depositDropped(
-  s: Session,
-  f: Flow,
-  index: number,
-  { leftMinutesAgo = 0, chainflip = false }: { leftMinutesAgo?: number; chainflip?: boolean } = {},
-) {
+/** A direct DOT deposit the worker took two minutes before a fork took it back, `leftMinutesAgo`
+ *  minutes ago. */
+async function depositDropped(s: Session, f: Flow, index: number, leftMinutesAgo = 0) {
   base(s, f);
   const r = await previewRequest(s, {
-    ...BITCOIN_SWAP,
-    ...(chainflip ? { sourceId: "btc" } : {}),
+    sourceId: CRYPTO_SOURCE_ID,
     index,
     startedMinutesAgo: leftMinutesAgo + 5,
   });
   const leftAt = Date.now() - leftMinutesAgo * 60_000 - 30_000;
-  const takenAt = leftAt - 2 * 60_000;
-  await r.observe({ source: "core", at: takenAt - 1_000, state: swapping("complete") });
-  await r.observe({
-    source: "worker",
-    at: takenAt,
-    job: { phase: "swap", done: false, fundsSeenAt: takenAt, lastTickAt: takenAt, claim: null },
-  });
+  await r.observe(workerAt(leftAt - 2 * 60_000, "swap"));
   await r.observe(depositLeft(leftAt, leftAt));
-  return { r, leftAt };
 }
 
 /** How far a running preview top-up has got. Named for the rail's own step, because that is what
@@ -945,22 +897,20 @@ async function depositDropped(
 type RunningStage =
   /** Opened, nothing sent yet. */
   | "waiting"
-  /** The rail has the payment and is confirming it. */
+  /** The provider's rail has the payment and is confirming it. A Meld stage only: a direct
+   *  deposit has no provider to confirm it. */
   | "confirming"
-  /** The rail is done and the worker is swapping up to CASH. */
+  /** The worker has the deposit and is swapping it up to CASH. */
   | "converting"
   /** The swap landed; the host is crediting the balance. */
   | "adding";
 
 interface RunningTopUp {
-  /** The rail's own source, as a record keeps it: the crypto rail's own, or a Meld method's. */
+  /** The request's source, as a record keeps it: a direct deposit's token, or a Meld method. */
   sourceId: SourceId;
   /** CASH asked for. */
   amount: string;
   stage: RunningStage;
-  /** What the buyer sent, for the crypto rail, whose source id names the rail rather than the
-   *  coin. */
-  display?: { chain: string; asset: string };
   /**
    * Meld reported an `ERROR` it retries. Only on a Meld rail with `confirming`: the flag belongs to
    * the rail's own leg, and a later observation would move the stage off it.
@@ -984,19 +934,17 @@ async function seedRunningTopUps(
 ): Promise<void> {
   const requests = useRequestsStore();
   for (const [slot, row] of rows.entries()) {
-    const route = routeOf(row.sourceId);
+    const { sourceId } = row;
+    const route = routeOf(sourceId);
+    const quote = recordQuote(sourceId, row.amount);
     const request = await previewRequest(session, {
-      sourceId: row.sourceId,
+      sourceId,
       index,
       slot,
       foreground: false,
       amountHuman: row.amount,
       startedMinutesAgo: row.startedMinutesAgo ?? 12,
-      ...(row.display ? { display: row.display } : {}),
-      ...(() => {
-        const quote = previewQuote(route, row.amount);
-        return quote === undefined ? {} : { quote };
-      })(),
+      ...(quote === undefined ? {} : { quote }),
       ...(route === "crypto"
         ? {}
         : {
@@ -1008,14 +956,16 @@ async function seedRunningTopUps(
           }),
     });
     // Each step is the one the rail reports, in the order it reports them, so the record passes
-    // through the same states a real one does on the way to this stage.
-    await core(request, 0, awaitingDeposit(0, row.sourceId));
-    if (row.stage !== "waiting") {
-      await core(request, 1, swapping("receiving", row.sourceId));
-      if (row.delayed === true) await meldError(request, 2, row.sourceId);
+    // through the same states a real one does on the way to this stage. A direct deposit has no
+    // provider to report it: the worker taking it is the first word on it.
+    await core(request, 0, awaitingDeposit(0, sourceId));
+    const meld = isMeldSourceId(sourceId);
+    if (meld && row.stage !== "waiting") {
+      await core(request, 1, swapping("receiving", sourceId));
+      if (row.delayed === true) await meldError(request, 2, sourceId);
     }
     if (row.stage === "converting" || row.stage === "adding") {
-      await core(request, 3, swapping("complete", row.sourceId));
+      if (meld) await core(request, 3, swapping("complete", sourceId));
       await request.observe(worker(request, 4, "swap"));
     }
     // The worker's job done is what moves the record to claiming, which is the stage the shared
@@ -1024,18 +974,6 @@ async function seedRunningTopUps(
   }
   requests.leave();
 }
-
-/** A Chainflip swap from `sourceId`, as the session stores one: under the Asset Hub source the
- *  swap arrives as, with the network and token the buyer sent. */
-function swapFrom(
-  sourceId: SourceId,
-): Required<Pick<PreviewRecordOptions, "sourceId" | "display">> {
-  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
-  if (!source) throw new Error(`preview: no source config for ${sourceId}`);
-  return { sourceId: CRYPTO_SOURCE_ID, display: { chain: source.chain, asset: source.asset } };
-}
-
-const BITCOIN_SWAP = swapFrom("btc");
 
 const MINUTE = 60_000;
 /** In minutes, as the finished top-ups count their times. */
@@ -1047,7 +985,7 @@ type PreviewEnding =
   /** `credited` is the claim, in base units, when the Host credited other than what was asked. */
   | { kind: "settled"; credited?: string }
   /** Core's own failure, which the record words. */
-  | { kind: "failed"; failure: PaymentFailure; refund?: RefundProgress }
+  | { kind: "failed"; failure: PaymentFailure }
   /** The deposit window closed with nothing paid. */
   | { kind: "expired" };
 
@@ -1060,8 +998,8 @@ type FinishedTopUp = Omit<PreviewRecordOptions, "amountHuman" | "startedAt" | "d
 };
 
 /** The observations a request reports from its opening to its ending: the deposit opens, the
- *  provider sees the payment, then the ending. An expiry is the clock finding the window closed
- *  unpaid. */
+ *  payment is seen, then the ending. The provider sees a fiat payment; a direct deposit is first
+ *  seen by the worker taking it. An expiry is the clock finding the window closed unpaid. */
 function endingObservations(
   sourceId: SourceId,
   startedAt: number,
@@ -1078,13 +1016,11 @@ function endingObservations(
   const ended: PaymentState =
     ending.kind === "settled"
       ? ({ phase: "done", sourceId, result: { id: "preview", sourceId } } as PaymentState)
-      : {
-          phase: "failed",
-          sourceId,
-          failure: ending.failure,
-          ...(ending.refund === undefined ? {} : { refund: ending.refund }),
-        };
-  const paid = fromCore(startedAt + 2 * MINUTE, swapping("receiving", sourceId));
+      : { phase: "failed", sourceId, failure: ending.failure };
+  const paidAt = startedAt + 2 * MINUTE;
+  const paid = isMeldSourceId(sourceId)
+    ? fromCore(paidAt, swapping("receiving", sourceId))
+    : workerAt(paidAt, "swap");
   const claimed: Observation[] =
     ending.kind === "settled" && ending.credited !== undefined
       ? [{ source: "core", at: endedAt, claim: { stage: "crediting", claimed: ending.credited } }]
@@ -1100,7 +1036,7 @@ function finishedTopUps(topUps: readonly FinishedTopUp[]): FundingTopUp[] {
   const now = Date.now();
   const records = topUps.map(({ amount, startedMinutesAgo, endedMinutesAgo, ending, ...opts }) => {
     const startedAt = now - startedMinutesAgo * MINUTE;
-    const quote = opts.quote ?? previewQuote(routeOf(opts.sourceId), amount);
+    const quote = opts.quote ?? recordQuote(opts.sourceId, amount);
     const opened = previewRecord(
       { ...opts, amountHuman: amount, startedAt, ...(quote === undefined ? {} : { quote }) },
       now,
@@ -1114,7 +1050,7 @@ function finishedTopUps(topUps: readonly FinishedTopUp[]): FundingTopUp[] {
   });
   const timelineOf = createTopUpTimelines();
   return [
-    ...projectChainflipTopUps(records, now, timelineOf),
+    ...projectCryptoTopUps(records, now, timelineOf),
     ...projectMeldTopUps(records, now, timelineOf),
   ];
 }
@@ -1122,37 +1058,34 @@ function finishedTopUps(topUps: readonly FinishedTopUp[]): FundingTopUp[] {
 /** The id of a finished top-up's row, for a scene that opens its journey. */
 function finishedTopUpId({ sourceId, tradeN }: FinishedTopUp): string {
   const ref = { sourceId, tradeN };
-  return isMeldSourceId(sourceId)
-    ? meldTopUpId(meldMethodFor(sourceId), ref)
-    : chainflipTopUpId(ref);
+  return isMeldSourceId(sourceId) ? meldTopUpId(meldMethodFor(sourceId), ref) : cryptoTopUpId(ref);
 }
 
 const SETTLED: PreviewEnding = { kind: "settled" };
 const EXPIRED: PreviewEnding = { kind: "expired" };
 
-/** A failure of `kind` as core reports it, with the reason the row and its journey show, the
- *  rail's code for it, and the refund that followed. */
+/** A failure of `kind` as core reports it, with the reason the row and its journey show, and the
+ *  rail's code for it. */
 function failedWith(
   kind: PaymentFailure["kind"],
   message: string,
-  { code, refund }: { code?: string; refund?: RefundProgress } = {},
+  { code }: { code?: string } = {},
 ): PreviewEnding {
   return {
     kind: "failed",
     failure: { kind, step: "deposit", message, recoverable: false, ...(code ? { code } : {}) },
-    ...(refund === undefined ? {} : { refund }),
   };
 }
 
-/** The finished top-ups behind the clock: a credit, a declined card, a refunded swap, an older
+/** The finished top-ups behind the clock: a credit, a declined card, a refunded card, an older
  *  bank transfer. Shared by the launch simulation and the history scenes. */
 const HISTORY = {
-  // The PSM credited more than the 80 asked.
-  creditedSwap: {
-    ...BITCOIN_SWAP,
+  // The Host credited more than the 80 asked.
+  creditedDeposit: {
+    sourceId: CRYPTO_SOURCE_ID,
     tradeN: 3,
     amount: "80",
-    quote: { amount: "0.00072", symbol: "BTC" },
+    quote: { amount: "4.72", symbol: "DOT" },
     startedMinutesAgo: 6 * HOUR,
     endedMinutesAgo: 6 * HOUR - 9,
     ending: { kind: "settled", credited: "80120000" },
@@ -1167,23 +1100,6 @@ const HISTORY = {
     endedMinutesAgo: DAY + 3 * HOUR - 2,
     ending: failedWith("deposit-rejected", "The card issuer declined the payment", {
       code: "declined",
-    }),
-  },
-  refundedSwap: {
-    ...BITCOIN_SWAP,
-    tradeN: 5,
-    amount: "50",
-    quote: { amount: "0.00045", symbol: "BTC" },
-    startedMinutesAgo: 3 * DAY,
-    endedMinutesAgo: 3 * DAY - 14,
-    // Base units, as the rail reports them: 0.00043 BTC at 8 decimals. Less than the 0.00045
-    // deposit: the refund pays its own network fees on the way back.
-    ending: failedWith("refunded", "The rate moved too far to complete the swap", {
-      refund: {
-        amount: "43000",
-        txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
-        witnessedAt: Date.now() - (3 * DAY - 30) * MINUTE,
-      },
     }),
   },
   refundedCard: {
@@ -1213,11 +1129,11 @@ const HISTORY = {
   // The two expired endings: the day-long deposit window closed with nothing paid, so the journey
   // shows no money rows, card included, although its route would otherwise get the failure
   // receipt.
-  expiredSwap: {
-    ...BITCOIN_SWAP,
+  expiredDeposit: {
+    sourceId: CRYPTO_SOURCE_ID,
     tradeN: 10,
     amount: "60",
-    quote: { amount: "0.00054", symbol: "BTC" },
+    quote: { amount: "3.54", symbol: "DOT" },
     startedMinutesAgo: 5 * DAY,
     endedMinutesAgo: 4 * DAY - 1,
     ending: EXPIRED,
@@ -1265,7 +1181,7 @@ const SETTLED_CARD: FinishedTopUp = {
 function base(session: Session, flow: Flow) {
   session.setAmount("5");
   // The scenes model the crypto rail; a card/bank run before cycling scenes must not leak its
-  // method into how the canned BTC quote is read.
+  // method into how the canned DOT quote is read.
   session.method = "crypto";
   session.quoted = { ...QUOTED };
   session.resuming = false;
@@ -1467,7 +1383,7 @@ async function cardPayment(s: Session, f: Flow, index: number): Promise<PreviewR
   return r;
 }
 
-/** The crypto scenes' request, once the worker has its deposit and is at `phase`. */
+/** The crypto scenes' request, a direct DOT deposit, once the worker has it and is at `phase`. */
 async function pipeline(
   s: Session,
   f: Flow,
@@ -1475,7 +1391,7 @@ async function pipeline(
   phase: string,
 ): Promise<PreviewRequest> {
   base(s, f);
-  const r = await previewRequest(s, { ...BITCOIN_SWAP, index });
+  const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index });
   await r.observe(worker(r, 0, phase));
   return r;
 }
@@ -1554,90 +1470,10 @@ const feeAnswered = (
 /** The crypto scenes' request, claimed by the worker and prompting core's consent. */
 async function claimConsent(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
   base(s, f);
-  const r = await previewRequest(s, { ...BITCOIN_SWAP, index });
+  const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index });
   await r.observe(worker(r, 0, "done", true));
   await core(r, 1, working("awaiting-consent"));
   return r;
-}
-
-/** Decimal string -> base-units string, for the refund amounts below. */
-function toBaseUnits(decimal: string, decimals: number): string {
-  const [whole = "0", frac = ""] = decimal.split(".");
-  const joined = `${whole}${frac.padEnd(decimals, "0").slice(0, decimals)}`;
-  return joined.replace(/^0+(?=\d)/, "");
-}
-
-/** A refunded failure on `sourceId`: the return-funds copy varies per chain and asset, so every
- *  source gets its own scene. The screen reads the key off the mock world the scene installs. */
-function refunded(sourceId: SourceId, send: string) {
-  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
-  if (!source) throw new Error(`preview: no source config for ${sourceId}`);
-  const amount = toBaseUnits(send, source.decimals);
-  return async (s: Session, f: Flow, index: number) => {
-    base(s, f);
-    s.quoted = {
-      ...QUOTED,
-      send,
-      symbol: source.asset,
-      sourceAsset: source.asset,
-      sourceChain: source.chain,
-    };
-    const r = await previewRequest(s, { ...swapFrom(sourceId), index });
-    await core(r, 0, swapping("receiving"));
-    await core(r, 1, {
-      phase: "failed",
-      sourceId: CRYPTO_SOURCE_ID,
-      failure: {
-        kind: "refunded",
-        step: "swap",
-        message: "The deposit didn't go through. It is being returned to your recovery address.",
-        recoverable: false,
-      },
-      refund: { amount, txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
-    } as PaymentState);
-    // The panel reads the refund key off the request's world.
-    s.mock = await createMockCoinageSession({
-      recipient: DEPOSIT.address,
-      amount: BigInt(amount),
-      sourceId,
-    });
-  };
-}
-
-/** Every UI source, with a plausible refund amount in its own precision. */
-const REFUND_PREVIEWS: readonly [SourceId, string][] = [
-  ["usdt-tron", "5.02"],
-  ["trx-tron", "15.4"],
-  ["btc", "0.00004545"],
-  ["eth", "0.0012"],
-  ["usdc-eth", "5.02"],
-  ["usdt-eth", "5.02"],
-  ["eth-arbitrum", "0.0012"],
-  ["usdc-arbitrum", "5.02"],
-  ["usdt-arbitrum", "5.02"],
-  ["bnb-bsc", "0.02"],
-  ["usdt-bsc", "5.02"],
-  ["sol-solana", "0.025"],
-  ["usdc-solana", "5.02"],
-  ["usdt-solana", "5.02"],
-];
-
-/**
- * Installs a mock world for p5, the refunded Bitcoin top-up in the preview history.
- *
- * Off-host `recoverRefundKeyFor` returns null — there is no entropy root to derive from — so the
- * refund guide would otherwise show its "can't be loaded here" state on every scene. The mock
- * world stands in for the derivation so the screen can be seen whole. Only a host build exercises
- * the real recovery; this proves the screen, not the key.
- */
-function installPreviewRefundWorld(session: Session) {
-  void createMockCoinageSession({
-    recipient: DEPOSIT.address,
-    amount: BigInt(toBaseUnits("0.00043", 8)),
-    sourceId: "btc",
-  }).then((world) => {
-    session.mock = world;
-  });
 }
 
 /** A top-ups scene: the shell's landing screen, with the cards it is asked to draw. */
@@ -1745,22 +1581,22 @@ const CARD_REFUNDED: PaymentState = {
 export const SCENES: Scene[] = [
   {
     // The shell's landing screen: one crypto top-up still waiting on its transfer. Seeded as a
-    // record, so the card is the chainflip adapter's own row and opening it opens the request.
+    // record, so the card is the crypto adapter's own row and opening it opens the request.
     name: "top-up / list: waiting",
     apply: topUpList({
-      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
+      running: [{ sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "waiting" }],
     }),
   },
   {
     name: "top-up / list: converting",
     apply: topUpList({
-      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "converting" }],
+      running: [{ sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "converting" }],
     }),
   },
   {
     name: "top-up / list: adding",
     apply: topUpList({
-      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "adding" }],
+      running: [{ sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "adding" }],
     }),
   },
   {
@@ -1783,7 +1619,7 @@ export const SCENES: Scene[] = [
     // opens the screen that lists what landed.
     name: "top-up / list: settled",
     apply: topUpList({
-      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
+      running: [{ sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "waiting" }],
       finished: [SETTLED_CARD],
     }),
   },
@@ -1803,13 +1639,13 @@ export const SCENES: Scene[] = [
     apply: topUpList({
       running: [
         { sourceId: "meld-bank", amount: "50", stage: "waiting" },
-        { ...BITCOIN_SWAP, amount: "120", stage: "converting" },
-        { ...BITCOIN_SWAP, amount: "25", stage: "adding" },
+        { sourceId: CRYPTO_SOURCE_ID, amount: "120", stage: "converting" },
+        { sourceId: CRYPTO_SOURCE_ID, amount: "25", stage: "adding" },
         { sourceId: "meld-card", amount: "200", stage: "confirming", delayed: true },
       ],
       finished: [
         {
-          ...BITCOIN_SWAP,
+          sourceId: CRYPTO_SOURCE_ID,
           tradeN: 5,
           amount: "80",
           startedMinutesAgo: 12,
@@ -1824,7 +1660,7 @@ export const SCENES: Scene[] = [
     // dot on the clock.
     name: "top-up / list: new top-up while one runs",
     apply: topUpList({
-      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
+      running: [{ sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "waiting" }],
       entry: "amount",
     }),
   },
@@ -1841,19 +1677,14 @@ export const SCENES: Scene[] = [
     // The screen's own shapes while the top-ups are still being read.
     name: "top-up / list: loading",
     apply: topUpList({
-      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
+      running: [{ sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "waiting" }],
       skeleton: true,
     }),
   },
   {
-    // Behind the clock: finished top-ups, credited and failed. The refunded Bitcoin card opens the
-    // recovery guide, so its world is installed here too — tapping through is how the screen is
-    // actually reached.
+    // Behind the clock: finished top-ups, credited and failed.
     name: "top-up / history",
-    apply: async (s, f, i) => {
-      await topUpList({ finished: PREVIEW_HISTORY, entry: "history" })(s, f, i);
-      installPreviewRefundWorld(s);
-    },
+    apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
     // Nothing has ever been topped up.
@@ -1973,7 +1804,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The channel deadline as a ticking countdown row.
+    // The deposit window's deadline as a ticking countdown row.
     name: "top-up / crypto / deposit: expiring",
     apply: async (s, f, i) => {
       dotDeposit(s, f);
@@ -2002,28 +1833,19 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The app's own read of the account found the deposit before the worker took it.
     name: "top-up / crypto / convert: receiving",
     apply: async (s, f, i) => {
       base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
-      await core(r, 0, swapping("receiving"));
-    },
-  },
-  {
-    // Chainflip moved the swap to a later block to wait for a stable price: amber, never terminal.
-    name: "top-up / crypto / convert: delayed",
-    apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
-      await core(r, 0, swapping("receiving"));
-      await core(
-        r,
-        2,
-        swapping("swapping", CRYPTO_SOURCE_ID, {
-          swapScheduledAt: r.at(1),
-          swapRescheduledAt: r.at(2),
-        }),
-      );
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
+      await core(r, 0, awaitingDeposit());
+      await r.observe({
+        source: "chain",
+        at: r.at(1),
+        burnerNative: DEPOSIT.amount.toString(),
+        finality: "best",
+        via: "probe",
+      });
     },
   },
   {
@@ -2204,7 +2026,7 @@ export const SCENES: Scene[] = [
     // that no funds arrived, and there are no money rows — nobody was charged. The card twin below
     // is the review comment's case: without the record's own word it drew the failure receipt.
     name: "top-up / crypto / expired: from history",
-    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.expiredSwap) },
+    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.expiredDeposit) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
@@ -2430,22 +2252,6 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "top-up / crypto / convert: swapping",
-    apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
-      await core(r, 0, swapping("swapping"));
-    },
-  },
-  {
-    name: "top-up / crypto / convert: sending",
-    apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
-      await core(r, 0, swapping("sending"));
-    },
-  },
-  {
     name: "top-up / crypto / pipeline: swap",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "swap");
@@ -2470,24 +2276,7 @@ export const SCENES: Scene[] = [
     // it once more.
     name: "top-up / crypto / journey: transfer dropped, asked again",
     apply: async (s, f, i) => {
-      await depositDropped(s, f, i, { leftMinutesAgo: 11 });
-    },
-  },
-  {
-    // An hour on, Chainflip's payout is still not back: the line turns amber and says so.
-    name: "top-up / crypto / pipeline: deposit dropped, an hour on",
-    apply: async (s, f, i) => {
-      await depositDropped(s, f, i, { leftMinutesAgo: 61, chainflip: true });
-    },
-  },
-  {
-    // A day on it never came back: the top-up ends.
-    name: "top-up / crypto / journey: deposit lost",
-    apply: async (s, f, i) => {
-      const { r, leftAt } = await depositDropped(s, f, i, { chainflip: true });
-      await r.observe(
-        depositLeft(leftAt + 1_000, leftAt, { phase: "failed", failure: "deposit-lost" }),
-      );
+      await depositDropped(s, f, i, 11);
     },
   },
   {
@@ -2518,7 +2307,7 @@ export const SCENES: Scene[] = [
     name: "top-up / crypto / claim: verifying",
     apply: async (s, f, i) => {
       base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await r.observe(worker(r, 0, "done", true));
       await core(r, 1, working("verifying"));
     },
@@ -2805,76 +2594,18 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "top-up / crypto / failed: refunded",
-    apply: async (s, f, i) => {
-      base(s, f);
-      // A token refund, with the gas note.
-      s.quoted = {
-        ...QUOTED,
-        send: "5.02",
-        symbol: "USDT",
-        sourceAsset: "USDT",
-        sourceChain: "Tron",
-      };
-      const r = await previewRequest(s, { ...swapFrom("usdt-tron"), index: i });
-      await core(r, 0, swapping("receiving"));
-      await core(r, 1, {
-        phase: "failed",
-        sourceId: CRYPTO_SOURCE_ID,
-        failure: {
-          kind: "refunded",
-          step: "swap",
-          message: "The deposit didn't go through. It is being returned to your recovery address.",
-          recoverable: false,
-        },
-        refund: { amount: "5020000", txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
-      } as PaymentState);
-      // The panel reads the refund key off the request's world.
-      const world = await createMockCoinageSession({
-        recipient: DEPOSIT.address,
-        amount: 5_000_000n,
-        sourceId: "usdt-tron",
-      });
-      s.mock = world;
-    },
-  },
-  {
-    // The same refund read from the list's own record, with nothing live behind it: the request
-    // could not be resumed, so the journey has only what history stored. This is the state the
-    // review comment is about — the rows are hidden because the deposit went back, and the guide
-    // behind "Refund info" is driven by the request's world, which is gone.
-    name: "top-up / crypto / refunded: from history",
-    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.refundedSwap) },
-    apply: async (s, f, i) => {
-      await topUpList({ finished: PREVIEW_HISTORY, entry: "history" })(s, f, i);
-      installPreviewRefundWorld(s);
-    },
-  },
-  {
     // A credit read from history: the end state at once, with what the Host credited.
     name: "top-up / crypto / success: from history",
-    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.creditedSwap) },
+    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.creditedDeposit) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
-  // The return-funds screen opened, once per source: the step copy is templated on the chain, its
-  // native coin, and the asset, so each reads differently.
-  ...REFUND_PREVIEWS.map(([sourceId, send]) => {
-    const source = SOURCE_CONFIG_BY_ID.get(sourceId)!;
-    const apply = refunded(sourceId, send);
-    return {
-      name: `top-up / crypto / refund key: ${source.asset} on ${source.chain}`,
-      apply: async (s: Session, f: Flow, index: number) => {
-        await apply(s, f, index);
-        f.previewDrillIn = "refund";
-      },
-    };
-  }),
   {
+    // The worker took the deposit and finished, and the claim settled.
     name: "top-up / crypto / success",
     apply: async (s, f, i) => {
       base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
-      await core(r, 0, swapping("receiving"));
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
+      await r.observe(worker(r, 0, "done", true));
       await core(r, 1, {
         phase: "done",
         sourceId: CRYPTO_SOURCE_ID,
@@ -2966,7 +2697,7 @@ export const SCENES: Scene[] = [
     stage: { kind: "withdraw-package", step: "summary", address: WITHDRAW_PREVIEW_ADDRESS },
     apply: (s, f) => base(s, f),
   },
-  // ——— The journey and the refund guide, on a hand-made record; see `previewWithdrawal`.
+  // ——— The journey, on a hand-made record; see `previewWithdrawal`.
   {
     name: "withdrawal / crypto / journey: conversion",
     stage: { kind: "withdraw-package", step: "journey" },
@@ -2993,56 +2724,21 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The XCM is carrying the funds to the address, which it reaches with no provider between.
     name: "withdrawal / crypto / journey: sending",
     stage: { kind: "withdraw-package", step: "journey" },
     apply: async (s, f) => {
       base(s, f);
-      await previewWithdrawal(1, "rail-sending");
+      await previewWithdrawal(1, "arriving");
     },
   },
   {
+    // The success shows the USDC that arrived, not the CASH that left.
     name: "withdrawal / crypto / journey: success",
     stage: { kind: "withdraw-package", step: "journey" },
     apply: async (s, f) => {
       base(s, f);
-      await previewWithdrawal(2, "sent");
-    },
-  },
-  {
-    // Straight to Polkadot: the success shows the DOT that arrived, not the CASH that left.
-    name: "withdrawal / crypto / journey: success, direct",
-    stage: { kind: "withdraw-package", step: "journey" },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(20, "sent", { direct: { received: "43151334329" } });
-    },
-  },
-  {
-    name: "withdrawal / crypto / journey: refunded",
-    stage: { kind: "withdraw-package", step: "journey" },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(3, "refunded");
-    },
-  },
-  {
-    name: "withdrawal / crypto / return funds",
-    stage: { kind: "withdraw-package", step: "return-funds" },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(4, "refunded");
-    },
-  },
-  {
-    name: "withdrawal / crypto / return funds: revealed",
-    stage: {
-      kind: "withdraw-package",
-      step: "return-funds",
-      secret: `0x${"6f6e".repeat(16)}`,
-    },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(5, "refunded");
+      await previewWithdrawal(2, "sent", { received: "24440000" });
     },
   },
   {
@@ -3051,30 +2747,6 @@ export const SCENES: Scene[] = [
     apply: async (s, f) => {
       base(s, f);
       await previewWithdrawal(6, "awaiting-payment");
-    },
-  },
-  {
-    name: "withdrawal / crypto / journey: handing",
-    stage: { kind: "withdraw-package", step: "journey" },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(7, "sending");
-    },
-  },
-  {
-    name: "withdrawal / crypto / journey: exchanging",
-    stage: { kind: "withdraw-package", step: "journey" },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(8, "handed");
-    },
-  },
-  {
-    name: "withdrawal / crypto / journey: on its way",
-    stage: { kind: "withdraw-package", step: "journey" },
-    apply: async (s, f) => {
-      base(s, f);
-      await previewWithdrawal(9, "rail-sent");
     },
   },
   {
@@ -3330,7 +3002,7 @@ export async function seedLaunchPreviewTopUps(): Promise<void> {
   const requests = useRequestsStore();
   requests.enterSandbox();
   await seedRunningTopUps(useSessionStore(), 0, [
-    { ...BITCOIN_SWAP, amount: "50", stage: "waiting", startedMinutesAgo: 4 },
+    { sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "waiting", startedMinutesAgo: 4 },
     { sourceId: "meld-card", amount: "120", stage: "converting", startedMinutesAgo: 21 },
   ]);
 }

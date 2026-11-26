@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
-import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { projectMeldTopUps } from "../app/funding/meld-top-ups";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import type { Observation, WorkerJobView } from "../app/funding/requests/model";
@@ -47,7 +47,7 @@ const worker = (job: Partial<WorkerJobView> & { phase: string }): Observation =>
 describe("request list projection", () => {
   it("projects the fixture records exactly as today", () => {
     expect({
-      chainflip: projectChainflipTopUps(migratedFixtures, FIXTURE_NOW),
+      crypto: projectCryptoTopUps(migratedFixtures, FIXTURE_NOW),
       meld: projectMeldTopUps(migratedFixtures, FIXTURE_NOW),
     }).toMatchSnapshot();
   });
@@ -67,7 +67,7 @@ describe("request list projection", () => {
       return observation === undefined ? record : reduce(record, observation);
     });
     expect({
-      chainflip: projectChainflipTopUps(records, FIXTURE_NOW),
+      crypto: projectCryptoTopUps(records, FIXTURE_NOW),
       meld: projectMeldTopUps(records, FIXTURE_NOW),
     }).toMatchSnapshot();
   });

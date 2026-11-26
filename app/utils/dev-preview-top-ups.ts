@@ -5,7 +5,6 @@
 
 import { shallowRef } from "vue";
 import type { FundingShellEntryScreen } from "../funding/navigation";
-import type { FundingRoute } from "../funding/selection";
 import type { FundingTopUp } from "../funding/top-ups";
 
 export interface PreviewTopUpScene {
@@ -32,16 +31,14 @@ export interface PreviewTopUpScene {
 export const previewTopUpScene = shallowRef<PreviewTopUpScene | null>(null);
 
 /**
- * A plausible quote for the budget, so every preview card's detail has its Fees and Total rows.
- * The real records always carry one — `quoteOf` reads it off the persisted request — so a card
- * without it would be a mock artefact, not a state worth styling. The records the scenes build
- * persist these same figures.
+ * A plausible fiat quote for the budget, so every preview card's detail has its Fees and Total
+ * rows. The real records always carry one — `quoteOf` reads it off the persisted request — so a
+ * card without it would be a mock artefact, not a state worth styling. The records the scenes
+ * build persist these same figures. The fiat rails quote the charge, fee included.
  */
-export function previewQuote(route: FundingRoute, amount: string): FundingTopUp["quote"] {
+export function previewQuote(amount: string): FundingTopUp["quote"] {
   const cash = Number(amount.replace(/,/g, ""));
   if (!Number.isFinite(cash) || cash <= 0) return undefined;
-  // The crypto rail quotes the source coin; the fiat rails quote the charge, fee included.
-  if (route === "crypto") return { amount: (cash * 0.000009).toFixed(8), symbol: "BTC" };
   // The fiat split as the design frames show it: about 1.1% of the charge, most of it the
   // provider's. Carried in full because the fee row drills into the breakdown, which itemizes it.
   const transactionFee = cash * 0.0084;

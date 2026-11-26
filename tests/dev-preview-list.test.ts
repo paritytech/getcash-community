@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { chainflipRequestRef, projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { cryptoRequestRef, projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { meldRequestRef, projectMeldTopUps } from "../app/funding/meld-top-ups";
 import type { FundingTopUp } from "../app/funding/top-ups";
 import { useRequestsStore } from "../app/stores/requests";
@@ -22,7 +22,7 @@ function sceneRows(now: number): FundingTopUp[] {
   const { openTopUps } = useRequestsStore();
   return [
     ...(previewTopUpScene.value?.topUps ?? []),
-    ...projectChainflipTopUps(openTopUps, now),
+    ...projectCryptoTopUps(openTopUps, now),
     ...projectMeldTopUps(openTopUps, now),
   ];
 }
@@ -68,7 +68,7 @@ describe("preview deck list scenes", () => {
       for (const row of sceneRows(now)) {
         if (row.state.kind === "settled" || row.state.kind === "failed") continue;
         running++;
-        const ref = chainflipRequestRef(row.id) ?? meldRequestRef(row.id);
+        const ref = cryptoRequestRef(row.id) ?? meldRequestRef(row.id);
         expect(ref, `${name}: ${row.id} names no request`).not.toBeNull();
         expect(requests.has(ref!), `${name}: no record for ${requestRefKey(ref!)}`).toBe(true);
       }

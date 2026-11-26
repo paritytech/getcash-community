@@ -107,7 +107,6 @@ describe("preview deck staging", () => {
       "withdrawal / crypto / journey: payment failed": 0,
       "withdrawal / crypto / journey: expired": 0,
       "withdrawal / crypto / journey: cancelled": 0,
-      "withdrawal / crypto / journey: refunded": 4,
       // The XCM left People, so a hold fails the arrival on Asset Hub.
       "withdrawal / crypto / journey: held": 2,
       "withdrawal / card / journey: sale ended": 0,

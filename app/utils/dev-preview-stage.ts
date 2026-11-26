@@ -26,15 +26,12 @@ export type PreviewStage =
   | {
       kind: "withdraw-package";
       route?: "crypto" | "card" | "bank";
-      step:
-        "token" | "address" | "summary" | "fees" | "journey" | "return-funds" | "quote" | "region";
+      step: "token" | "address" | "summary" | "fees" | "journey" | "quote" | "region";
       address?: string;
       /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
        *  the row as an estimate the quote could not give. */
       receive?: string | null;
       fees?: WithdrawFeeView;
-      /** A canned secret for the return-funds step, so the revealed frame can be staged. */
-      secret?: string;
       /** A fiat route's canned sale: the quote shows it priced, null shows it pricing, and
        *  `saleError` alone shows it refused, the rate after `attempts` failures in a row. The route
        *  never asks the adapter while staged. */
