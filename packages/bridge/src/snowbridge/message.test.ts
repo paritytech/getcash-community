@@ -1,6 +1,6 @@
 // The Gateway call against the same call made by another tool, and the reading of the Gateway's
-// event against a real one: the event of Ethereum transaction 0xd49ec0c3...e9d1 of 22 Nov 2026,
-// message number 1529.
+// event against a real one: the event of Ethereum transaction 0xd49ec0c3...e9d1, message number
+// 1529.
 
 import { blake2b } from "@noble/hashes/blake2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";

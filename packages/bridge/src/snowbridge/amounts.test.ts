@@ -1,4 +1,4 @@
-// The sizing of a Snowbridge top-up. The costs below are live reads of 23 Nov 2026.
+// The sizing of a Snowbridge top-up. The costs below are real reads of the live chains.
 
 import { describe, expect, it } from "vitest";
 import { sizeSnowbridgeTopUp, type SnowbridgeCosts } from "./amounts";

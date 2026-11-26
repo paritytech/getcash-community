@@ -1,7 +1,7 @@
-// Our copy of Bridge Hub's wrapper against a real message: the one the Gateway accepted on
-// 22 Nov 2026 in Ethereum transaction 0xd49ec0c3...e9d1, with number 1529. The input below is
-// what that transaction gave the Gateway. The expected bytes are what Bridge Hub sent to Asset
-// Hub for it in its block 9008656, which Asset Hub ran with success.
+// Our copy of Bridge Hub's wrapper against a real message: the one the Gateway accepted in
+// Ethereum transaction 0xd49ec0c3...e9d1, with number 1529. The input below is what that
+// transaction gave the Gateway. The expected bytes are what Bridge Hub sent to Asset Hub for it
+// in its block 9008656, which Asset Hub ran with success.
 
 import { blake2b } from "@noble/hashes/blake2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";

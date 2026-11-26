@@ -41,7 +41,7 @@ const FUNDED_KEY = hexToBytes("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efca
 const SENDER = evmAddressOf(FUNDED_KEY);
 const ACCOUNT = `0x${"42".repeat(32)}`;
 
-/** The amounts of a top-up of 0.05 ETH, sized from the costs the chains gave on 23 Nov 2026. */
+/** The amounts of a top-up of 0.05 ETH, sized from costs that the live chains gave. */
 const SIZING = sizeSnowbridgeTopUp({
   costs: {
     assetHubExecution: 1_169_966_505_745n,

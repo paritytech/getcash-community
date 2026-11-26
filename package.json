@@ -29,6 +29,7 @@
     "@getsome/ephemeral": "workspace:*",
     "@getsome/funding": "workspace:*",
     "@getsome/host": "workspace:*",
+    "@getsome/intents": "workspace:*",
     "@getsome/meld": "workspace:*",
     "@getsome/offramp": "workspace:*",
     "@getsome/people": "workspace:*",
