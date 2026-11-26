@@ -113,7 +113,7 @@ export default defineNuxtConfig({
   vite: {
     plugins: [
       tailwindcss(),
-      // polkadot-api and @chainflip/sdk expect node globals in the browser bundle
+      // polkadot-api expects node globals in the browser bundle
       nodePolyfills({
         include: ["buffer", "crypto", "stream", "util", "events", "process"],
         globals: { Buffer: true, global: true, process: true },
