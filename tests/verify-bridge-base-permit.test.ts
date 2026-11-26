@@ -81,6 +81,12 @@ describe.runIf(ON)("the permit on a local fork of Hydration", () => {
       amount: hollar,
     }).signAndSubmit(helper.signer);
     expect(given.ok).toBe(true);
+    // HOLLAR is a contract token. The key holds it and still has nothing in the System pallet.
+    const system = await hydration.api.query.System.Account.getValue(account, best);
+    expect(system.providers).toBe(0);
+    expect(system.sufficients).toBe(0);
+    expect(system.data.free).toBe(0n);
+    expect(await usdtOf(account)).toBe(0n);
     return { key, address, account };
   }
 

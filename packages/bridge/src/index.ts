@@ -37,10 +37,24 @@ export {
   wordsFrom,
 } from "./evm-abi";
 export type { AbiArgument } from "./evm-abi";
+export { evmMove } from "./evm-move";
+export type { EvmMoveInput } from "./evm-move";
 export { createEvmRpc, EvmRpcError, EvmRpcUnreachable } from "./evm-rpc";
 export type { EvmCall, EvmLog, EvmReceipt, EvmRpc, FetchLike } from "./evm-rpc";
 export { evmAddressOf, integerBytes, rlpEncode, signEvmTransaction } from "./evm-tx";
 export type { EvmTransaction, EvmTransactionCall, RlpItem, SignedEvmTransaction } from "./evm-tx";
+export { directFunding, nearFunding } from "./funding";
+export type { FundingInput, NearFundingInput } from "./funding";
+export { BridgeLegEnded, BridgeMoveRefused, bridgeTickOnce, freshBridgeLegState } from "./leg";
+export type {
+  BaseLegHands,
+  BridgeLegEnding,
+  BridgeLegHands,
+  BridgeLegState,
+  BridgeLegStep,
+  BridgeMove,
+  SnowbridgeLegHands,
+} from "./leg";
 export {
   bridgeRouteOrder,
   chooseBridgeRoute,
