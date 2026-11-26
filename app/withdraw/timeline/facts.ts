@@ -12,27 +12,13 @@ import type { Fact, ReachedMilestones } from "../../funding/timeline/types";
 import type { WithdrawalMilestone } from "./spec";
 
 /** The rail's endings that prove it had the funds. */
-const RAIL_HAD_FUNDS: ReadonlySet<WithdrawalFailureKind> = new Set([
-  "refunded",
-  "egress-failed",
-  "fallback-egress",
-  "deposit-rejected",
-]);
-
-/** The rail's endings that prove it was sending on. */
-const RAIL_SENT_ON: ReadonlySet<WithdrawalFailureKind> = new Set([
-  "egress-failed",
-  "fallback-egress",
-]);
+const RAIL_HAD_FUNDS: ReadonlySet<WithdrawalFailureKind> = new Set(["deposit-rejected"]);
 
 const railFailureKind = (record: WithdrawalRecord): WithdrawalFailureKind | undefined =>
   record.failure?.step === "send" ? record.failure.kind : undefined;
 
 /** The worker filed a transaction of this call from the key and the chain took it. */
-function workerFiled(
-  record: WithdrawalRecord,
-  call: "swap" | "withdraw" | "pay" | "sweep",
-): boolean {
+function workerFiled(record: WithdrawalRecord, call: "swap" | "withdraw" | "pay"): boolean {
   const worker = record.witnesses.worker;
   return worker?.known === true && (worker.txs?.some((tx) => tx.call === call && tx.ok) ?? false);
 }
@@ -45,8 +31,8 @@ function railSawPayment(record: WithdrawalRecord): boolean {
   return stageAt?.received !== undefined || stageAt?.processing !== undefined;
 }
 
-/** The rail has the funds: the worker filed the payment (Meld) or swept the key to it (Chainflip),
- *  the rail saw it, or the rail ended in a way only possible with the funds. Every tier lands the
+/** The rail has the funds: the worker filed the payment, the rail saw it, or the rail ended in a
+ *  way only possible with the funds. Every tier lands the
  *  sale on the key first, provider rails included: only a `direct` destination is paid by the XCM
  *  itself. A sale's provider is only followed once paid, so any ending it reports is one. */
 export function receivedByRail(record: WithdrawalRecord): boolean {
@@ -56,16 +42,14 @@ export function receivedByRail(record: WithdrawalRecord): boolean {
     return true;
   const kind = railFailureKind(record);
   if (kind !== undefined && RAIL_HAD_FUNDS.has(kind)) return true;
-  return workerFiled(record, "pay") || workerFiled(record, "sweep");
+  return workerFiled(record, "pay");
 }
 
-/** The rail is sending on, or tried to: the swap is done, the payout approved. */
+/** The rail is sending on: the payout is approved. */
 function railSendingOn(record: WithdrawalRecord): boolean {
   const { stage, status } = record.rail;
   if (stage === "delivered") return true;
-  if (status === "sending" || status === "sent" || status === "complete") return true;
-  const kind = railFailureKind(record);
-  return kind !== undefined && RAIL_SENT_ON.has(kind);
+  return status === "sending" || status === "sent" || status === "complete";
 }
 
 /** The rail sent, and the funds are on their way to the destination. */

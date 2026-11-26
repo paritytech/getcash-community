@@ -1,6 +1,6 @@
 // What a scanned QR code puts in the withdrawal's address field: the bare address, or the one a
-// wallet's payment URI wraps, with the chain and token the URI names; and whether such a code
-// fits the network and token picked.
+// wallet's payment URI wraps, with the scheme the URI is written in; and whether such a code fits
+// the network picked.
 
 import { describe, expect, it } from "vitest";
 import { readScannedCode, scanMismatch } from "../app/withdraw/scan";
@@ -8,11 +8,9 @@ import { readScannedCode, scanMismatch } from "../app/withdraw/scan";
 const POLKADOT = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 const ETHEREUM = "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db";
 const USDC_CONTRACT = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-const USDT_CONTRACT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const BITCOIN = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 const SOLANA = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const SOLANA_USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 const addressOf = (text: string) => readScannedCode(text).address;
 
@@ -50,7 +48,7 @@ describe("the address a scanned code carries", () => {
   });
 });
 
-describe("the scheme, chain and token a scanned code names", () => {
+describe("the scheme a scanned code names", () => {
   it.each([
     ["a bare address", ETHEREUM, { address: ETHEREUM }],
     [
@@ -61,17 +59,17 @@ describe("the scheme, chain and token a scanned code names", () => {
     [
       "an Ethereum payment URI on Base, in capitals",
       `ETHEREUM:pay-${ETHEREUM}@8453`,
-      { scheme: "ethereum", address: ETHEREUM, chainId: 8453 },
+      { scheme: "ethereum", address: ETHEREUM },
     ],
     [
       "a token transfer",
       `ethereum:${USDC_CONTRACT}@1/transfer?address=${ETHEREUM}&uint256=1e6`,
-      { scheme: "ethereum", address: ETHEREUM, chainId: 1, token: USDC_CONTRACT },
+      { scheme: "ethereum", address: ETHEREUM },
     ],
     [
       "a Solana Pay token request",
       `solana:${SOLANA}?amount=1&spl-token=${SOLANA_USDC_MINT}`,
-      { scheme: "solana", address: SOLANA, token: SOLANA_USDC_MINT },
+      { scheme: "solana", address: SOLANA },
     ],
     ["an EIP 3770 address on Base", `base:${ETHEREUM}`, { scheme: "base", address: ETHEREUM }],
     [
@@ -92,92 +90,32 @@ describe("the scheme, chain and token a scanned code names", () => {
   });
 });
 
-describe("whether a scanned code fits the network and token picked", () => {
-  const fits = (text: string, chain: string, asset: string) =>
-    scanMismatch(readScannedCode(text), chain, asset);
+describe("whether a scanned code fits the network picked", () => {
+  const fits = (text: string) => scanMismatch(readScannedCode(text), "Polkadot");
 
-  it("refuses a code for another EVM chain, though its address passes Ethereum's check", () => {
-    expect(fits(`ethereum:${ETHEREUM}@8453`, "Ethereum", "ETH")).toBe("network");
-    expect(fits(`ethereum:${ETHEREUM}@1`, "Ethereum", "ETH")).toBeNull();
-    // Wallets often name no chain: such a code is taken as the network picked.
-    expect(fits(`ethereum:${ETHEREUM}`, "Ethereum", "ETH")).toBeNull();
-  });
-
-  it("refuses an EIP 3770 address for another chain, as a Safe account shows one", () => {
-    expect(fits(`base:${ETHEREUM}`, "Ethereum", "USDC")).toBe("network");
-    expect(fits(`arb1:${ETHEREUM}`, "Ethereum", "USDC")).toBe("network");
-    expect(fits(`eth:${ETHEREUM}`, "Ethereum", "USDC")).toBeNull();
-  });
-
-  it("tells the EVM networks apart by the chain a code names, their addresses being the same", () => {
-    // Every EVM network writes `ethereum:`; only the id after `@` says which one.
-    expect(fits(`ethereum:${ETHEREUM}@42161`, "Arbitrum", "ETH")).toBeNull();
-    expect(fits(`ethereum:${ETHEREUM}@56`, "Bsc", "BNB")).toBeNull();
-    expect(fits(`ethereum:${ETHEREUM}`, "Arbitrum", "ETH")).toBeNull();
-    expect(fits(`ethereum:${ETHEREUM}`, "Bsc", "BNB")).toBeNull();
-    expect(fits(ETHEREUM, "Bsc", "USDT")).toBeNull();
-    expect(fits(`ethereum:${ETHEREUM}@1`, "Arbitrum", "ETH")).toBe("network");
-    expect(fits(`ethereum:${ETHEREUM}@1`, "Bsc", "BNB")).toBe("network");
-    expect(fits(`ethereum:${ETHEREUM}@56`, "Arbitrum", "ETH")).toBe("network");
-    expect(fits(`ethereum:${ETHEREUM}@42161`, "Ethereum", "ETH")).toBe("network");
-    expect(fits(`ethereum:${ETHEREUM}@56`, "Ethereum", "ETH")).toBe("network");
-    expect(fits(`arb1:${ETHEREUM}`, "Arbitrum", "USDC")).toBeNull();
-    expect(fits(`bnb:${ETHEREUM}`, "Bsc", "USDT")).toBeNull();
-    expect(fits(`eth:${ETHEREUM}`, "Bsc", "USDT")).toBe("network");
-    expect(fits(`bitcoin:${BITCOIN}`, "Bsc", "BNB")).toBe("network");
-  });
-
-  it("holds a token transfer code to the picked token's own contract on that network", () => {
-    const arbUsdc = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831";
-    const arbUsdt = "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9";
-    const bscUsdt = "0x55d398326f99059fF775485246999027B3197955";
-    const transfer = (contract: string, id: number) =>
-      `ethereum:${contract}@${id}/transfer?address=${ETHEREUM}&uint256=1`;
-    expect(fits(transfer(arbUsdc, 42161), "Arbitrum", "USDC")).toBeNull();
-    expect(fits(transfer(arbUsdt, 42161), "Arbitrum", "USDT")).toBeNull();
-    expect(fits(transfer(bscUsdt, 56), "Bsc", "USDT")).toBeNull();
-    // Ethereum's USDT contract on BNB Chain's id is another token.
-    expect(fits(transfer(USDT_CONTRACT, 56), "Bsc", "USDT")).toBe("token");
-    expect(fits(transfer(arbUsdc, 42161), "Arbitrum", "USDT")).toBe("token");
-    expect(fits(transfer(bscUsdt, 56), "Bsc", "BNB")).toBe("token");
-  });
-
-  it("refuses an EVM code on a network that is not EVM", () => {
-    expect(fits(`ethereum:${ETHEREUM}@1`, "Bitcoin", "BTC")).toBe("network");
-  });
-
-  it("refuses a code written for another chain whose address the network's check takes", () => {
-    const litecoin = "litecoin:3MSvaVbVFFLML86rt5eqgA9SvW23upaXdY";
-    const bitcoinCash = "bitcoincash:1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2";
-    expect(fits(litecoin, "Bitcoin", "BTC")).toBe("network");
-    expect(fits(bitcoinCash, "Bitcoin", "BTC")).toBe("network");
-    expect(fits(`bitcoin:${BITCOIN}`, "Bitcoin", "BTC")).toBeNull();
+  it("takes a Polkadot code or a bare address", () => {
+    expect(fits(POLKADOT)).toBeNull();
+    expect(fits(`substrate:${POLKADOT}:0x91b171bb`)).toBeNull();
+    expect(fits(`polkadot:${POLKADOT}`)).toBeNull();
   });
 
   it("takes a Substrate account whose name has an @", () => {
-    expect(fits(`substrate:${POLKADOT}:0x91b171bb:me@home`, "Polkadot", "DOT")).toBeNull();
+    expect(fits(`substrate:${POLKADOT}:0x91b171bb:me@home`)).toBeNull();
   });
 
-  it("refuses a transfer of another token than the one picked, the contract read in any case", () => {
-    const usdc = `ethereum:${USDC_CONTRACT}@1/transfer?address=${ETHEREUM}`;
-    expect(fits(usdc, "Ethereum", "USDT")).toBe("token");
-    expect(fits(usdc, "Ethereum", "ETH")).toBe("token");
-    expect(fits(usdc, "Ethereum", "USDC")).toBeNull();
-    const usdt = `ethereum:${USDT_CONTRACT.toLowerCase()}@1/transfer?address=${ETHEREUM}`;
-    expect(fits(usdt, "Ethereum", "USDT")).toBeNull();
+  it("refuses a code written for another chain whose address the network's check takes", () => {
+    // Asset Hub takes an H160 as well, so the address alone passes either way.
+    expect(fits(`ethereum:${ETHEREUM}@1`)).toBe("network");
+    expect(fits(`ethereum:${ETHEREUM}`)).toBe("network");
+    expect(fits(`eth:${ETHEREUM}`)).toBe("network");
+    expect(fits(`ethereum:${USDC_CONTRACT}@1/transfer?address=${ETHEREUM}`)).toBe("network");
+    // A bare address names no chain: it is judged by the address check alone.
+    expect(fits(ETHEREUM)).toBeNull();
   });
 
-  it("refuses a Solana Pay request for another token than the one picked", () => {
-    const usdt = `solana:${SOLANA}?spl-token=${SOLANA_USDT_MINT}`;
-    expect(fits(usdt, "Solana", "USDC")).toBe("token");
-    expect(fits(usdt, "Solana", "SOL")).toBe("token");
-    expect(fits(usdt, "Solana", "USDT")).toBeNull();
-  });
-
-  it("takes a code that names neither chain nor token", () => {
-    expect(fits(ETHEREUM, "Ethereum", "USDT")).toBeNull();
-    expect(fits(`bitcoin:${BITCOIN}?amount=0.1`, "Bitcoin", "BTC")).toBeNull();
-    expect(fits(`substrate:${POLKADOT}:0x91b171bb`, "Polkadot", "DOT")).toBeNull();
-    expect(fits(`polkadot:${POLKADOT}`, "Polkadot", "DOT")).toBeNull();
+  it("refuses a code for a chain no destination is on", () => {
+    expect(fits(`bitcoin:${BITCOIN}?amount=0.1`)).toBe("network");
+    expect(fits(`solana:${SOLANA}?spl-token=${SOLANA_USDC_MINT}`)).toBe("network");
+    expect(fits("litecoin:3MSvaVbVFFLML86rt5eqgA9SvW23upaXdY")).toBe("network");
   });
 });

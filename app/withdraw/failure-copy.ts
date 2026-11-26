@@ -1,17 +1,12 @@
 // What the journey says about a failed withdrawal, from the failure's kind rather than the
-// worker's own words. A sale's rail endings name the card or bank the payout was for.
+// worker's own words. A sale's rail endings have words of their own.
 
 import type { WithdrawalFailure, WithdrawalRecord } from "../funding/requests/model";
 
 /** The provider's endings on a sale once it was paid, as the design words them. */
-function saleRailFailureText(
-  failure: WithdrawalFailure,
-  route: "card" | "bank",
-): string | undefined {
+function saleRailFailureText(failure: WithdrawalFailure): string | undefined {
   if (failure.step !== "send") return undefined;
   switch (failure.kind) {
-    case "egress-failed":
-      return `Your ${route} didn't accept the payout.`;
     case "deposit-rejected":
     case "unknown":
       return "The provider couldn't complete your payout.";
@@ -25,7 +20,7 @@ export function withdrawalFailureText(
   route: WithdrawalRecord["route"] = "crypto",
 ): string {
   if (route !== "crypto") {
-    const text = saleRailFailureText(failure, route);
+    const text = saleRailFailureText(failure);
     if (text !== undefined) return text;
   }
   switch (failure.kind) {
@@ -39,18 +34,8 @@ export function withdrawalFailureText(
       return "The conversion is taking longer than expected. You can try again.";
     case "held":
       return "CASH can't be redeemed right now. Your funds are safe; you can try again or sell on the pool.";
-    case "egress-failed":
-      return "The transfer to your address could not be completed.";
     case "deposit-rejected":
       return "The provider did not accept the funds.";
-    case "fallback-egress":
-      return "The provider sent the funds somewhere else.";
-    case "refunded":
-      return "The rate moved too far to complete the conversion. Your DOT is waiting, you'll need to move it yourself.";
-    case "channel-expired":
-      return "This withdrawal took too long to pay for. Nothing was sent, so you can try again.";
-    case "channel-mismatch":
-      return "We could not confirm this withdrawal with the provider. Nothing was sent, so you can try again.";
     case "unfundable":
       // Before the purse was asked, nothing left the balance; after, the key's funds go home.
       return failure.step === "payment"

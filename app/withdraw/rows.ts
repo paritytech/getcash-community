@@ -175,7 +175,7 @@ function useWithdrawalTopUpAdapterFor(
   };
 }
 
-/** The crypto withdrawals: Asset Hub and the Chainflip networks. */
+/** The crypto withdrawals, to Asset Hub. */
 export const useCryptoWithdrawalTopUpAdapter = (): FundingTopUpAdapter =>
   useWithdrawalTopUpAdapterFor(["crypto"]);
 

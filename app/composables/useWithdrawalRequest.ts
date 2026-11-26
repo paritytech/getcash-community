@@ -383,13 +383,6 @@ export function useWithdrawalRequest() {
       await handOff(ref, live);
       return { ok: true };
     }
-    // A sale through an offramp lane is never paid: no swap is opened for it.
-    if (record.sale.lane !== undefined) {
-      return {
-        ok: false,
-        reason: "This sale is no longer available. Your CASH is still in your balance.",
-      };
-    }
     // The address may have been named long before the seller came back to it.
     const client = meldSellClient();
     if (client === null) {
@@ -520,14 +513,11 @@ export function useWithdrawalRequest() {
   }
 
   /** A user retry: a failed payment is prompted again under a fresh attempt; a failed conversion
-   *  is handed to the worker again. A Chainflip send that failed is refused. */
+   *  is handed to the worker again. */
   async function retry(ref: RequestRef): Promise<boolean> {
     const record = requests.get(ref);
     if (record === undefined || record.kind !== "withdrawal") return false;
     const step = record.failure?.step;
-    // No channel is opened for a failed Chainflip send. A fiat sale keeps its one order: the key
-    // pays the channel it has, which the worker checks against the provider again.
-    if (step === "send" && record.rail.provider === "chainflip") return false;
     if (!(await requests.retryWithdrawal(ref))) return false;
     if (step !== "payment") return true;
     // A sale is priced again before the purse is asked again, by its route, which follows the
@@ -616,7 +606,7 @@ export function useWithdrawalRequest() {
     return "ok";
   }
 
-  /** Dev builds only: takes the provider's swap as delivered, where the provider cannot be
+  /** Dev builds only: takes the provider's sale as delivered, where the provider cannot be
    *  reached. The worker's next pass reports the job done and the record moves to sent. */
   async function skipRail(ref: RequestRef): Promise<void> {
     const record = requests.get(ref);

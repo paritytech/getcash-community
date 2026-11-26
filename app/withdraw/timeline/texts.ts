@@ -28,29 +28,13 @@ const CONVERSION_DELAYED =
   "The conversion is taking longer than usual. It will continue automatically.";
 const RAIL_DELAYED = "Your CASH is ready and waiting for the network to confirm it";
 
-/** The band per phase, for the exchange a crypto withdrawal goes through and the payment
- *  provider a sale does. */
+/** The band per phase: the conversion and the arrival a crypto withdrawal goes through, and the
+ *  payment provider a sale does. */
 function phaseText(record: WithdrawalRecord, index: number): string {
   const { route } = record;
   if (route === "crypto") {
-    const { asset } = record.destination;
-    switch (index) {
-      case 0:
-        return CONVERTING;
-      case 1:
-        // The direct rail delivers with the arrival itself: nothing is exchanged.
-        return record.rail.provider === "direct"
-          ? `Sending your ${asset} to your wallet`
-          : "Moving your money to the exchange";
-      case 2:
-        return "Handing your money to the exchange";
-      case 3:
-        return `Exchanging your money for ${asset}`;
-      case 4:
-        return `Sending your ${asset}`;
-      default:
-        return `Your ${asset} is on its way to your wallet`;
-    }
+    // The direct rail delivers with the arrival itself: nothing is exchanged.
+    return index === 0 ? CONVERTING : `Sending your ${record.destination.asset} to your wallet`;
   }
   switch (index) {
     case 0:

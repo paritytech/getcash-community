@@ -1,8 +1,6 @@
 // What a scanned QR code puts in the destination address field, and whether the code fits the
-// destination picked. Wallets show either the bare address or a payment URI around it, so the
-// address is taken out of the URI when there is one, with the chain and the token it names.
-
-import { EVM_CHAINS, TOKEN_CONTRACTS } from "@getsome/chainflip";
+// network picked. Wallets show either the bare address or a payment URI around it, so the address
+// is taken out of the URI when there is one, with the scheme the URI is written in.
 
 /** A URI scheme, as in `ethereum:` or `bitcoin:`. No address the destinations take has a colon,
  *  so a code that starts with one is a URI. */
@@ -14,15 +12,11 @@ export interface ScannedCode {
   address: string;
   /** The URI scheme the code was written in, lower case: the chain it was made for. */
   scheme?: string;
-  /** The EVM chain an EIP 681 code names after `@`. */
-  chainId?: number;
-  /** The token a code asks for: an EIP 681 transfer's contract, a Solana Pay code's mint. */
-  token?: string;
 }
 
 /**
  * What a scanned QR code carries: the text itself, or the address out of a payment URI with the
- * scheme, chain and token it names (`ethereum:0x…@1`, `bitcoin:bc1…?amount=1`, `solana:…`,
+ * scheme it is written in (`ethereum:0x…@1`, `bitcoin:bc1…?amount=1`, `solana:…`,
  * `substrate:5…:0x…:name`). A URI that calls a contract names the contract as its target, so only
  * a token transfer gives an address, its `address` parameter. A code with no address in it, or
  * one this does not read, comes back as read, for the destination's own rule to call incorrect,
@@ -40,7 +34,6 @@ function fromUri(uri: string): ScannedCode | null {
   const rest = uri.replace(SCHEME, "").replace(/^\/\//, "");
   const queryAt = rest.indexOf("?");
   const path = queryAt === -1 ? rest : rest.slice(0, queryAt);
-  const params = new URLSearchParams(queryAt === -1 ? "" : rest.slice(queryAt + 1));
   if (scheme === "substrate") {
     // The address, then the chain's genesis and the account's name, which is free text.
     const address = path.split(":", 1)[0]?.trim();
@@ -50,64 +43,32 @@ function fromUri(uri: string): ScannedCode | null {
     // One address. A further `:` is a CAIP-10 chain reference or a link, which is not read.
     const address = path.trim();
     if (!address || address.includes(":")) return null;
-    const token = scheme === "solana" ? params.get("spl-token") : null;
-    return { scheme, address, ...(token ? { token } : {}) };
+    return { scheme, address };
   }
   // EIP 681: `ethereum:[pay-]<target>[@<chain id>][/<function>]?<parameters>`.
   const [target = "", call] = path.replace(/^pay-/i, "").split("/", 2);
-  const [named = "", chain] = target.split("@", 2);
+  const [named = ""] = target.split("@", 1);
+  const params = new URLSearchParams(queryAt === -1 ? "" : rest.slice(queryAt + 1));
   const recipient =
     call === undefined ? named : /^transfer$/i.test(call) ? params.get("address") : null;
   const address = recipient?.trim();
-  if (!address) return null;
-  return {
-    scheme,
-    address,
-    ...(chain === undefined ? {} : { chainId: Number(chain) }),
-    ...(call === undefined ? {} : { token: named }),
-  };
+  return address ? { scheme, address } : null;
 }
 
-/** The URI schemes each network's codes are written in. Every EVM network writes EIP 681's
- *  `ethereum:`, the chain id after `@` telling them apart, and also takes the short name EIP 3770
- *  puts in front of an address, as `eth:0x…`. */
+/** The URI schemes each network's codes are written in. */
 const NETWORK_SCHEMES: Readonly<Record<string, readonly string[]>> = {
   Polkadot: ["substrate", "polkadot"],
-  Bitcoin: ["bitcoin"],
-  Ethereum: ["ethereum"],
-  Arbitrum: ["ethereum"],
-  Bsc: ["ethereum"],
-  Solana: ["solana"],
-  Tron: ["tron"],
 };
 
 /**
- * Why a scanned code does not fit the destination picked, or null when it does: it was written
- * for another chain, by its scheme or by the EVM chain it names, or asks for another token than
- * the one picked. Its address alone can pass the network's check either way, and an exchange or
- * contract account reached on another chain or in another token may never see the funds. A bare
- * address, or a code that names neither, fits.
+ * `network` when a scanned code was written for another chain than the one picked, by its scheme;
+ * null when it fits. Its address alone can pass the network's check either way, and an exchange or
+ * contract account reached on another chain may never see the funds. A bare address fits.
  */
-export function scanMismatch(
-  code: ScannedCode,
-  chain: string,
-  asset: string,
-): "network" | "token" | null {
-  const evm = EVM_CHAINS[chain];
-  const schemes = [
-    ...(NETWORK_SCHEMES[chain] ?? []),
-    ...(evm === undefined ? [] : [evm.shortName]),
-  ];
-  if (code.scheme !== undefined && !schemes.includes(code.scheme)) return "network";
-  if (code.chainId !== undefined && code.chainId !== evm?.id) return "network";
-  if (code.token === undefined) return null;
-  const expected = TOKEN_CONTRACTS[chain]?.[asset];
-  return expected !== undefined && sameToken(expected, code.token) ? null : "token";
+export function scanMismatch(code: ScannedCode, chain: string): "network" | null {
+  const schemes = NETWORK_SCHEMES[chain] ?? [];
+  return code.scheme !== undefined && !schemes.includes(code.scheme) ? "network" : null;
 }
-
-/** EVM contracts match in any case, their checksum being only in the capitals; mints exactly. */
-const sameToken = (a: string, b: string): boolean =>
-  a.startsWith("0x") ? a.toLowerCase() === b.toLowerCase() : a === b;
 
 /** Bitcoin codes write a bech32 address in capitals, which pack tighter in a QR code; the
  *  address itself is lower case. No address of another kind is all capitals. */

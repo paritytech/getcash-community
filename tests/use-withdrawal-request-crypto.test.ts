@@ -1,14 +1,9 @@
 // The page's side of a crypto withdrawal: confirm records a direct withdrawal to the address and
-// hands it over with no provider channel, and a Chainflip withdrawal whose send failed is not
-// retried.
+// hands it over with no provider channel.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import {
-  PAYMENT_WINDOW_MS,
-  setRequestsClock,
-  type WithdrawalRecord,
-} from "../app/funding/requests/model";
+import { setRequestsClock, type WithdrawalRecord } from "../app/funding/requests/model";
 import {
   createMemoryKeyedStorage,
   setMirrorStorage,
@@ -24,11 +19,6 @@ const KEY_ADDRESS = "1jN9roH2QfHPSCurNcuCz4V58fXS2HPTGidJGQnT7dPthdZ";
 const LANDING_HEX = `0x${"0a".repeat(32)}`;
 const PSM = { tier: "psm", external: "USDT", feeRate: 5_000 } as const;
 const DESTINATION = { chain: "Polkadot", asset: "USDT", address: KEY_ADDRESS };
-const BITCOIN = {
-  chain: "Bitcoin",
-  asset: "BTC",
-  address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
-};
 
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 const workerCall = vi.fn(async () => ({}));
@@ -84,50 +74,6 @@ function fakeWebStorage(): WebStorageLike {
   };
 }
 
-/** A Chainflip withdrawal whose swap refunded to the key: failed at the send step, retryable. */
-const REFUNDED_SWAP: WithdrawalRecord = {
-  schema: 2,
-  kind: "withdrawal",
-  ref: requestRefOf("wd:btc", 1),
-  rev: 0,
-  updatedAt: FIXTURE_NOW,
-  startedAt: FIXTURE_NOW,
-  amountHuman: "21",
-  route: "crypto",
-  destination: BITCOIN,
-  key: { label: "wd:eph:btc:1", address: KEY_ADDRESS, publicKeyHex: KEY_HEX },
-  payment: { attempt: 0, requestedAt: FIXTURE_NOW, id: "pay-1" },
-  deadline: { paymentExpiresAt: FIXTURE_NOW + PAYMENT_WINDOW_MS },
-  handoff: {
-    label: "wd:eph:btc:1",
-    keyAddress: KEY_ADDRESS,
-    keyPublicKeyHex: KEY_HEX,
-    amount: "21000000",
-    destination: BITCOIN,
-    landingHex: KEY_HEX,
-    rail: "chainflip",
-    tier: "pool",
-    assetHubGenesis: "0xah",
-    peopleGenesis: "0xpe",
-    peopleParaId: 1004,
-    assetHubParaId: 1000,
-    poolAccount: "5Pool",
-    slippagePct: 5,
-    paymentExpiresAt: FIXTURE_NOW + PAYMENT_WINDOW_MS,
-    channel: {
-      id: "42",
-      address: "5ChannelOnAssetHub",
-      openedAt: FIXTURE_NOW,
-      expiresAt: FIXTURE_NOW + 86_400_000,
-      expectedEgress: "123456",
-    },
-  },
-  status: { kind: "failed", at: FIXTURE_NOW, recoverable: true },
-  rail: { provider: "chainflip", stage: "failed", updatedAt: FIXTURE_NOW },
-  failure: { kind: "refunded", step: "send", message: "the swap refunded", recoverable: true },
-  witnesses: {},
-};
-
 describe("a crypto withdrawal from the page", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -160,17 +106,5 @@ describe("a crypto withdrawal from the page", () => {
     expect(record.handoff).not.toHaveProperty("channel");
     expect(handedOff).toHaveBeenCalledTimes(1);
     expect(handedOff.mock.calls[0]?.[2]).toEqual(record.handoff);
-  });
-
-  it("refuses to retry a Chainflip send that failed, leaving the record and the worker alone", async () => {
-    const requests = useRequestsStore();
-    const { ref } = REFUNDED_SWAP;
-    await requests.create(ref, REFUNDED_SWAP);
-    const before = requests.get(ref);
-
-    expect(await useWithdrawalRequest().retry(ref)).toBe(false);
-    expect(requests.get(ref)).toEqual(before);
-    expect(handedOff).not.toHaveBeenCalled();
-    expect(workerCall).not.toHaveBeenCalled();
   });
 });
