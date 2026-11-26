@@ -72,8 +72,7 @@ instead, which is enough for UI work but cannot be recovered across devices.
 
 The rail delivers funds to the ephemeral's address. The worker re-derives the same key to
 spend them. When the claim completes, the next request moves to a new trade number and a new
-account. Rails with a refund leg get a second per-request key on the source chain, derived
-the same way, so a refund never needs a typed address.
+account.
 
 ### The withdrawal
 
@@ -155,17 +154,15 @@ key whose chain state contradicts the payment stops the job for a person.
 ### Rails as packages
 
 `@getsome/core` owns the session state machine and defines the ports it needs. The rail port
-(`ChainflipRail` in `packages/core/src/ports.ts`) is the contract a funding source has to
+(`FundingRail` in `packages/core/src/ports.ts`) is the contract a funding source has to
 meet: reverse-quote a target amount, open a deposit channel to the ephemeral, report status,
-probe liquidity, and list its sources. Two packages implement it, and one source needs none:
+probe liquidity, and list its sources. Two rails implement it:
 
-- `@getsome/chainflip` for swaps from other networks, over the Chainflip SDK. The top-up offers
-  none of its sources.
 - `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
   route's deposit asset to the ephemeral; from there the flow is identical to a crypto deposit.
 - Polkadot directly, the crypto top-up: the buyer sends DOT, dotUSD, USDT or USDC from any wallet
-  to the ephemeral on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail
-  port, one source id per token, and the deposit screen shows the account as a QR at once.
+  to the ephemeral on Asset Hub. `createManualRail` in `@getsome/funding` is the rail, one source
+  id per token, and the deposit screen shows the account as a QR at once.
 
 The core session does not know which rail it is running. The surface picks one per route.
 
@@ -207,10 +204,9 @@ brand/        the product icon used in the bulletin manifest
 | Package              | Role                                                             |
 | -------------------- | ---------------------------------------------------------------- |
 | `@getsome/core`      | session state machine, flow store, re-entry logic, port types    |
-| `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding, refund keys |
+| `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding              |
 | `@getsome/funding`   | the funding program the worker runs on Asset Hub                 |
 | `@getsome/withdraw`  | withdrawal legs: swap and XCM on People, the redeem on Asset Hub |
-| `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
 | `@getsome/meld`      | card and bank rail over the Meld adapter                         |
 | `@getsome/people`    | People chain port: CASH balances and the handoff submit          |
 | `@getsome/host`      | port wiring for the Polkadot App host                            |
