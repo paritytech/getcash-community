@@ -13,14 +13,6 @@ import {
   type SourceId,
   type TokenSpec,
 } from "@getsome/core";
-import {
-  ChainflipRequestError,
-  chainflipTokenOf,
-  egressFor,
-  SOURCE_CONFIG_BY_ID,
-  SourceMinimumNotMetError,
-  type ChainflipToken,
-} from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
@@ -75,12 +67,7 @@ import {
 } from "~~/lib/supported";
 import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
 import { estimateSourceFromCash } from "~~/lib/demo-rates";
-import {
-  priceSourceLeg,
-  sourceMinimumOf,
-  sourcePriceOf,
-  type SourcePriceResult,
-} from "~~/lib/source-price";
+import type { SourcePriceResult } from "~~/lib/source-price";
 import {
   createMockCoinageSession,
   depositTokenOf,
@@ -135,12 +122,6 @@ type MeldMethodRail = { paymentMethodType: string; rail: ChainflipRail };
 /** A Meld quote on a route, with the region's corridor for that route's token and the country
  *  it was priced in. */
 type MeldRouteQuote = LiveQuote & { corridor: SupportedCorridor; country: string };
-
-/** What Chainflip answered for a hosted world built on a route: its quote, or that the purchase
- *  is under the source's floor. */
-type RouteQuote = { world: HostedCoinageWorld } & (
-  { quote: Quote } | { minimum: SourceMinimumNotMetError }
-);
 
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
@@ -263,12 +244,6 @@ export interface QuotedView {
   mintFee?: string | null;
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
-  /** Live world only: what the rail must deliver to the burner, in `depositToken`'s base units:
-   *  the native on the pool tier, the stable on the stable tiers. */
-  nativeAmount: bigint | null;
-  /** The token `nativeAmount` is counted in, set with it and only when Chainflip can deliver that
-   *  token: the floors and the display price read it. A USDC deposit sets neither. */
-  depositToken?: ChainflipToken;
   sourceAsset: string | null;
   sourceChain: string | null;
 }
@@ -376,7 +351,6 @@ function meldQuotedView(raw: MeldQuoteRaw, sizing: FundingSizing): QuotedView {
     partnerFee: raw.provider.partnerFee ?? null,
     chainFee: meldChainFeeFiat(raw, sizing),
     mintFee: sizing.tier === "psm" ? meldMintFeeFiat(raw, sizing) : null,
-    nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
   };
@@ -524,25 +498,6 @@ export const useSessionStore = defineStore("session", () => {
       if (effectiveSourceId(ref) === sourceId) highest = Math.max(highest, ref.tradeN);
     }
     return highest + 1;
-  }
-
-  /** Prices the selected source for this budget, in `depositToken`, in the background.
-   *  Epoch-guarded. */
-  function priceSelectedSource(
-    chain: string,
-    asset: string,
-    targetBaseUnits: bigint,
-    depositToken: ChainflipToken,
-    epoch: number,
-  ) {
-    const sourceId = sourceIdFor(chain, asset);
-    // A direct deposit has no swap to price: the manual rail's figure is the deposit itself.
-    if (sourceId === undefined || isDirectSourceId(sourceId)) return;
-    sourcePrice.value = { kind: "pending" };
-    const egress = egressFor(depositToken);
-    void priceSourceLeg({ sourceId, targetBaseUnits, egress }).then((result) => {
-      if (epoch === quoteEpoch) sourcePrice.value = result;
-    });
   }
 
   function setAmount(human: string) {
@@ -750,7 +705,7 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
-   * Asks the quote of the world being built on one route of a walk: the world with its quote, the
+   * Asks the quote of the world being built on a route: the world with its quote, the
    * failure with the world already let go, or null when a newer quote has superseded this one.
    */
   async function quoteLiveWorld(
@@ -775,10 +730,9 @@ export const useSessionStore = defineStore("session", () => {
    * The conversion tier a fresh quote is built on, decided once here and handed down: the rail
    * is built for the asset the tier delivers, and the world freezes the tier into the hand-off.
    * Nothing downstream decides again. `deposit` names the asset the buyer will send when the
-   * picker knows it; the fiat rails name none. A hosted Chainflip pick or Meld quote does not come
-   * here: each walks the ranked routes, in `runQuote` and `runMeldQuote`. The mock world runs over
-   * fakes with no PSM to ask, so outside the host the tier is the pool, fed with the stable the
-   * buyer picked.
+   * picker knows it; the fiat rails name none. A hosted Meld quote does not come here: it walks
+   * the ranked routes in `runMeldQuote`. The mock world runs over fakes with no PSM to ask, so
+   * outside the host the tier is the pool, fed with the stable the buyer picked.
    */
   async function chooseQuoteRoute(
     amount: bigint,
@@ -1320,103 +1274,50 @@ export const useSessionStore = defineStore("session", () => {
     loading.value = true;
     devLog("coinage", `quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`);
     try {
-      // A direct Polkadot pick names the token it deposits; a Chainflip pick leaves the route to
-      // the amount. Either way the world runs under the pick's own source.
+      // A direct Polkadot pick names the token it deposits, and the world runs under the pick's
+      // own source. No other pair has a source to quote.
       const sourceId = sourceIdFor(chain, asset);
-      if (!sourceId) {
+      if (!isDirectSourceId(sourceId)) {
         loading.value = false;
         return;
       }
-      const direct = isDirectSourceId(sourceId) ? sourceId : null;
-      const deposit = direct === null ? undefined : depositAssetFor(direct);
+      const deposit = depositAssetFor(sourceId);
+      const route = await chooseQuoteRoute(amountBase.value, deposit);
+      if (epoch !== quoteEpoch) return;
       if (isHosted()) {
-        const { nextHostedTradeNumber, rankHostedRoutes } = await import("~~/lib/coinage-live");
-        // A direct pick's token has one route. A Chainflip pick asks Chainflip about each route
-        // the chain ranks until one can be quoted.
-        const routes =
-          direct === null
-            ? await step("route selection", 10_000, rankHostedRoutes(amountBase.value))
-            : [await chooseQuoteRoute(amountBase.value, deposit)];
-        if (epoch !== quoteEpoch) return;
+        const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
         const tradeN = await step(
           "trade number",
           10_000,
           nextHostedTradeNumber(sourceId, (n) => requests.hasTrace(sourceId, n)),
         );
-        // Every route is tried on this one number: building a world and asking its quote write
-        // neither a flow slot nor a record, so a world let go leaves no request behind.
-        let refusal: unknown;
-        const pick = await pickRoute<RouteQuote | null>(routes, async (route) => {
-          const asked = await quoteLiveWorld(
-            epoch,
-            createLiveWorld(epoch, depositWindowFor("crypto"), route, tradeN, undefined, sourceId),
-          );
-          // Quoted, or superseded by a newer quote: either way nothing further is asked.
-          if (asked === null || "quote" in asked) return { kind: "accepted", value: asked };
-          // Chainflip can refuse, on a floor, a pair or an outage, and the world and its burner
-          // are let go. The floor is on the buyer's token, the same on every route, so it ends the
-          // walk as an answer; an outage ends it as a failure.
-          const { world, error: e } = asked;
-          if (e instanceof SourceMinimumNotMetError) {
-            return { kind: "accepted", value: { world, minimum: e } };
-          }
-          if (e instanceof ChainflipRequestError && e.outage) throw e;
-          refusal ??= e;
-          return { kind: "refused", reason: e instanceof Error ? e.message : String(e) };
-        });
-        if (pick.kind !== "picked") throw refusal;
-        const { route, value } = pick;
-        if (value === null) return;
-        const { world } = value;
+        const asked = await quoteLiveWorld(
+          epoch,
+          createLiveWorld(epoch, depositWindowFor("crypto"), route, tradeN, undefined, sourceId),
+        );
+        if (asked === null) return;
+        if ("error" in asked) throw asked.error;
+        const { world, quote } = asked;
         if (epoch !== quoteEpoch) {
           world.dispose();
           return;
         }
-        const depositToken = chainflipTokenOf(depositTokenOf(route));
-        if ("minimum" in value) {
-          const e = value.minimum;
-          devLog(
-            "coinage",
-            `quote: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededFormatted}`,
-          );
-          // Under the source's floor is not an error to show: the picker greys the row, held
-          // against the budget the world sized before Chainflip was asked, and the other sources
-          // stay open.
-          quoted.value = {
-            send: e.neededFormatted,
-            symbol: e.assetSymbol,
-            nativeAmount: depositToken === undefined ? null : world.budget,
-            ...(depositToken === undefined ? {} : { depositToken }),
-            sourceAsset: asset,
-            sourceChain: chain,
-          };
-          sourcePrice.value = { kind: "minimum", minimum: sourceMinimumOf(e) };
-          return;
-        }
-        const { quote } = value;
         live.value = world;
         quoteFailures.value = 0;
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
-          nativeAmount: depositToken === undefined ? null : world.budget,
-          ...(depositToken === undefined ? {} : { depositToken }),
           sourceAsset: asset,
           sourceChain: chain,
         };
-        // The rail's own figure is the pay card's price; a direct deposit has no swap to price.
-        if (direct === null) sourcePrice.value = { kind: "price", price: sourcePriceOf(quote) };
       } else {
-        const route = await chooseQuoteRoute(amountBase.value, deposit);
-        if (epoch !== quoteEpoch) return;
         // Real pricing outside the host: the pool leg is a public chain read over a standalone
         // WebSocket. Skipped in node test runs; falls back to demo rates when the RPC is
         // unreachable. A stable deposit has nothing to read, the fakes take it one to one.
         let nativeAmount: bigint | null = null;
         let sizing: PoolFundingSizing | null = null;
         const settleForPricing = amountBase.value; // non-null: guarded at fetchQuote entry
-        const pricesNative = direct === null || depositAssetFor(direct) === "native";
-        if (typeof window !== "undefined" && settleForPricing !== null && pricesNative) {
+        if (typeof window !== "undefined" && settleForPricing !== null && deposit === "native") {
           try {
             const [
               { connectChain, ASSET_HUB },
@@ -1451,7 +1352,7 @@ export const useSessionStore = defineStore("session", () => {
                   keepNativeForFees: priced.keepNativeForFees,
                   keepAliveNative: priced.keepAliveNative,
                   // A direct deposit carries its own headroom, as the hosted sizing does.
-                  ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
+                  slippagePct: DIRECT_SLIPPAGE_PCT,
                 }))(),
             );
           } catch (e) {
@@ -1465,17 +1366,13 @@ export const useSessionStore = defineStore("session", () => {
           sourceId,
           tradeN: nextMockTradeN(sourceId),
           route,
-          // A direct source deposits to the mock burner itself, in the token picked, and a DOT
-          // deposit is sized by the pool read when it answered: the QR, the copy row and the
-          // record then carry one figure.
-          ...(direct === null
+          // The deposit goes to the mock burner itself, in the token picked, and a DOT deposit is
+          // sized by the pool read when it answered: the QR, the copy row and the record then
+          // carry one figure.
+          rail: createManualRail({ token: depositTokenOf(route) }),
+          ...(nativeAmount === null || sizing === null
             ? {}
-            : {
-                rail: createManualRail({ token: depositTokenOf(route) }),
-                ...(nativeAmount === null || sizing === null
-                  ? {}
-                  : { nativeBudget: nativeAmount, fundingSizing: sizing }),
-              }),
+            : { nativeBudget: nativeAmount, fundingSizing: sizing }),
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -1485,27 +1382,12 @@ export const useSessionStore = defineStore("session", () => {
         }
         mock.value = world;
         quoteFailures.value = 0;
-        // The fake rail returns a fixed quote regardless of source, so a Chainflip pick shows a
-        // source-appropriate estimate. A direct pick shows the rail's own figure.
-        const cfg = SOURCE_CONFIG_BY_ID.get(sourceId);
-        const est =
-          direct === null && cfg && amountBase.value !== null
-            ? estimateSourceFromCash(amountBase.value, cfg.asset)
-            : null;
-        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
-          send: est ?? quote.source.formatted,
-          symbol: est && cfg ? cfg.asset : quote.source.assetSymbol,
-          nativeAmount,
-          ...(depositToken === undefined ? {} : { depositToken }),
-          sourceAsset: direct === null ? (est && cfg ? cfg.asset : null) : asset,
+          send: quote.source.formatted,
+          symbol: quote.source.assetSymbol,
+          sourceAsset: asset,
           sourceChain: chain,
         };
-        // The swap network's quote endpoint is public; it needs the pool figure above as its
-        // target.
-        if (nativeAmount !== null && direct === null) {
-          priceSelectedSource(chain, asset, nativeAmount, TOKENS.PAS, epoch);
-        }
       }
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
@@ -1905,7 +1787,6 @@ export const useSessionStore = defineStore("session", () => {
         partnerFee: record.sourcePartnerFee ?? null,
         chainFee: record.sourceChainFee ?? null,
         mintFee: record.sourceMintFee ?? null,
-        nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
       };

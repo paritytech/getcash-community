@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// An amount a quote refused for falling outside a bound, top-up or withdrawal: the amount, why in
-// red under it, the region when the method has one (still live, as one way out), the bound, and
-// the ways on: a different amount, or the bound itself.
+// An amount a quote refused for falling outside a bound: the amount, why in red under it, the
+// region when the method has one (still live, as one way out), the bound, and the ways on: a
+// different amount, or the bound itself.
 import type { OutOfRangeWords } from "../../funding/out-of-range";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows from "../ui/DetailRows.vue";

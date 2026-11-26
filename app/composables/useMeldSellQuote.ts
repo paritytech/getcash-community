@@ -18,7 +18,6 @@ import {
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
-import { laneByMeldCode, laneSellToken, type LaneId, type OfframpLane } from "@getsome/offramp";
 import { OFFRAMP_LANE_ORDER } from "~~/lib/config";
 import { bankRailCountries, regionForCountry } from "~~/lib/region";
 import {
@@ -41,10 +40,8 @@ export interface MeldSellQuote {
   country: string;
   fiat: string;
   paymentMethodType: string;
-  /** Exactly what the provider is paid, base units of the sold asset: PAS, or the lane's. */
+  /** Exactly what the provider is paid, base units of the sold asset: PAS or USDT. */
   cryptoAmount: bigint;
-  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
-  swap?: { lane: LaneId; route: ConversionRoute };
   /** A direct sale quoted under a code other than Meld's code for DOT, which the session must name
    *  too: its code for USDT on Asset Hub. */
   sellCode?: string;
@@ -57,14 +54,8 @@ export interface MeldSellQuote {
   line: MeldQuoteEntry;
 }
 
-/** What a sale commits to its provider, and its lane when it sells through one, or its redeem when
- *  it sells USDT directly. */
-type SizedSale = {
-  planck: bigint;
-  backCash: bigint;
-  swap?: MeldSellQuote["swap"];
-  route?: ConversionRoute;
-};
+/** What a sale commits to its provider, and the sale the worker makes for it. */
+type SizedSale = { planck: bigint; backCash: bigint; route: ConversionRoute };
 
 /** How a sale pays out when the live catalog cannot say: Meld's payout codes, which the sell
  *  catalog names its methods by, not the buy side's card and bank codes. */
@@ -80,13 +71,6 @@ let lastCountry: string | null = null;
  *  once the async lookup lands (MeldWithdrawRoute), unless the seller chose before. */
 function startingCountry(): string {
   return lastCountry ?? detectedCountryNow() ?? "DE";
-}
-
-/** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS or USDT,
- *  a lane this build can swap into, or `undefined` for a code it cannot sell. */
-export function saleLaneOf(code: string): OfframpLane | null | undefined {
-  if (isDirectSellCode(code)) return null;
-  return laneByMeldCode(code) ?? undefined;
 }
 
 /** The asset a lane sells: the adapter's own name for it, or the one the asset table gives its
@@ -166,7 +150,7 @@ export function sellableCorridor(
     if (method.lanes === undefined) return [method];
     const lanes = method.lanes.filter((l) => {
       const asset = laneAsset(l);
-      return asset !== undefined && order.includes(asset) && saleLaneOf(l.code) !== undefined;
+      return asset !== undefined && order.includes(asset) && isDirectSellCode(l.code);
     });
     if (lanes.length === 0) return [];
     if (lanes.length === method.lanes.length) return [method];
@@ -327,19 +311,11 @@ export function useMeldSellQuote(
       }
       let failure: { message: string; error: unknown } | undefined;
       for (const code of candidates) {
-        const lane = saleLaneOf(code);
-        if (lane === undefined) continue;
+        if (!isDirectSellCode(code)) continue;
         // A direct sale is quoted under the code the catalog routed, which its providers buy.
-        const token = lane === null ? directSellToken(code) : laneSellToken(lane);
+        const token = directSellToken(code);
         try {
-          const size: SizedSale =
-            lane === null
-              ? await sizeDirectSale(live, code, amount, toValue(reserved))
-              : await live.sizeSwapSale(amount, lane, toValue(reserved)).then((swap) => ({
-                  planck: swap.promise,
-                  backCash: 0n,
-                  swap: { lane: lane.id, route: swap.route },
-                }));
+          const size = await sizeDirectSale(live, code, amount, toValue(reserved));
           if (mine !== epoch) return;
           const { quotes } = await client.getSellQuote({
             country: country.value,
@@ -359,9 +335,8 @@ export function useMeldSellQuote(
             paymentMethodType: corridor.paymentMethodType,
             cryptoAmount: size.planck,
             backCash: size.backCash,
-            ...(size.swap === undefined ? {} : { swap: size.swap }),
-            ...(lane === null && code !== SELL_TOKEN.meldCurrencyCode ? { sellCode: code } : {}),
-            ...(size.route === undefined ? {} : { route: size.route }),
+            ...(code !== SELL_TOKEN.meldCurrencyCode ? { sellCode: code } : {}),
+            route: size.route,
             line,
           };
           rateFailures.value = 0;

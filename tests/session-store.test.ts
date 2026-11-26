@@ -5,60 +5,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installTestMeldAssets } from "./setup-meld-assets";
 import { createPinia, setActivePinia } from "pinia";
 import { AccountId } from "polkadot-api";
-import type { FakeRail } from "@getsome/testing";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
-import { refundStorageKey } from "../lib/coinage";
 
 describe("session store: mock-world quote", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
   });
 
-  it("quotes 1 CASH from the Bitcoin pill in the plain-browser world", async () => {
+  it.each([
+    ["Bitcoin", "BTC"],
+    ["Polkadot", "BTC"],
+  ])("quotes nothing for %s %s, which has no direct source", async (chain, asset) => {
     const store = useSessionStore();
+    const requests = useRequestsStore();
     store.setAmount("1");
-    expect(store.amountBase).toBe(1_000_000n);
-    await store.fetchQuote("Bitcoin", "BTC");
+    await store.fetchQuote(chain, asset);
+    expect(store.quoted).toBeNull();
+    expect(store.mock).toBeNull();
     expect(store.quoteError).toBeNull();
-    expect(store.quoted).not.toBeNull();
     expect(store.loading).toBe(false);
+    // With no quote there is nothing to start.
+    await store.start();
+    expect(requests.phase).toBeNull();
   });
-
-  // The funded gate polls in seconds; this test runs on real time.
-  it(
-    "start() enters the flow and the mock deposit + consent complete it",
-    { timeout: 30_000 },
-    async () => {
-      const store = useSessionStore();
-      const requests = useRequestsStore();
-      store.setAmount("1");
-      await store.fetchQuote("Bitcoin", "BTC");
-      await store.start();
-      expect(requests.phase).toBe("awaiting-deposit");
-      // The channel refunds to the request's own Bitcoin key, never to a typed address.
-      const world = store.mock!;
-      const slot = refundStorageKey("btc", 1);
-      expect(store.revealRefundKey()?.chain).toBe("Bitcoin");
-      const rail = world.rail as FakeRail;
-      expect(rail.stats.lastChannelArgs?.refundAddress).toBe(world.refundAddress);
-      expect(await world.storage.read(slot)).not.toBeNull();
-      store.simulateDeposit();
-      // funded-gate poll -> settle -> consent
-      await new Promise((r) => setTimeout(r, 50));
-      const waitFor = async (pred: () => boolean, ms: number) => {
-        const until = Date.now() + ms;
-        while (!pred() && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
-      };
-      await waitFor(() => requests.phase === "working", 15_000);
-      // The deposit landed: the refund key is forgotten, in memory and in storage.
-      expect(store.revealRefundKey()).toBeNull();
-      expect(await world.storage.read(slot)).toBeNull();
-      store.approveClaim();
-      await waitFor(() => requests.phase === "done", 10_000);
-      expect(requests.phase).toBe("done");
-    },
-  );
 });
 
 describe("session store: Polkadot direct deposit in the mock world", () => {
@@ -94,7 +64,6 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         symbol: "dotUSD",
         sourceAsset: "dotUSD",
         sourceChain: "Polkadot",
-        nativeAmount: null,
       });
       expect(store.mock?.sourceId).toBe("dotusd-assethub");
       expect(store.mock?.route).toEqual({ tier: "dotusd" });
@@ -136,9 +105,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         symbol: "USDC",
         sourceAsset: "USDC",
         sourceChain: "Polkadot",
-        nativeAmount: null,
       });
-      expect(store.quoted?.depositToken).toBeUndefined();
       expect(store.mock?.sourceId).toBe("usdc-assethub");
       expect(store.mock?.route).toEqual({ tier: "pool", external: "USDC" });
 

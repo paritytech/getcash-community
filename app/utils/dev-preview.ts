@@ -10,7 +10,7 @@ import type {
   SourceId,
 } from "@getsome/core";
 import { nextTick } from "vue";
-import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
 import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
 import { CRYPTO_SOURCE_ID, isMeldSourceId, meldMethodFor } from "../funding/source-ids";
@@ -34,7 +34,6 @@ import { previewQuote, previewTopUpScene, type PreviewTopUpScene } from "./dev-p
 import type { FundingTopUp, StoredQuote } from "../funding/top-ups";
 import { previewStage, type PreviewStage } from "./dev-preview-stage";
 import { useFlowStore } from "../stores/flow";
-import { useOffersStore } from "../stores/offers";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 import type { RequestRef } from "../utils/request-index";
@@ -43,20 +42,15 @@ import { devLog } from "~~/lib/log";
 type Session = ReturnType<typeof useSessionStore>;
 type Flow = ReturnType<typeof useFlowStore>;
 
-const DOT = 10_000_000_000n;
-
-/** The withdraw summary/fees scenes' canned quote, as the section's design frames draw it. */
+/** The withdraw summary/fees scenes' canned estimate: the fee in CASH, taken before the sale. */
 const WITHDRAW_PREVIEW_FEES = {
-  rows: [
-    { label: "Network fee", value: "0.31 USDC" },
-    { label: "Swap fee", value: "0.21 USDC" },
-    { label: "Service fee", value: "0.04 USDC" },
-  ],
-  total: "0.56 USDC",
-  equivalent: "≈ 24.75 USDC",
-  receive: "24.19 USDC",
-  rate: "$1 CASH ≈ 0.99 USDC",
+  rows: [{ label: "Network fee", value: "$0.45 CASH" }],
+  receive: "24.44 USDC",
+  rate: "$1 CASH ≈ 0.98 USDC",
 };
+
+/** The Asset Hub account the withdraw scenes send to. */
+const WITHDRAW_PREVIEW_ADDRESS = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 
 /** The card withdrawal's canned quote for $25 to the United Kingdom, as its frames draw it: the
  *  provider's line in GBP, the exact PAS the key would pay, and the CASH held back for the price
@@ -79,32 +73,6 @@ const SALE_PREVIEW_QUOTE: MeldSellQuote = {
   },
 };
 
-function floor(sourceId: SourceId, minimumBaseUnits: bigint, worth: bigint): SourceFloorResult {
-  return {
-    kind: "floor",
-    floor: { sourceId, minimumBaseUnits, minimumEgressBaseUnits: worth, etaSeconds: 600 },
-  };
-}
-
-/** Canned floors for the selection scenes. Bitcoin's is above the 100 CASH purchase and
- *  Ethereum USDC is unanswered. */
-const FLOORS = new Map<SourceId, SourceFloorResult>([
-  ["btc", floor("btc", 40_000n, 16n * DOT)],
-  ["eth", floor("eth", 10n ** 16n, (25n * DOT) / 10n)],
-  ["usdc-eth", { kind: "unavailable", reason: "preview: unanswered" }],
-  ["usdt-eth", floor("usdt-eth", 20_000_000n, 5n * DOT)],
-  ["eth-arbitrum", floor("eth-arbitrum", 39n * 10n ** 14n, DOT)],
-  ["usdc-arbitrum", floor("usdc-arbitrum", 10_000_000n, (25n * DOT) / 10n)],
-  ["usdt-arbitrum", floor("usdt-arbitrum", 10_000_000n, (25n * DOT) / 10n)],
-  ["bnb-bsc", floor("bnb-bsc", 2n * 10n ** 16n, 3n * DOT)],
-  ["usdt-bsc", floor("usdt-bsc", 10n ** 19n, (25n * DOT) / 10n)],
-  ["sol-solana", floor("sol-solana", 68_000_000n, (17n * DOT) / 10n)],
-  ["usdc-solana", floor("usdc-solana", 10_000_000n, (25n * DOT) / 10n)],
-  ["usdt-solana", floor("usdt-solana", 10_000_000n, (25n * DOT) / 10n)],
-  ["trx-tron", floor("trx-tron", 30_000_000n, 2n * DOT)],
-  ["usdt-tron", floor("usdt-tron", 10_000_000n, (25n * DOT) / 10n)],
-]);
-
 const DEPOSIT = {
   address: "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC",
   amount: 2_934_713_048n,
@@ -117,7 +85,6 @@ const DEPOSIT = {
 const QUOTED = {
   send: "0.00004545",
   symbol: "BTC",
-  nativeAmount: 2_934_713_048n,
   sourceAsset: "BTC",
   sourceChain: "Bitcoin",
 };
@@ -178,7 +145,6 @@ const QUOTED_CARD = {
   // against Paseo for this frame's 50 CASH — 0.0343 DOT of Asset Hub fees at the quote's implied
   // rate, plus 0.000043 CASH of execution on People.
   chainFee: "0.0867",
-  nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
 };
@@ -189,7 +155,6 @@ const QUOTED_BANK = {
   symbol: "EUR",
   fee: "0.55",
   networkFee: "0.05",
-  nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
 };
@@ -588,7 +553,7 @@ async function previewWithdrawal(
       : {
           chain: "Polkadot",
           asset: "DOT",
-          address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+          address: WITHDRAW_PREVIEW_ADDRESS,
         });
   const record: WithdrawalRecord = {
     schema: 2,
@@ -1309,7 +1274,6 @@ function base(session: Session, flow: Flow) {
   useRequestsStore().leave();
   // The records too: a scene lists what it seeded, never what its neighbour did.
   useRequestsStore().clearSandbox();
-  flow.step = "amount";
   flow.confirmingCancel = false;
   flow.previewDrillIn = null;
   flow.previewMismatch = null;
@@ -1321,8 +1285,8 @@ function base(session: Session, flow: Flow) {
   session.quoteOutOfRange = null;
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
-  // Bitcoin, matching the canned quote.
-  flow.setSourceByName("Bitcoin", "BTC");
+  // The picker back on its first token.
+  flow.setSourceByName("Polkadot", "DOT");
 }
 
 /** Baseline for the direct deposit scenes: 10 CASH from a Polkadot token, quoted as the manual
@@ -1340,10 +1304,14 @@ function polkadotDeposit(
     ...QUOTED,
     send: `${send} ${asset}`,
     symbol: asset,
-    nativeAmount: null,
     sourceAsset: asset,
     sourceChain: "Polkadot",
   };
+}
+
+/** Baseline for the deposit scenes: a DOT deposit. */
+function dotDeposit(session: Session, flow: Flow) {
+  polkadotDeposit(session, flow, "DOT", "0.59");
 }
 
 /** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
@@ -1431,16 +1399,11 @@ const PREVIEW_MELD_IDS = [
   "e9b3f7a4-1c58-4d20-97af-63d2b8e4c015",
 ] as const;
 
-/** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
+/** Baseline for the selection scenes: 100 CASH. */
 function selection(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("100");
-  session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
-  const offers = useOffersStore();
-  offers.floors = FLOORS;
-  // The rail-off scene turns the rail off; every other scene gets the build's own settings.
-  offers.railEnabled = true;
-  flow.setSourceByName("Ethereum", "ETH");
+  session.quoted = { ...QUOTED };
 }
 
 /** Baseline for the bank-journey scenes: the Meld quote and method the bank frames show. */
@@ -1612,7 +1575,6 @@ function refunded(sourceId: SourceId, send: string) {
   const amount = toBaseUnits(send, source.decimals);
   return async (s: Session, f: Flow, index: number) => {
     base(s, f);
-    f.setSourceByName(source.chain, source.asset);
     s.quoted = {
       ...QUOTED,
       send,
@@ -1721,7 +1683,6 @@ const STAGE_BY_PREFIX: readonly (readonly [string, PreviewStage])[] = [
   ["top-up / list", { kind: "shell" }],
   ["top-up / history", { kind: "shell" }],
   // The crypto package owns everything up to and including the deposit.
-  ["top-up / crypto / network", CRYPTO_PACKAGE],
   ["top-up / crypto / token", CRYPTO_PACKAGE],
   ["top-up / crypto / deposit", CRYPTO_PACKAGE],
   ["top-up / crypto / resume spinner", CRYPTO_PACKAGE],
@@ -1915,73 +1876,21 @@ export const SCENES: Scene[] = [
     }),
   },
   {
-    name: "top-up / crypto / network",
-    apply: (s, f) => {
-      selection(s, f);
-      f.step = "network";
-    },
+    name: "top-up / crypto / token",
+    apply: (s, f) => selection(s, f),
   },
   {
-    name: "top-up / crypto / network: loading",
-    apply: (s, f) => {
-      selection(s, f);
-      useOffersStore().floors = null; // still learning: the skeleton rows
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / network: too small",
-    apply: (s, f) => {
-      selection(s, f);
-      s.setAmount("5");
-      s.quoted = { ...QUOTED }; // 0.29 DOT: under every floor
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / network: paused",
-    apply: (s, f) => {
-      selection(s, f);
-      const offers = useOffersStore();
-      offers.floors = new Map(
-        [...FLOORS.keys()].map((id) => [
-          id,
-          { kind: "unavailable", reason: "Quoting is currently unavailable due to maintenance" },
-        ]),
-      );
-      f.step = "network";
-    },
-  },
-  {
-    // A build with no channel rail: every route listed, none pickable.
-    name: "top-up / crypto / network: not available yet",
-    apply: (s, f) => {
-      selection(s, f);
-      useOffersStore().railEnabled = false;
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / network: couldn't get the rate",
+    name: "top-up / crypto / token: couldn't get the rate",
     apply: (s, f) => {
       selection(s, f);
       rateFailed(s, 1);
-      f.step = "network";
     },
   },
   {
-    name: "top-up / crypto / network: still not working",
+    name: "top-up / crypto / token: still not working",
     apply: (s, f) => {
       selection(s, f);
       rateFailed(s, 2);
-      f.step = "network";
-    },
-  },
-  {
-    name: "top-up / crypto / token",
-    apply: (s, f) => {
-      selection(s, f);
-      f.step = "token";
     },
   },
   {
@@ -1995,8 +1904,8 @@ export const SCENES: Scene[] = [
   {
     name: "top-up / crypto / deposit: waiting",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
     },
   },
@@ -2004,8 +1913,8 @@ export const SCENES: Scene[] = [
     // The full-screen confirmation over an open deposit.
     name: "top-up / crypto / deposit: cancel confirm",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
       f.confirmingCancel = true;
     },
@@ -2045,8 +1954,8 @@ export const SCENES: Scene[] = [
   {
     name: "top-up / crypto / deposit: faucet sent",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
       s.faucetState = "sent";
     },
@@ -2054,8 +1963,8 @@ export const SCENES: Scene[] = [
   {
     name: "top-up / crypto / deposit: faucet failed",
     apply: async (s, f, i) => {
-      base(s, f);
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
+      dotDeposit(s, f);
+      const r = await previewRequest(s, { sourceId: CRYPTO_SOURCE_ID, index: i });
       await core(r, 0, awaitingDeposit());
       useRequestsStore().setTransientError({
         message: "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)",
@@ -2067,9 +1976,13 @@ export const SCENES: Scene[] = [
     // The channel deadline as a ticking countdown row.
     name: "top-up / crypto / deposit: expiring",
     apply: async (s, f, i) => {
-      base(s, f);
+      dotDeposit(s, f);
       const expiresAt = Date.now() + 4 * 60_000 + 59_000;
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i, deposit: { expiresAt } });
+      const r = await previewRequest(s, {
+        sourceId: CRYPTO_SOURCE_ID,
+        index: i,
+        deposit: { expiresAt },
+      });
       await core(r, 0, awaitingDeposit(expiresAt));
     },
   },
@@ -2077,9 +1990,13 @@ export const SCENES: Scene[] = [
     // The window closed with nothing sent: the clock expires the request.
     name: "top-up / crypto / deposit: expired",
     apply: async (s, f, i) => {
-      base(s, f);
+      dotDeposit(s, f);
       const expiresAt = Date.now() - 60_000;
-      const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i, deposit: { expiresAt } });
+      const r = await previewRequest(s, {
+        sourceId: CRYPTO_SOURCE_ID,
+        index: i,
+        deposit: { expiresAt },
+      });
       await core(r, 0, awaitingDeposit(expiresAt));
       await r.observe({ source: "clock", at: Date.now() });
     },
@@ -2891,7 +2808,7 @@ export const SCENES: Scene[] = [
     name: "top-up / crypto / failed: refunded",
     apply: async (s, f, i) => {
       base(s, f);
-      f.setSourceByName("Tron", "USDT"); // a token refund, with the gas note
+      // A token refund, with the gas note.
       s.quoted = {
         ...QUOTED,
         send: "5.02",
@@ -2973,76 +2890,40 @@ export const SCENES: Scene[] = [
     },
   },
 
-  // ——— The withdrawal package's pickers, staged by `#/withdraw`. The stage carries everything —
-  // the step on screen and the skeletons — and the screens read static data, so `base` only
-  // clears what a neighbouring scene seeded.
+  // ——— The withdrawal package's entry steps, staged by `#/withdraw`. The stage carries
+  // everything and the screens read static data, so `base` only clears what a neighbouring scene
+  // seeded.
   {
-    name: "withdrawal / crypto / network: loaded",
-    stage: { kind: "withdraw-package", step: "network" },
+    name: "withdrawal / crypto / token",
+    stage: { kind: "withdraw-package", step: "token" },
     apply: (s, f) => base(s, f),
   },
-  {
-    name: "withdrawal / crypto / network: skeleton",
-    stage: { kind: "withdraw-package", step: "network", skeleton: true },
-    apply: (s, f) => base(s, f),
-  },
-  {
-    name: "withdrawal / crypto / token: loaded",
-    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum" },
-    apply: (s, f) => base(s, f),
-  },
-  {
-    name: "withdrawal / crypto / token: skeleton",
-    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum", skeleton: true },
-    apply: (s, f) => base(s, f),
-  },
-  // The address step's four states: empty, an address another network would take, one no network
-  // takes, and a valid one. The screen itself judges the seeded address.
+  // The address step's three states: empty, an address Asset Hub does not take, and a valid one.
+  // The screen itself judges the seeded address.
   {
     name: "withdrawal / crypto / address: empty",
-    stage: { kind: "withdraw-package", step: "address", chain: "Ethereum" },
-    apply: (s, f) => base(s, f),
-  },
-  {
-    name: "withdrawal / crypto / address: wrong network",
-    stage: {
-      kind: "withdraw-package",
-      step: "address",
-      chain: "Ethereum",
-      address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
-    },
+    stage: { kind: "withdraw-package", step: "address" },
     apply: (s, f) => base(s, f),
   },
   {
     name: "withdrawal / crypto / address: incorrect",
-    stage: {
-      kind: "withdraw-package",
-      step: "address",
-      chain: "Ethereum",
-      address: "1BvBMSEYstWetq",
-    },
+    stage: { kind: "withdraw-package", step: "address", address: "1BvBMSEYstWetq" },
     apply: (s, f) => base(s, f),
   },
   {
     name: "withdrawal / crypto / address: entered",
-    stage: {
-      kind: "withdraw-package",
-      step: "address",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-    },
+    stage: { kind: "withdraw-package", step: "address", address: WITHDRAW_PREVIEW_ADDRESS },
     apply: (s, f) => base(s, f),
   },
-  // The summary and its fee drill-in, on the section's canned quote: the route never asks
-  // Chainflip while the stage carries the estimate.
+  // The summary and its fee drill-in, on the section's canned estimate: the route never asks the
+  // chain while the stage carries it.
   {
     name: "withdrawal / crypto / summary",
     stage: {
       kind: "withdraw-package",
       step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      receive: "24.44 USDC",
+      address: WITHDRAW_PREVIEW_ADDRESS,
+      receive: WITHDRAW_PREVIEW_FEES.receive,
       fees: WITHDRAW_PREVIEW_FEES,
     },
     apply: (s, f) => base(s, f),
@@ -3052,9 +2933,8 @@ export const SCENES: Scene[] = [
     stage: {
       kind: "withdraw-package",
       step: "fees",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      receive: "24.44 USDC",
+      address: WITHDRAW_PREVIEW_ADDRESS,
+      receive: WITHDRAW_PREVIEW_FEES.receive,
       fees: WITHDRAW_PREVIEW_FEES,
     },
     apply: (s, f) => base(s, f),
@@ -3065,10 +2945,9 @@ export const SCENES: Scene[] = [
     stage: {
       kind: "withdraw-package",
       step: "fees",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      receive: "24.034843 USDC",
-      fees: { ...WITHDRAW_PREVIEW_FEES, receive: "24.034843 USDC" },
+      address: WITHDRAW_PREVIEW_ADDRESS,
+      receive: "24.4375 USDC",
+      fees: { ...WITHDRAW_PREVIEW_FEES, receive: "24.4375 USDC" },
     },
     apply: (s, f) => base(s, f),
   },
@@ -3077,33 +2956,14 @@ export const SCENES: Scene[] = [
     stage: {
       kind: "withdraw-package",
       step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      address: WITHDRAW_PREVIEW_ADDRESS,
       receive: null,
     },
     apply: (s, f) => base(s, f),
   },
   {
     name: "withdrawal / crypto / summary: no quote",
-    stage: {
-      kind: "withdraw-package",
-      step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-    },
-    apply: (s, f) => base(s, f),
-  },
-  // The provider's minimum for the token is over the amount: the summary gives way to the
-  // out-of-range screen, the minimum offered as the amount.
-  {
-    name: "withdrawal / crypto / summary: below minimum",
-    stage: {
-      kind: "withdraw-package",
-      step: "summary",
-      chain: "Ethereum",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      belowMinimum: "50",
-    },
+    stage: { kind: "withdraw-package", step: "summary", address: WITHDRAW_PREVIEW_ADDRESS },
     apply: (s, f) => base(s, f),
   },
   // ——— The journey and the refund guide, on a hand-made record; see `previewWithdrawal`.

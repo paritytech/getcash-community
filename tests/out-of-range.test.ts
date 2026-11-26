@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  cryptoBelowMinimum,
-  fiatAmountRejected,
-  fiatOutOfRange,
-} from "../app/funding/out-of-range";
+import { fiatAmountRejected, fiatOutOfRange } from "../app/funding/out-of-range";
 
 describe("fiatOutOfRange", () => {
   const range = { limit: "40.00", estimatedFiat: "19.68", fiat: "GBP" };
@@ -43,16 +39,6 @@ describe("fiatAmountRejected", () => {
       message: "This amount can't be paid by card payment in France",
       rows: [],
       bound: null,
-    });
-  });
-});
-
-describe("cryptoBelowMinimum", () => {
-  it("rounds the provider's minimum up to whole CASH and offers it", () => {
-    expect(cryptoBelowMinimum(49_200_000n)).toEqual({
-      message: "You need at least $50 CASH for crypto payout for this token",
-      rows: [{ label: "Min. payout", value: "$50 CASH" }],
-      bound: "50",
     });
   });
 });

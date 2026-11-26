@@ -11,8 +11,8 @@ A prototype funding surface for Polkadot App mobile hosts. It receives an inboun
 fiat-sourced, on an ephemeral account on Asset Hub, converts it into CASH on the People chain,
 and hands the result to the host. The same surface runs the other way at `#/withdraw`: it takes
 CASH out of the host's purse and delivers DOT, dotUSD, USDT or USDC to an Asset Hub address, or
-carries it on through Chainflip or Meld. The prototype consists of a static Nuxt 4 single-page
-app plus a background worker, both published to bulletin/DotNS.
+carries it on through Meld. The prototype consists of a static Nuxt 4 single-page app plus a
+background worker, both published to bulletin/DotNS.
 
 ## Architecture
 
@@ -45,11 +45,11 @@ token and the worker signs one `Utility.batch_all` that mints the CASH and sends
 The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
 takes over whenever the PSM cannot serve a request (i.e.: no instance open for the pair, minting
 paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
-delivers the native token and one XCM swaps and sends it instead. A Chainflip pick takes the
-pool too when Chainflip cannot quote the swap into USDT for it, and a card or bank top-up when no
-provider buys USDT for the region and amount or the quote for it times out. Which tier a request
-takes is decided at quote time, before the provider is told what to send, and recorded on the request
-with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
+delivers the native token and one XCM swaps and sends it instead. A card or bank top-up takes the
+pool too when no provider buys USDT for the region and amount or the quote for it times out.
+Which tier a request takes is decided at quote time, before the provider is told what to send,
+and recorded on the request with the fee rate it was quoted; the worker runs the tier it is
+handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
 for PAS and PAS for CASH inside the holding and sends the CASH on, every fee paid in the stable,
@@ -90,11 +90,8 @@ tier, the fee PAS that travels with the CASH ends up in the landing token, so th
 credited one asset.
 The sale is decided at quote time, from the token the user picks for Asset Hub or, for a Meld
 destination, from the candidates the off-ramp catalog routes for the region, in this build's lane
-order (USDT on Asset Hub, then PAS, then the Chainflip lanes): a USDT candidate only when the PSM
-can serve it, and the first a provider quotes wins. For a Chainflip destination the chain ranks USDT through the PSM, when it can
-serve, then PAS through the pool, and each destination takes the first of those Chainflip can
-quote for the amount, its minimum included: an amount under Chainflip's minimum for USDT sells
-PAS, and one under the minimum on both shows the smaller. The PSM serves when it has room for the
+order (USDT on Asset Hub, then PAS): a USDT candidate only when the PSM
+can serve it, and the first a provider quotes wins. The PSM serves when it has room for the
 amount plus a tenth of it, 20 CASH at the least, once the app's own open PSM withdrawals are
 counted against that room. Confirm decides the sale again, fresh: when it is no longer the one the
 summary showed, the summary takes the new figure and nothing starts until the user confirms that.
@@ -130,10 +127,8 @@ the program, the sizing, the redeem and the tick; `worker/src/withdraw-engine.js
 Withdrawals are a second record kind in the same request store as the top-ups, moved by the
 same observations and the same reconcile.
 
-A withdrawal to a Chainflip network or through Meld lands the sale's token on the key's own Asset
-Hub account and pays the provider from there. For Chainflip the page opens the channel for USDT
-or DOT on Asset Hub, whichever the sale lands, and the worker sweeps the key into it once the
-token is there.
+A withdrawal through Meld lands the sale's token on the key's own Asset Hub account and pays the
+provider from there.
 
 A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact figure in
 the sale's token, sized from what the sale lands, on the pool tier under its floor with room for
@@ -154,9 +149,8 @@ stable pool otherwise, PAS through the pool. A sale that ends before the provide
 the price moved past the figure, the provider closed or changed the order, or the hour ran out,
 sends everything on the key home the same way, wherever it is. A payment whose answer was lost
 holds the job until the chain shows it landed or outlived its mortality, and an exact payment that
-shows landed at the best head is watched from there until the finalized chain shows it too. A sweep
-is not: a swap's refund can fill the key it emptied, so the key cannot settle it later. Only a key
-whose chain state contradicts the payment stops the job for a person.
+shows landed at the best head is watched from there until the finalized chain shows it too. Only a
+key whose chain state contradicts the payment stops the job for a person.
 
 ### Rails as packages
 
@@ -165,13 +159,13 @@ whose chain state contradicts the payment stops the job for a person.
 meet: reverse-quote a target amount, open a deposit channel to the ephemeral, report status,
 probe liquidity, and list its sources. Two packages implement it, and one source needs none:
 
-- `@getsome/chainflip` for crypto deposits, over the Chainflip SDK. Sources are BTC, ETH,
-  USDC and the other Chainflip assets.
+- `@getsome/chainflip` for swaps from other networks, over the Chainflip SDK. The top-up offers
+  none of its sources.
 - `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
   route's deposit asset to the ephemeral; from there the flow is identical to a crypto deposit.
-- Polkadot directly: the buyer sends DOT, dotUSD, USDT or USDC from any wallet to the ephemeral
-  on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail port, one source
-  id per token, and the deposit screen shows the account as a QR at once.
+- Polkadot directly, the crypto top-up: the buyer sends DOT, dotUSD, USDT or USDC from any wallet
+  to the ephemeral on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail
+  port, one source id per token, and the deposit screen shows the account as a QR at once.
 
 The core session does not know which rail it is running. The surface picks one per route.
 
@@ -258,24 +252,16 @@ Next. Demo builds, and with them the faucet and Skip, need `"testnet": true`; th
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable                        | Purpose                                                                                                                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`              | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                                                     |
-| `DEPLOYER_SEED`                 | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                          |
-| `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                       |
-| `VITE_MELD_PRODUCT_ID`          | this product's id, which the adapter's `allowed_products` must list; in `personhood` mode, the id the Host gives getcash (its domain)                                                                                           |
-| `VITE_ADAPTER_AUTH`             | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                             |
-| `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only                                   |
-| `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                 |
-| `VITE_TOP_UP_MINIMUM`           | the least a top up or withdrawal can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, if it has one, shows when it is picked |
-| `VITE_TOP_UP_MAXIMUM`           | the most a top up or withdrawal can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so         |
-
-`VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
-key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit
-channels on its default broker as of October 2026, so the channels open on the BaaS broker, which
-takes 5 bps of each swap on top of the commission set in its dashboard; ours is 0. BaaS treats the
-key as the account's name rather than a secret, so it is inlined into the client bundle like the
-other values; keep it out of the repo all the same.
+| Variable               | Purpose                                                                                                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                                                     |
+| `DEPLOYER_SEED`        | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                          |
+| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                       |
+| `VITE_MELD_PRODUCT_ID` | this product's id, which the adapter's `allowed_products` must list; in `personhood` mode, the id the Host gives getcash (its domain)                                                                                           |
+| `VITE_ADAPTER_AUTH`    | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                             |
+| `VITE_OFFRAMP_LANES`   | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub`), not Meld code; only the direct Asset Hub sales are sold, USDT then DOT when unset, and any other asset is ignored |
+| `VITE_TOP_UP_MINIMUM`  | the least a top up or withdrawal can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, if it has one, shows when it is picked |
+| `VITE_TOP_UP_MAXIMUM`  | the most a top up or withdrawal can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so         |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
@@ -289,8 +275,8 @@ Being a prototype, parts of the tree exist to keep a demo moving and are not wha
 deployment would do. Each is marked `TODO(production)` at its definition:
 
 - the faucet (`lib/faucet.ts`, `app/utils/demo.ts`), which on Skip sends the burner what the
-  Chainflip channel would deliver, in the route's deposit asset, and the `estimateSourceFromCash`
-  helper behind the `≈` amounts of the browser world
+  buyer or the provider would deliver, in the route's deposit asset, and the
+  `estimateSourceFromCash` helper behind the `≈` amounts of the browser world
 
 ## Deploy
 
@@ -304,8 +290,8 @@ in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
-build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID`,
-`VITE_CHAINFLIP_BROKER_API_KEY` and `VITE_SENTRY_DSN` from repository secrets.
+build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
+`VITE_SENTRY_DSN` from repository secrets.
 
 ## Telemetry
 

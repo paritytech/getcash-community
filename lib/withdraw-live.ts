@@ -15,26 +15,19 @@ import {
   NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
-  pickRoute,
-  psmGrossFor,
-  rankRoutes,
   STABLE_TOKENS,
   type ConversionRoute,
   type DepositAsset,
   type PsmRoute,
-  type RouteAnswer,
-  type RouteDecline,
-  type RoutePick,
   type RouteQuery,
 } from "@getsome/funding";
 import { sellAmountOf } from "@getsome/meld";
-import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
   type HostLocalStorageLike,
 } from "@getsome/host";
-import { CASH_DECIMALS, CASH_LOCATION } from "@getsome/people";
+import { CASH_LOCATION } from "@getsome/people";
 import {
   buildRedeemBatch,
   CASH_ON_ASSET_HUB,
@@ -44,7 +37,6 @@ import {
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
-  readDestinationBalance,
   readRedeemFloors,
   redeemAmountOf,
   RedeemTooSmallError,
@@ -62,25 +54,8 @@ import {
   type WithdrawalChannel,
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
-import {
-  assetHubSourceFor,
-  BelowMinimumSwapAmountError,
-  ChainflipRequestError,
-  formatSourceAmount,
-  openWithdrawChannel,
-  quoteOutgoing,
-  SOURCE_CONFIG_BY_ID,
-  type IncludedFee,
-  type OutgoingQuote,
-  type SourceConfig,
-} from "@getsome/chainflip";
-import { AccountId } from "polkadot-api";
-import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
-import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
-import { mainnetSdk, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
 import { ADAPTER_AUTH, PRODUCT_ID } from "./adapter-fetch";
-import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
   requestPayment as hostRequestPayment,
@@ -233,22 +208,6 @@ export async function chooseWithdrawRoute(
   return { tier: "pool", external: landing };
 }
 
-/** The sales a provider withdrawal of `amount` CASH could make, best first: USDT through the PSM
- *  when it can serve and the redeem clears its floors (`redeemFits`), with `reserved` of its room
- *  spoken for, then the native through the pool. The provider is asked about them in that
- *  order. */
-async function rankWithdrawRoutes(
-  amount: bigint,
-  reserved: bigint,
-): Promise<readonly ConversionRoute[]> {
-  const { api, query } = await withdrawRouteQuery(amount, reserved);
-  const routes = await rankRoutes(api, query);
-  const fits = await Promise.all(
-    routes.map((route) => route.tier !== "psm" || redeemFits(api, amount, route)),
-  );
-  return routes.filter((_, at) => fits[at]);
-}
-
 /** The Asset Hub a withdrawal's sale is decided on, and the redeem it is judged on: what the
  *  redeem will take, the amount less the fees and Asset Hub's earmark. */
 async function withdrawRouteQuery(
@@ -333,21 +292,6 @@ export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute):
   );
   if (stable === undefined) throw new Error(`Asset Hub cannot quote the ${sale.external} sale`);
   return stable;
-}
-
-/** The CASH a direct withdrawal must take for `native` planck to land on Asset Hub, at today's
- *  pool price: what exactly that much native costs, plus the fees the program takes on the way. */
-export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
-  const { connectChain, ASSET_HUB } = await import("./host-chain");
-  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const quoted = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-    CASH_ON_ASSET_HUB as never,
-    PEOPLE_NATIVE as never,
-    native,
-    true,
-  );
-  if (quoted === undefined) throw new Error("Asset Hub cannot quote the purchase");
-  return quoted + (await directFeesCash({ tier: "pool" }));
 }
 
 // A fiat sale promises its provider an exact figure before the seller's KYC and pays it after, out
@@ -479,101 +423,6 @@ export async function meldCommitmentFundable(
   return saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT, slippagePct) >= needed;
 }
 
-// A sale through an offramp lane sells USDT, not PAS: the PSM redeems the CASH at a fixed rate,
-// the key pays all of it into a Chainflip channel, and Chainflip pays the lane's asset straight to
-// the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
-// hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
-
-/** What a sale through `lane` sells and commits to. */
-export interface SwapSaleSize {
-  /** The PSM redeem the withdrawal runs, landing USDT on the key. */
-  route: PsmRoute;
-  /** The least USDT the key must land for the sweep into the channel, base units: what the swap is
-   *  quoted on and the sweep's own cost. */
-  landing: bigint;
-  /** The least USDT the key pays the channel, base units: what the swap is quoted on. */
-  usdtIn: bigint;
-  /** What the swap delivers today, in the lane's base units, less the lane's delivery buffer. */
-  commit: bigint;
-  /** Exactly what the provider is promised at confirm, the lane's base units: `commit` with
-   *  SALE_KYC_MARGIN_PCT under it, for the price to move while the seller verifies. */
-  promise: bigint;
-}
-
-/** Sizes a sale of `amount` CASH through `lane`, with `reserved` of the PSM's room spoken for.
- *  Throws when this build cannot open the swap's channel, the PSM cannot redeem it, Chainflip
- *  cannot quote it, or the fees take it all. */
-export async function sizeSwapSale(
-  amount: bigint,
-  lane: OfframpLane,
-  reserved: bigint,
-): Promise<SwapSaleSize> {
-  // Refused here, at the quote, so the sale falls through to the next lane before any KYC.
-  if (!saleChannelsOpen()) throw new Error("Swap channels cannot be opened in this build.");
-  // The redeem the swap sells out of: this build sells no USDT out of the pool.
-  const route = await chooseWithdrawRoute(amount, "USDT", reserved);
-  if (route.tier !== "psm") throw new Error("USDT cannot be redeemed for this sale right now.");
-  const now = await saleNow(amount, route);
-  if (now === null) throw new Error("The amount does not cover the network fees.");
-  // The key sweeps the whole landing into the channel, so what the swap is quoted on is the landing
-  // less what the key's own transfer costs it.
-  const usdtToken = depositTokenOf(route);
-  const usdtIn = now.expected - (await paymentCost(now.api, now.expected, usdtToken));
-  if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
-  const quote = await quoteOutgoing(
-    await saleSwapSdk(),
-    usdtIn,
-    lane.chainflip,
-    assetHubSourceFor(usdtToken),
-  );
-  const token = laneSellToken(lane);
-  // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
-  const commit = sellAmountOf(laneCommit(lane, quote.egressAmount, quote.egressFee), token);
-  // As for a sale of PAS: the seller verifies between confirm and pay, and the check at pay holds
-  // today's `commit` to this, so a small move in the quote or the fee meanwhile still sells.
-  const promise = sellAmountOf(
-    (commit * BigInt(Math.round((100 - SALE_KYC_MARGIN_PCT) * 100))) / 10_000n,
-    token,
-  );
-  if (promise <= 0n) throw new Error("The amount does not cover the network fees.");
-  return { route, landing: now.expected, usdtIn, commit, promise };
-}
-
-/** Opens a lane sale's Chainflip channel: the key's USDT in, the lane's asset out to the provider's
- *  deposit address, refunded to the key on Asset Hub. Null, with nothing opened, when today's floor
- *  no longer covers what the sale promised. */
-export async function openSwapSaleChannel(args: {
-  amount: bigint;
-  lane: OfframpLane;
-  committed: bigint;
-  providerAddress: string;
-  keyPublicKeyHex: string;
-  reserved: bigint;
-}): Promise<WithdrawalChannel | null> {
-  const size = await sizeSwapSale(args.amount, args.lane, args.reserved);
-  if (size.commit < args.committed) return null;
-  const channel = await openWithdrawChannel({
-    sdk: await saleSwapSdk(),
-    source: assetHubSourceFor(depositTokenOf(size.route)),
-    amount: size.usdtIn,
-    destination: { ...args.lane.chainflip, address: args.providerAddress },
-    refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
-    fillOrKill: {
-      slippageTolerancePercent: (args.lane.slippageBps / 100).toString(),
-      retryDurationMinutes: 30,
-    },
-  });
-  return {
-    id: channel.id,
-    address: channel.address,
-    openedAt: Date.now(),
-    expiresAt: channel.expiresAt,
-    expectedEgress: channel.expectedEgress.toString(),
-    amount: size.landing.toString(),
-    minPrice: channel.minPrice,
-  };
-}
-
 /** Where the worker reads a fiat sale from: the adapter this build names, or the stand-in sale in
  *  a demo build that names none. Null in any other build: the worker trusts a stand-in sale as the
  *  hand-off describes it, and its deposit address is made up. */
@@ -582,259 +431,6 @@ export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"
   if (!baseUrl) return isDemoBuild() ? { offline: true } : null;
   return { baseUrl, productId: PRODUCT_ID, auth: ADAPTER_AUTH };
 }
-
-/** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset
- *  Hub may slip by up to the program's own tolerance and still go through, and the sweep's fee
- *  comes off the deposit after that. The provider is quoted for the worst case the program
- *  allows, so a withdrawal that passes here lands enough to swap. The pool tier's alone: the
- *  PSM's rate is frozen on the sale, so its figure is exact. */
-const PROVIDER_QUOTE_HEADROOM_BPS = BigInt(Math.round((DEFAULT_WITHDRAW_SLIPPAGE_PCT + 1) * 100));
-/** Ceiling on the wait for the offers. */
-const OFFERS_TIMEOUT_MS = 15_000;
-
-/** The design's fee rows: what the networks charged, Chainflip's own cut, ours. */
-const FEE_GROUPS: readonly { label: string; types: readonly string[] }[] = [
-  { label: "Network fee", types: ["INGRESS", "EGRESS", "BOOST"] },
-  { label: "Swap fee", types: ["NETWORK"] },
-  { label: "Service fee", types: ["BROKER"] },
-];
-
-/** The dollar tokens, by the asset Chainflip names them. */
-const STABLE_ASSETS: ReadonlySet<string> = new Set(["USDC", "USDT"]);
-
-/** Stables read naturally at cents, whatever decimals their chain counts them in; everything else
- *  keeps the payout's own precision. */
-const feeDecimals = (config: { asset: string; decimals: number }): number =>
-  config.decimals <= 6 || STABLE_ASSETS.has(config.asset) ? 2 : 6;
-
-/** Digits a payout is stated to, on the summary and in the drill-in alike. */
-const PAYOUT_DECIMALS = 6;
-
-/** A fee, at the cents a fee reads best in. Rounded up, which overstates the charge: the safe
- *  direction for a fee, and the wrong one for a payout. */
-const fmtDest = (config: { asset: string; decimals: number }, planck: bigint): string =>
-  `${formatSourceAmount(config, planck, { maxDecimals: feeDecimals(config) })} ${config.asset}`;
-
-/**
- * What lands, at the payout's own precision — the summary's figure and the drill-in's, from one
- * place so the two cannot disagree.
- *
- * Not `fmtDest`: `formatSourceAmount` rounds up, so a stable capped at cents would promise a cent
- * more than the swap pays out (24.500001 USDC reading as 24.51).
- */
-const fmtPayout = (config: { asset: string; decimals: number }, planck: bigint): string =>
-  `${formatSourceAmount(config, planck, { maxDecimals: PAYOUT_DECIMALS })} ${config.asset}`;
-
-/** "$1 CASH ≈ 0.99 USDC": the gross rate `equivalent` implies for the CASH withdrawn. */
-function grossRate(
-  config: { asset: string; decimals: number },
-  equivalent: bigint,
-  amountCash: bigint,
-): string | null {
-  const cash = Number(amountCash) / 10 ** CASH_DECIMALS;
-  const value = Number(equivalent) / 10 ** config.decimals / cash;
-  if (!Number.isFinite(value) || value <= 0) return null;
-  const figure = value >= 0.01 ? value.toFixed(2) : value.toPrecision(2);
-  return `${cashAmount("1")} ≈ ${figure} ${config.asset}`;
-}
-
-/**
- * The quote's fee split priced into the destination asset with the quote's own numbers: a fee in
- * the token sold at the deposit-to-egress ratio, a USDC fee at the intermediate-to-egress ratio.
- * An estimate for the drill-in, not what the swap is held to. A fee neither rule can price, or of
- * a kind the rows don't name, drops the whole view: better no split than one that does not add up.
- */
-function offerFees(
-  config: { asset: string; decimals: number },
-  source: SourceConfig,
-  quote: OutgoingQuote,
-  amountCash: bigint,
-): WithdrawFeeView | undefined {
-  const inDest = (fee: IncludedFee): bigint | null => {
-    // The token sold comes first: it can share the destination's name and still count other
-    // decimals, as USDT does between Asset Hub and BNB Chain.
-    if (fee.chain === source.chain && fee.asset === source.asset && quote.depositAmount > 0n)
-      return (fee.amount * quote.egressAmount) / quote.depositAmount;
-    if (fee.asset === config.asset) return fee.amount;
-    if (fee.asset === "USDC" && quote.intermediateAmount !== null && quote.intermediateAmount > 0n)
-      return (fee.amount * quote.egressAmount) / quote.intermediateAmount;
-    return null;
-  };
-  if (quote.includedFees.length === 0) return undefined;
-  if (quote.includedFees.some((fee) => !FEE_GROUPS.some((g) => g.types.includes(fee.type))))
-    return undefined;
-  const rows: { label: string; value: string }[] = [];
-  let total = 0n;
-  for (const group of FEE_GROUPS) {
-    let sum = 0n;
-    for (const fee of quote.includedFees) {
-      if (!group.types.includes(fee.type)) continue;
-      const priced = inDest(fee);
-      if (priced === null) return undefined;
-      sum += priced;
-    }
-    if (sum > 0n) {
-      rows.push({ label: group.label, value: fmtDest(config, sum) });
-      total += sum;
-    }
-  }
-  const equivalent = quote.egressAmount + total;
-  return {
-    rows,
-    ...(rows.length ? { total: fmtDest(config, total) } : {}),
-    equivalent: `≈ ${fmtPayout(config, equivalent)}`,
-    receive: fmtPayout(config, quote.egressAmount),
-    rate: grossRate(config, equivalent, amountCash),
-  };
-}
-
-const withHeadroom = (units: bigint): bigint =>
-  units + (units * PROVIDER_QUOTE_HEADROOM_BPS) / 10_000n;
-const lessHeadroom = (units: bigint): bigint =>
-  units - (units * PROVIDER_QUOTE_HEADROOM_BPS) / 10_000n;
-
-/** What `sale` lands for `amountCash` in its token, as a provider is asked to take it. */
-async function sellableOf(amountCash: bigint, sale: ConversionRoute): Promise<bigint> {
-  const landed = await quoteDirectReceive(amountCash, sale);
-  return sale.tier === "psm" ? landed : lessHeadroom(landed);
-}
-
-/** The CASH a withdrawal must take for a provider's `minimum` in the sale's token to land: the
- *  PSM's gross for it at the frozen rate plus the fees, or the pool's price with the headroom. */
-function cashForMinimum(minimum: bigint, sale: ConversionRoute): Promise<bigint> {
-  if (sale.tier !== "psm") return quoteDirectCashFor(withHeadroom(minimum));
-  return directFeesCash(sale).then((fees) => psmGrossFor(minimum, sale.feeRate) + fees);
-}
-
-type AvailableOffer = Extract<WithdrawOffer, { state: "available" }>;
-
-/**
- * What every provider destination offers for `amountCash`, with `reserved` of the PSM's room
- * spoken for. The chain ranks the sales once (`rankWithdrawRoutes`); each destination is quoted on
- * them in that order, from the sale's Asset Hub source for what it sells, and takes the first
- * Chainflip accepts. An amount under Chainflip's minimum on every sale says the smallest of them,
- * priced back into CASH; a provider that is not answering on the first destination marks every
- * destination without asking the rest. Never throws.
- */
-export async function quoteWithdrawOffers(
-  amountCash: bigint,
-  destinations: readonly { id: string; chain: string; asset: string }[],
-  reserved: bigint,
-): Promise<ReadonlyMap<string, WithdrawOffer>> {
-  const offers = new Map<string, WithdrawOffer>();
-  const allUnavailable = (reason: string) => {
-    for (const destination of destinations)
-      offers.set(destination.id, { state: "unavailable", reason });
-    devLog("withdraw", `offers unavailable: ${reason}`, undefined, "warn");
-    return offers;
-  };
-
-  let routes: readonly ConversionRoute[];
-  let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
-  try {
-    [routes, sdk] = await withTimeout(
-      Promise.all([rankWithdrawRoutes(amountCash, reserved), mainnetSdk()]),
-      OFFERS_TIMEOUT_MS,
-      "withdraw offers",
-    );
-  } catch (e) {
-    return allUnavailable(messageOf(e));
-  }
-
-  // Per sale, shared by every destination: what it sells, and its answer once one destination's
-  // quote was under the minimum. The minimum is on the token sold, so it is the same for all.
-  const sellables = new Map<ConversionRoute, Promise<bigint>>();
-  const tooSmall = new Map<ConversionRoute, Promise<RouteDecline>>();
-  const sellableFor = (route: ConversionRoute): Promise<bigint> => {
-    let sellable = sellables.get(route);
-    if (sellable === undefined) {
-      sellable = withTimeout(sellableOf(amountCash, route), OFFERS_TIMEOUT_MS, "withdraw sale");
-      sellables.set(route, sellable);
-    }
-    return sellable;
-  };
-  const tooSmallFor = (route: ConversionRoute, minimum: bigint): Promise<RouteDecline> => {
-    let answer = tooSmall.get(route);
-    if (answer === undefined) {
-      answer = cashForMinimum(minimum, route).then(
-        (minimumCash): RouteDecline => ({ kind: "too-small", minimumCash }),
-        (e: unknown): RouteDecline => ({ kind: "refused", reason: messageOf(e) }),
-      );
-      tooSmall.set(route, answer);
-    }
-    return answer;
-  };
-
-  const ask = async (
-    destination: { id: string; chain: string; asset: string },
-    route: ConversionRoute,
-  ): Promise<RouteAnswer<AvailableOffer>> => {
-    const known = tooSmall.get(route);
-    if (known !== undefined) return known;
-    try {
-      const config = providerDestination(destination);
-      const source = assetHubSourceFor(depositTokenOf(route));
-      const sellable = await sellableFor(route);
-      // An amount the fees eat whole sells for nothing; a quote for one unit still makes
-      // Chainflip name its minimum, which is the answer such a row needs.
-      const quote = await withTimeout(
-        quoteOutgoing(sdk, sellable > 0n ? sellable : 1n, config, source),
-        OFFERS_TIMEOUT_MS,
-        `${config.asset} offer`,
-      );
-      const fees = offerFees(config, source, quote, amountCash);
-      return {
-        kind: "accepted",
-        value: {
-          state: "available",
-          sale: route,
-          sellable,
-          egress: quote.egressAmount,
-          formatted: fmtPayout(config, quote.egressAmount),
-          etaSeconds: quote.estimatedDurationSeconds,
-          ...(fees === undefined ? {} : { fees }),
-        },
-      };
-    } catch (e) {
-      if (e instanceof BelowMinimumSwapAmountError) return tooSmallFor(route, e.minimumBaseUnits);
-      if (e instanceof ChainflipRequestError && e.outage) {
-        return { kind: "outage", reason: messageOf(e) };
-      }
-      return { kind: "refused", reason: messageOf(e) };
-    }
-  };
-
-  const pickFor = (destination: { id: string; chain: string; asset: string }) =>
-    pickRoute(routes, (route) => ask(destination, route));
-
-  // The first destination is asked alone: a provider that is not answering says so once.
-  const [first, ...rest] = destinations;
-  if (first === undefined) return offers;
-  const canary = await pickFor(first);
-  if (canary.kind === "outage") return allUnavailable(canary.reason);
-  offers.set(first.id, offerOf(canary));
-  await Promise.all(
-    rest.map(async (destination) => {
-      offers.set(destination.id, offerOf(await pickFor(destination)));
-    }),
-  );
-  return offers;
-}
-
-/** A destination's offer from the sale picked for it, or why none was. */
-function offerOf(pick: RoutePick<AvailableOffer>): WithdrawOffer {
-  switch (pick.kind) {
-    case "picked":
-      return pick.value;
-    case "too-small":
-      return { state: "too-small", minimumCash: pick.minimumCash };
-    case "refused":
-    case "outage":
-      return { state: "unavailable", reason: pick.reason };
-  }
-}
-
-const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function hostStorageAdapter() {
   const storage = await getHostLocalStorage();
@@ -876,53 +472,6 @@ export async function readH160Account(h160: `0x${string}`): Promise<string> {
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   return api.apis.ReviveApi.account_id(h160, { at: "best" });
-}
-
-/** The key's balance on Asset Hub in the token `sale` lands: what a provider refunded, when the
- *  swap could not fill, and what a fresh channel is quoted for. */
-export async function readWithdrawKeyBalanceOnAssetHub(
-  keyPublicKeyHex: string,
-  sale: ConversionRoute,
-): Promise<bigint> {
-  const { connectChain, ASSET_HUB } = await import("./host-chain");
-  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return readDestinationBalance(api, keyPublicKeyHex, depositTokenOf(sale).assetHubId);
-}
-
-/** A provider destination's asset and chain, as Chainflip names them, with the asset's decimals
- *  for showing what lands. */
-function providerDestination(destination: { id: string; chain: string; asset: string }) {
-  const config = SOURCE_CONFIG_BY_ID.get(destination.id as never);
-  if (config === undefined) {
-    throw new Error(`no Chainflip source for the ${destination.asset} destination`);
-  }
-  return config;
-}
-
-/** Opens the provider's channel for a withdrawal selling `amount` of the token `sale` lands, with
- *  the key on Asset Hub as the refund. */
-export async function openWithdrawChannelFor(args: {
-  amount: bigint;
-  destination: { id: string; chain: string; asset: string; address: string };
-  keyPublicKeyHex: string;
-  sale: ConversionRoute;
-}): Promise<WithdrawalChannel> {
-  const config = providerDestination(args.destination);
-  const channel = await openWithdrawChannel({
-    sdk: await mainnetSdk(),
-    amount: args.amount,
-    source: assetHubSourceFor(depositTokenOf(args.sale)),
-    destination: { chain: config.chain, asset: config.asset, address: args.destination.address },
-    refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
-  });
-  return {
-    id: channel.id,
-    address: channel.address,
-    openedAt: Date.now(),
-    expiresAt: channel.expiresAt,
-    expectedEgress: channel.expectedEgress.toString(),
-    minPrice: channel.minPrice,
-  };
 }
 
 /** The hand-off for a withdrawal, with the chain facts this build is made for. The sale rides

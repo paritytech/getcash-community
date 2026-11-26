@@ -1,12 +1,10 @@
 // The out-of-range screen's words: an amount a quote refused for falling outside a bound, the
-// bound it missed, and the amount in CASH that would meet it. A fiat method words it by the method
-// and the region; a crypto destination by its token.
+// bound it missed, and the amount in CASH that would meet it, worded by the method and the region.
 
 import type { DetailRow } from "../components/ui/DetailRows.vue";
 import type { QuoteOutOfRange } from "../stores/session";
 import { cashAmount } from "../utils/cash";
 import { fmtFiat } from "../utils/money";
-import { wholeCashCeil } from "./source-groups";
 
 export interface OutOfRangeWords {
   /** The red line under the amount. */
@@ -52,16 +50,5 @@ export function fiatAmountRejected(method: "card" | "bank", countryName: string)
     message: `This amount can't be paid by ${payment} in ${countryName}`,
     rows: [],
     bound: null,
-  };
-}
-
-/** A crypto withdrawal under the provider's minimum for the token: the smallest it takes, in
- *  whole CASH, as the pickers' rows word it. */
-export function cryptoBelowMinimum(minimumCash: bigint): OutOfRangeWords {
-  const whole = wholeCashCeil(minimumCash);
-  return {
-    message: `You need at least ${cashAmount(whole)} for crypto payout for this token`,
-    rows: [{ label: "Min. payout", value: cashAmount(whole) }],
-    bound: whole,
   };
 }

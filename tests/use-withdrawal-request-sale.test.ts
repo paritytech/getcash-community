@@ -1,8 +1,8 @@
 // The page's side of a fiat sale: confirm opens the provider's SELL session for the committed
-// figure, naming no wallet, and writes a record that waits on KYC, asking nothing of the
-// purse; the provider's deposit address becomes the channel; only then is the price checked and
-// the purse asked, a PSM sale with this app's other redeems ahead spoken for; a cancel during KYC
-// withdraws the order at the provider too.
+// figure, naming the key as the wallet, and writes a record that waits on KYC, asking nothing of
+// the purse; the provider's deposit address becomes the channel; only then is the price checked
+// and the purse asked, a PSM sale with this app's other redeems ahead spoken for; a cancel during
+// KYC withdraws the order at the provider too.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -53,15 +53,11 @@ vi.mock("../lib/withdraw-live", () => ({
   }),
   requestKeyPayment: vi.fn(async () => {}),
   nudgeWithdrawTicks: () => {},
-  openWithdrawChannelFor: vi.fn(async () => {
-    throw new Error("a sale never opens a Chainflip channel");
-  }),
   sendWithdrawHandoff: vi.fn(async () => {}),
   cancelWithdrawJob: vi.fn(async () => ({})),
   probeWithdrawKey: vi.fn(async () => ({ address: KEY_ADDRESS, cash: 0n })),
   readPaymentStatus: async () => ({ status: "not-found" }),
   meldCommitmentFundable: vi.fn(async () => true),
-  openSwapSaleChannel: vi.fn(),
   meldHandoffConfig: () => ({ baseUrl: "https://adapter.test", productId: "getcash.dev" }),
   withdrawHandoff: (
     args: Record<string, unknown> & { key: { address: string; publicKeyHex: string } },
@@ -91,7 +87,6 @@ import { useWithdrawalRequest } from "../app/composables/useWithdrawalRequest";
 const handedOff = vi.mocked(live.sendWithdrawHandoff);
 const asked = vi.mocked(live.requestKeyPayment);
 const fundable = vi.mocked(live.meldCommitmentFundable);
-const openSwap = vi.mocked(live.openSwapSaleChannel);
 const advanced = vi.mocked(live.advanceWithdrawCounter);
 const probed = vi.mocked(live.probeWithdrawKey);
 
@@ -669,84 +664,24 @@ describe("a fiat sale from the page", () => {
     expect(payload).toMatchObject({ paymentExpiresAt: askedAt + PAYMENT_WINDOW_MS });
   });
 
-  describe("through an offramp lane", () => {
-    const LANE_COMMITTED = 24_000_000n;
-    const REDEEM = { tier: "psm", external: "USDT", feeRate: 1_000 } as const;
-    const swapChannel = (id: string, expiresAt: number) => ({
-      id,
-      address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
-      openedAt: FIXTURE_NOW,
-      expiresAt,
-      expectedEgress: LANE_COMMITTED.toString(),
-      amount: "25100000",
+  it("refuses to pay a sale stored with an offramp lane, asking nothing", async () => {
+    const outcome = await startSale();
+    if (!outcome.ok) throw new Error(outcome.reason);
+    const direct = await toDeposit(outcome.ref);
+    const requests = useRequestsStore();
+    const ref = requestRefOf("wd:meld-bank", 2);
+    await requests.create(ref, { ...direct, ref, sale: { ...direct.sale!, lane: "usdc-solana" } });
+    const read = vi.spyOn(meld, "getStatus");
+    expect(await useWithdrawalRequest().paySale(ref)).toEqual({
+      ok: false,
+      reason: "This sale is no longer available. Your CASH is still in your balance.",
     });
-
-    beforeEach(() => {
-      openSwap.mockReset().mockResolvedValue(swapChannel("cf-fresh", FIXTURE_NOW + 3_600_000));
-    });
-
-    async function laneSaleAtDeposit() {
-      const outcome = await useWithdrawalRequest().startSale({
-        method: "bank",
-        amount: 30_000_000n,
-        country: "GB",
-        fiat: "GBP",
-        paymentMethodType: "UK_FASTER_PAYMENTS",
-        quote: QUOTE,
-        cryptoAmount: LANE_COMMITTED,
-        swap: { lane: "usdc-solana", route: REDEEM },
-      });
-      if (!outcome.ok) throw new Error(outcome.reason);
-      await toDeposit(outcome.ref);
-      return outcome.ref;
-    }
-
-    it("names no seller wallet: the swap, not the key, pays the provider", async () => {
-      const spy = vi.spyOn(meld, "createSellSession");
-      await laneSaleAtDeposit();
-      expect(spy.mock.calls[0]![0]).not.toHaveProperty("walletAddress");
-    });
-
-    it("keeps a swap opened earlier while the key still has time to pay it", async () => {
-      const ref = await laneSaleAtDeposit();
-      const kept = swapChannel("cf-kept", FIXTURE_NOW + 3_600_000);
-      await useRequestsStore().observe(ref, {
-        source: "user",
-        at: FIXTURE_NOW,
-        event: "swap-opened",
-        channel: kept,
-      });
-      expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
-      expect(openSwap).not.toHaveBeenCalled();
-      expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-kept");
-    });
-
-    it("opens a fresh swap in place of one about to close", async () => {
-      const ref = await laneSaleAtDeposit();
-      await useRequestsStore().observe(ref, {
-        source: "user",
-        at: FIXTURE_NOW,
-        event: "swap-opened",
-        channel: swapChannel("cf-stale", FIXTURE_NOW + 60_000),
-      });
-      expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
-      expect(openSwap).toHaveBeenCalledTimes(1);
-      expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-fresh");
-    });
-
-    it("opens a fresh swap in place of one the worker would refuse once the purse has paid", async () => {
-      // Twenty minutes left: past the worker's own margin, but not past it plus the purse's window.
-      const ref = await laneSaleAtDeposit();
-      await useRequestsStore().observe(ref, {
-        source: "user",
-        at: FIXTURE_NOW,
-        event: "swap-opened",
-        channel: swapChannel("cf-short", FIXTURE_NOW + 20 * 60_000),
-      });
-      expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
-      expect(openSwap).toHaveBeenCalledTimes(1);
-      expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-fresh");
-    });
+    expect(read).not.toHaveBeenCalled();
+    expect(fundable).not.toHaveBeenCalled();
+    expect(asked).not.toHaveBeenCalled();
+    expect(handedOff).not.toHaveBeenCalled();
+    expect(requests.get(ref)).toMatchObject({ status: { kind: "awaiting-payment" } });
+    expect((requests.get(ref) as WithdrawalRecord).handoff.swap).toBeUndefined();
   });
 
   describe("a fiat sale in a build that cannot run one", () => {

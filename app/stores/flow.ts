@@ -1,4 +1,4 @@
-// Presentation navigation: which screen and step is showing and what the user has picked.
+// Presentation navigation: which screen is showing and what the user has picked.
 // The journey/entry split derives from the session phase.
 
 import { defineStore } from "pinia";
@@ -6,7 +6,6 @@ import { computed, ref } from "vue";
 import { FUNDING_CHAINS, sourceIdFor } from "~~/lib/config";
 import type { DepositMismatch } from "../funding/deposit-mismatch";
 import type { PurseWord } from "../funding/timeline/recovery";
-import { useOffersStore } from "./offers";
 import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
 import { devLog } from "~~/lib/log";
@@ -21,10 +20,6 @@ const JOURNEY_PHASES = new Set([
   "failed",
 ]);
 
-/** The crypto package's entry flow, one screen per decision. "amount" and "method" belong to the
- *  shell and read as "leave for the shell" inside a package. */
-export type Step = "amount" | "method" | "network" | "token";
-
 /**
  * A drill-in a demo preview scene asked a route to open over its screen.
  *
@@ -37,9 +32,7 @@ export type PreviewDrillIn =
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();
   const requests = useRequestsStore();
-  const offers = useOffersStore();
 
-  const step = ref<Step>("amount");
   const srcChainIndex = ref(0);
   const srcAssetIndex = ref(0);
   /** A purchase is being started: its quote is awaited, then its deposit opened. */
@@ -117,24 +110,6 @@ export const useFlowStore = defineStore("flow", () => {
     }
   }
 
-  /**
-   * The network screen's pick. Skips the token screen and starts the purchase when the only token
-   * on offer is the network's own coin; otherwise sets the network without quoting and returns
-   * the token step.
-   */
-  function pickNetwork(chain: string): Step | null {
-    trackAction("network.pick", { chain });
-    const c = FUNDING_CHAINS.findIndex((entry) => entry.chain === chain);
-    const tokens = offers.offeredTokens(chain);
-    if (c >= 0 && tokens.length === 1 && tokens[0]!.asset === FUNDING_CHAINS[c]!.native) {
-      selectSource(chain, tokens[0]!.asset);
-      void startPurchase();
-      return null;
-    }
-    if (c >= 0 && c !== srcChainIndex.value) setSource(c, 0);
-    return (step.value = "token");
-  }
-
   /** Preselects the source from a SourceId. False when the catalog does not know it. */
   function selectSourceId(sourceId: string): boolean {
     for (let c = 0; c < FUNDING_CHAINS.length; c++) {
@@ -149,24 +124,8 @@ export const useFlowStore = defineStore("flow", () => {
     return false;
   }
 
-  /** One screen back through the entry flow. Inert on the amount screen, which is the start. */
-  function back() {
-    switch (step.value) {
-      case "method":
-        step.value = "amount";
-        break;
-      case "network":
-        step.value = "method";
-        break;
-      case "token":
-        step.value = "network";
-        break;
-    }
-  }
-
   /** Forgets the entry choices only; the session stays up. */
   function resetEntry() {
-    step.value = "amount";
     confirmingCancel.value = false;
     previewMismatch.value = null;
     recoveringDeposit.value = false;
@@ -179,7 +138,6 @@ export const useFlowStore = defineStore("flow", () => {
   }
 
   return {
-    step,
     srcChainIndex,
     srcAssetIndex,
     srcChain,
@@ -194,9 +152,7 @@ export const useFlowStore = defineStore("flow", () => {
     setSourceByName,
     selectSource,
     startPurchase,
-    pickNetwork,
     selectSourceId,
-    back,
     resetEntry,
     startOver,
   };
