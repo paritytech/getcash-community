@@ -27,6 +27,7 @@ import { withdrawalFailureText } from "./failure-copy";
 import { withdrawalListProgress } from "./timeline/list";
 import { SALE_KYC_LABEL, SALE_READY_LABEL } from "./timeline/texts";
 import { createWithdrawalTimelines, type WithdrawalTimelineOf } from "./timeline/timelines";
+import { chainLabel } from "~~/lib/config";
 
 /** The words the rows use for a withdrawal. */
 export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
@@ -101,7 +102,7 @@ function detailsOf(record: WithdrawalRecord): FundingTopUp["details"] {
   const destination = withdrawDestination(destinationId);
   const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
   return {
-    network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
+    network: { label: chainLabel(record.destination.chain), icon: network?.icon ?? UNKNOWN_ICON },
     token: {
       label: record.destination.asset,
       icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),

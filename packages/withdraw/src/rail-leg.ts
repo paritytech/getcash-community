@@ -27,7 +27,7 @@
 // retried on the next tick. Terminal is the provider's own verdict: delivered, or a failure it
 // names.
 
-import type { SwapStatusResult } from "@getsome/core";
+import { isEvmChain, type SwapStatusResult } from "@getsome/core";
 import { AccountId } from "polkadot-api";
 import { bounded } from "./bounded";
 import { freshSweepState, type SweepState } from "./sweep";
@@ -124,7 +124,6 @@ export class ChannelMismatchError extends Error {
   }
 }
 
-const EVM_CHAINS: ReadonlySet<string> = new Set(["Ethereum", "Arbitrum"]);
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i;
 const BECH32_ADDRESS = /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]+$/;
 
@@ -137,7 +136,7 @@ const isBech32 = (address: string): boolean =>
  *  address is a bare public key with no checksum at all, so a case variant of one is simply a
  *  different account. Judged by the chain's format, or by the address's own shape without one. */
 function eitherCase(address: string, chain?: string): boolean {
-  const evm = chain === undefined || EVM_CHAINS.has(chain);
+  const evm = chain === undefined || isEvmChain(chain);
   const bitcoin = chain === undefined || chain === "Bitcoin";
   return (evm && EVM_ADDRESS.test(address)) || (bitcoin && isBech32(address));
 }

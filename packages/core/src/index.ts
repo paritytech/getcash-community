@@ -10,3 +10,4 @@ export * from "./session";
 export * from "./network";
 export * from "./tokens";
 export * from "./meld-assets";
+export * from "./chains";
