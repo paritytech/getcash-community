@@ -187,3 +187,48 @@ describe.skipIf(!ON)("the NEAR client against NEAR", () => {
     expect((error as IntentsRefused).refusal).toEqual({ kind: "not-found" });
   }, 30_000);
 });
+
+// This part is not dry. Each run opens one deposit address at NEAR for each route. Nothing
+// moves, because no one pays into the addresses, and they stop at their deadline. Run it only
+// when NEAR's reply to such a quote must be checked again.
+//   VERIFY_INTENTS_LIVE_QUOTE=1 pnpm vitest run tests/verify-intents-live.test.ts
+describe.skipIf(process.env.VERIFY_INTENTS_LIVE_QUOTE !== "1")(
+  "a quote that opens a deposit address, against NEAR",
+  () => {
+    /** The client over a fetch that prints each reply as NEAR sent it. */
+    const printing = createIntentsClient({
+      fetchImpl: async (url, init) => {
+        const response = await fetch(url, init);
+        const text = await response.text();
+        console.log(`${init.method} ${url} gave HTTP ${response.status}: ${text}`);
+        return { status: response.status, text: async () => text };
+      },
+    });
+
+    it.each(STARTS)(
+      "opens an address for ETH delivered on %s, and reads its state",
+      async (start) => {
+        // An address that no one holds the key of: nothing is ever paid for it.
+        const recipient = `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(20))).toString("hex")}`;
+        const asked = request({
+          destinationAsset: INTENTS_ETH[start],
+          recipient,
+          deadline: Date.now() + 30 * 60_000,
+        });
+        const deposit = await printing.openDeposit(asked);
+        // USDC on Solana is paid to an address of Solana.
+        expect(deposit.depositAddress).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+        expect(deposit.minAmountOut).toBe(asked.amount);
+        expect(deposit.minAmountIn).toBeLessThanOrEqual(deposit.amountIn);
+        expect(JSON.parse(deposit.reply).signature).toMatch(/^ed25519:/);
+        // NEAR states the deadline of the address, at or after the one that was asked.
+        expect(deposit.deadline).toBeGreaterThanOrEqual(asked.deadline);
+
+        // No one paid, so NEAR waits and has sent nothing back.
+        const status = await printing.status(deposit.depositAddress);
+        expect(status).toEqual({ state: "PENDING_DEPOSIT", refunded: 0n, deliveries: [] });
+      },
+      60_000,
+    );
+  },
+);

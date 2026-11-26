@@ -45,7 +45,8 @@ export interface IntentsQuoteRequest {
   refundTo: string;
   /** The most the price may move, in hundredths of a percent. */
   slippageBps: number;
-  /** Until when NEAR waits for the deposit, in epoch ms. */
+  /** When NEAR starts to refund a deposit that it did not swap, in epoch ms. It must leave time
+   *  for the deposit to confirm on its chain. */
   deadline: number;
 }
 
@@ -66,7 +67,8 @@ export interface IntentsQuote {
 export interface IntentsDeposit extends IntentsQuote {
   /** Where the user pays, on the chain of the origin asset. */
   depositAddress: string;
-  /** When the address stops taking deposits, in epoch ms, when NEAR states it. */
+  /** When the address becomes inactive, in epoch ms, when NEAR states it. A deposit after that
+   *  can be lost. It is later than the deadline of the request. */
   deadline?: number;
   /** The reply as NEAR sent it, with its signature of the quote. NEAR asks to keep it in case
    *  of a dispute. */

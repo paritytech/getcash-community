@@ -1,7 +1,7 @@
 // The NEAR client over a scripted fetch: what it asks, how it reads the answers, and which
-// error each bad answer becomes. The quotes and the refusals are replies NEAR sent to dry
-// requests. The replies of a quote that opens an address and of a status are built from NEAR's
-// API description.
+// error each bad answer becomes. The quotes, the refusals, one quote that opened an address and
+// the state of that address are replies NEAR sent. No one paid into an address, so the states
+// after a deposit are built from NEAR's API description.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -120,19 +120,97 @@ const EXACT_INPUT: IntentsQuoteRequest = {
   destinationAsset: ETH_ETHEREUM,
 };
 
-/** The first reply as it would be for a quote that opens an address. */
-const DEPOSIT_ADDRESS = "9RdGhXKBMv8EoBmYJvhRPZ4xjBTCKLTyFWEbDL2LmM9h";
-const liveReply = (quote: Record<string, unknown> = {}) => ({
-  ...EXACT_OUTPUT_REPLY,
+/** A quote that opened an address, for 0.0502 ETH on Base paid in USDC on Solana, as NEAR sent
+ *  it. No one paid into the address. */
+const LIVE_REPLY = {
   quote: {
-    ...EXACT_OUTPUT_REPLY.quote,
-    depositAddress: DEPOSIT_ADDRESS,
-    deadline: "2026-11-27T10:33:59.000Z",
-    timeWhenInactive: "2026-11-27T10:33:59.000Z",
-    ...quote,
+    amountIn: "86446126",
+    amountInFormatted: "86.446126",
+    amountInUsd: "86.404372521142",
+    minAmountIn: "85581664",
+    amountOut: "50200000000000000",
+    amountOutFormatted: "0.0502",
+    amountOutUsd: "85.357570000000",
+    minAmountOut: "50200000000000000",
+    timeEstimate: 22,
+    refundFee: "188406",
+    withdrawFee: "560000000000",
+    deadline: "2026-11-29T12:49:19.601Z",
+    timeWhenInactive: "2026-11-29T12:49:19.601Z",
+    depositAddress: "3shs12bsyvLyBWku333RVVLkVY7anAaH8rtLuHPkcrDX",
   },
-  quoteRequest: { ...EXACT_OUTPUT_REPLY.quoteRequest, dry: false },
+  quoteRequest: {
+    dry: false,
+    depositMode: "SIMPLE",
+    swapType: "EXACT_OUTPUT",
+    slippageTolerance: 100,
+    originAsset: USDC_SOLANA,
+    depositType: "ORIGIN_CHAIN",
+    destinationAsset: ETH_BASE,
+    amount: "50200000000000000",
+    refundTo: REFUND,
+    refundType: "ORIGIN_CHAIN",
+    recipient: "0x435161567189f0156240087735e813eff2d8a0db",
+    recipientType: "DESTINATION_CHAIN",
+    deadline: "2026-11-26T12:49:19.601Z",
+    confidentiality: "public",
+    quoteWaitingTimeMs: 0,
+    insured: false,
+    appFees: [],
+  },
+  signature:
+    "ed25519:46Afya2XhPugZAZ1unV6qo6vGPQq5i8hKZq5ngLu1XFvn12JTwijRcwegCgN1hQWVktw7qsLje2kYCdboKjyF6NT",
+  timestamp: "2026-11-26T12:19:19.773Z",
+  correlationId: "01c4d9b2-44e5-46dc-b76a-76b8784ca416",
+};
+
+/** The request behind that reply. */
+const LIVE: IntentsQuoteRequest = {
+  ...EXACT_OUTPUT,
+  recipient: "0x435161567189f0156240087735e813eff2d8a0db",
+  deadline: Date.parse("2026-11-26T12:49:19.601Z"),
+};
+
+const DEPOSIT_ADDRESS = LIVE_REPLY.quote.depositAddress;
+const liveReply = (quote: Record<string, unknown> = {}) => ({
+  ...LIVE_REPLY,
+  quote: { ...LIVE_REPLY.quote, ...quote },
 });
+
+/** The state of that address a moment after the quote, as NEAR sent it. */
+const PENDING_REPLY = {
+  status: "PENDING_DEPOSIT",
+  updatedAt: "2026-11-26T12:19:20.203Z",
+  correlationId: "81a3bfce-c763-4eeb-89bf-01fdc5dc9353",
+  swapDetails: {
+    depositedAmount: null,
+    depositedAmountUsd: null,
+    depositedAmountFormatted: null,
+    intentHashes: [],
+    nearTxHashes: [],
+    amountIn: null,
+    amountInFormatted: null,
+    amountInUsd: null,
+    amountOut: null,
+    amountOutFormatted: null,
+    amountOutUsd: null,
+    slippage: null,
+    refundedAmount: "0",
+    refundedAmountFormatted: "0",
+    refundedAmountUsd: "0",
+    refundReason: null,
+    refundFee: "188406",
+    withdrawFee: "560000000000",
+    originChainTxHashes: [],
+    destinationChainTxHashes: [],
+  },
+  quoteResponse: {
+    timestamp: LIVE_REPLY.timestamp,
+    signature: LIVE_REPLY.signature,
+    quoteRequest: LIVE_REPLY.quoteRequest,
+    quote: LIVE_REPLY.quote,
+  },
+};
 
 interface Sent {
   url: string;
@@ -206,9 +284,9 @@ describe("createIntentsClient, the requests", () => {
 
   it("asks for a quote that opens an address with the same request, not dry", async () => {
     const { client, sent } = near(liveReply());
-    await client.openDeposit(EXACT_OUTPUT);
-    const dry = near(EXACT_OUTPUT_REPLY);
-    await dry.client.quote(EXACT_OUTPUT);
+    await client.openDeposit(LIVE);
+    const dry = near({ ...LIVE_REPLY, quoteRequest: { ...LIVE_REPLY.quoteRequest, dry: true } });
+    await dry.client.quote(LIVE);
     expect(sent[0]).toEqual({
       ...dry.sent[0],
       body: { ...(dry.sent[0]?.body as object), dry: false },
@@ -357,17 +435,17 @@ describe("createIntentsClient, a quote", () => {
 
 describe("createIntentsClient, a quote that opens an address", () => {
   it("reads the address, its deadline and the figures, and keeps NEAR's reply as sent", async () => {
-    const reply = liveReply();
-    const { client } = near(reply);
-    expect(await client.openDeposit(EXACT_OUTPUT)).toEqual({
-      amountIn: 86_358_026n,
-      minAmountIn: 85_494_445n,
+    const { client } = near(LIVE_REPLY);
+    expect(await client.openDeposit(LIVE)).toEqual({
+      amountIn: 86_446_126n,
+      minAmountIn: 85_581_664n,
       amountOut: 50_200_000_000_000_000n,
       minAmountOut: 50_200_000_000_000_000n,
       timeEstimate: 22,
-      depositAddress: DEPOSIT_ADDRESS,
-      deadline: Date.parse("2026-11-27T10:33:59.000Z"),
-      reply: JSON.stringify(reply),
+      depositAddress: "3shs12bsyvLyBWku333RVVLkVY7anAaH8rtLuHPkcrDX",
+      // NEAR keeps the address three days after the deadline of the request.
+      deadline: Date.parse(LIVE_REPLY.quoteRequest.deadline) + 3 * 86_400_000,
+      reply: JSON.stringify(LIVE_REPLY),
     });
   });
 
@@ -377,7 +455,7 @@ describe("createIntentsClient, a quote that opens an address", () => {
     ["a deadline that is a number", 1795775639000],
   ])("gives no deadline for %s", async (_name, deadline) => {
     const { client } = near(liveReply({ deadline }));
-    const deposit = await client.openDeposit(EXACT_OUTPUT);
+    const deposit = await client.openDeposit(LIVE);
     expect(deposit.depositAddress).toBe(DEPOSIT_ADDRESS);
     expect("deadline" in deposit).toBe(false);
   });
@@ -388,14 +466,14 @@ describe("createIntentsClient, a quote that opens an address", () => {
     ["an address that is not text", 12],
   ])("does not trust a quote with %s", async (_name, depositAddress) => {
     const { client } = near(liveReply({ depositAddress }));
-    const error = await client.openDeposit(EXACT_OUTPUT).catch((e: unknown) => e);
+    const error = await client.openDeposit(LIVE).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(IntentsNoAnswer);
     expect((error as Error).message).toBe("the quote has no depositAddress");
   });
 
   it("does not take an address that needs a memo", async () => {
     const { client } = near(liveReply({ depositMemo: "1111111" }));
-    const error = await client.openDeposit(EXACT_OUTPUT).catch((e: unknown) => e);
+    const error = await client.openDeposit(LIVE).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(IntentsNoAnswer);
     expect((error as Error).message).toBe("the deposit needs a memo");
   });
@@ -405,12 +483,12 @@ describe("createIntentsClient, a quote that opens an address", () => {
     ["empty", ""],
   ])("takes an address whose memo is %s", async (_name, depositMemo) => {
     const { client } = near(liveReply({ depositMemo }));
-    expect((await client.openDeposit(EXACT_OUTPUT)).depositAddress).toBe(DEPOSIT_ADDRESS);
+    expect((await client.openDeposit(LIVE)).depositAddress).toBe(DEPOSIT_ADDRESS);
   });
 
   it("does not trust figures it cannot read", async () => {
     const { client } = near(liveReply({ amountIn: "86.358026" }));
-    await expect(client.openDeposit(EXACT_OUTPUT)).rejects.toBeInstanceOf(IntentsNoAnswer);
+    await expect(client.openDeposit(LIVE)).rejects.toBeInstanceOf(IntentsNoAnswer);
   });
 });
 
@@ -582,6 +660,15 @@ describe("createIntentsClient, the status", () => {
   ])("reads the state %s", async (state) => {
     const { client } = near({ status: state });
     expect(await client.status(DEPOSIT_ADDRESS)).toEqual({ state, deliveries: [] });
+  });
+
+  it("reads an address that no one paid yet, as NEAR sent it", async () => {
+    const { client } = near(PENDING_REPLY);
+    expect(await client.status(DEPOSIT_ADDRESS)).toEqual({
+      state: "PENDING_DEPOSIT",
+      refunded: 0n,
+      deliveries: [],
+    });
   });
 
   it("reads what NEAR delivered and the transactions that carried it", async () => {
