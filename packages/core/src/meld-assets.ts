@@ -8,14 +8,7 @@
 // otherwise go out under a code nobody checked.
 
 /** The assets the app can buy or sell through Meld, by the app's own name for each. */
-export const MELD_ASSET_IDS = [
-  "dot@assethub",
-  "usdt@assethub",
-  "usdc@assethub",
-  "usdt@solana",
-  "usdc@solana",
-  "usdc@arbitrum",
-] as const;
+export const MELD_ASSET_IDS = ["dot@assethub", "usdt@assethub", "usdc@assethub"] as const;
 
 export type MeldAssetId = (typeof MELD_ASSET_IDS)[number];
 

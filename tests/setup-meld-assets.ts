@@ -7,9 +7,6 @@ export const TEST_MELD_ASSETS: readonly MeldAsset[] = [
   { asset: "dot@assethub", code: "DOT" },
   { asset: "usdt@assethub", code: "USDT_DOT" },
   { asset: "usdc@assethub", code: "USDC_DOT" },
-  { asset: "usdt@solana", code: "USDT_SOLANA" },
-  { asset: "usdc@solana", code: "USDC_SOLANA" },
-  { asset: "usdc@arbitrum", code: "USDC_ARBITRUM" },
 ];
 
 /** Installs the test table into whichever `@getsome/core` the module registry now holds. */

@@ -44,7 +44,7 @@ export interface SupportedMethod {
 }
 
 /** An off-ramp lane as the adapter names it: the asset sold and Meld's code for it, its chain and
- *  its limits. A chain other than `assethub` means the sale swaps through Chainflip first. */
+ *  its limits. Only an `assethub` lane is sold: this build has no way to reach another chain. */
 export interface OfframpLaneRef {
   /** The app's name for the asset, from an adapter that sends one. */
   asset?: MeldAssetId;
@@ -393,10 +393,9 @@ export function mergeCorridorMaps(
   return merged;
 }
 
-// The off-ramp catalog: the adapter merges Meld's sell routes for every configured lane (today's
-// Asset Hub sale first, then the Chainflip lanes) and tags each country's payout method with the
-// first lane that routes it. A sale reads this instead of one destination's sell catalog, so a
-// region no provider buys the Asset Hub asset in still sells, through the swap.
+// The off-ramp catalog: the adapter merges Meld's sell routes for every configured lane and tags
+// each country's payout method with the first lane that routes it. A sale reads this instead of
+// one destination's sell catalog, and keeps only the Asset Hub lanes (OFFRAMP_LANE_ORDER).
 
 const offrampCorridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
 const offrampCorridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);

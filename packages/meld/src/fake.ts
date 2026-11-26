@@ -2,7 +2,7 @@
 // stand-in hosted URL, and a fixed status. A sale follows a short script instead: a few polls of
 // KYC, then the provider's deposit address, as the adapter would disclose it.
 
-import { MELD_ASSET_IDS, meldAssetOf } from "@getsome/core";
+import { MELD_ASSET_IDS } from "@getsome/core";
 import type {
   MeldClientLike,
   MeldQuoteEntry,
@@ -12,8 +12,6 @@ import type {
 
 /** A well-formed Asset Hub account for the sale's stand-in deposit address. */
 const SELL_DEPOSIT_ADDRESS = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
-/** A well-formed Solana wallet for a sale of a Solana asset. */
-const SOLANA_DEPOSIT_ADDRESS = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
 export interface FakeMeldOptions {
   /** Demo fiat price per whole native token. Default 7 (≈ USD/DOT ballpark). */
@@ -86,9 +84,7 @@ export function createFakeMeldClient(
       status: "transaction_seen",
       ...terms,
       deposit: {
-        address: meldAssetOf(sale.crypto)?.endsWith("@solana")
-          ? SOLANA_DEPOSIT_ADDRESS
-          : SELL_DEPOSIT_ADDRESS,
+        address: SELL_DEPOSIT_ADDRESS,
         amount: sale.cryptoAmount,
         currency: sale.crypto,
         observedAt: sale.disclosedAt,
