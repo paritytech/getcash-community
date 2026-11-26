@@ -27,6 +27,8 @@ export interface IntentsToken {
   chain: string;
   symbol: string;
   decimals: number;
+  /** The price of one whole token in US dollars, when NEAR lists one. */
+  priceUsd?: number;
 }
 
 export interface IntentsQuoteRequest {
@@ -230,6 +232,9 @@ export function createIntentsClient(options: IntentsClientOptions = {}): Intents
             chain: token.blockchain,
             symbol: token.symbol,
             decimals: token.decimals,
+            ...(typeof token.price === "number" && token.price > 0
+              ? { priceUsd: token.price }
+              : {}),
           });
         }
       }

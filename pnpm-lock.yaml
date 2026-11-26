@@ -144,6 +144,9 @@ importers:
 
   packages/bridge:
     dependencies:
+      '@getsome/intents':
+        specifier: workspace:*
+        version: link:../intents
       '@noble/curves':
         specifier: ^2.3.0
         version: 2.3.0

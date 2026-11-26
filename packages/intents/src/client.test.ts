@@ -519,13 +519,32 @@ describe("createIntentsClient, the tokens", () => {
   it("reads each token as NEAR lists it", async () => {
     const { client } = near([ETH, USDT_BSC]);
     expect(await client.tokens()).toEqual([
-      { asset: "nep141:eth.omft.near", chain: "eth", symbol: "ETH", decimals: 18 },
+      {
+        asset: "nep141:eth.omft.near",
+        chain: "eth",
+        symbol: "ETH",
+        decimals: 18,
+        priceUsd: 1769.88,
+      },
       {
         asset: "nep141:bnb-0x55d398326f99059ff775485246999027b3197955.omdep.near",
         chain: "bsc",
         symbol: "USDT",
         decimals: 18,
+        priceUsd: 0.999192,
       },
+    ]);
+  });
+
+  it.each<[string, unknown]>([
+    ["no price", undefined],
+    ["a price of zero", 0],
+    ["a price that is text", "1769.88"],
+    ["a negative price", -1],
+  ])("lists a token with %s and gives it no price", async (_name, price) => {
+    const { client } = near([{ ...ETH, price }]);
+    expect(await client.tokens()).toEqual([
+      { asset: "nep141:eth.omft.near", chain: "eth", symbol: "ETH", decimals: 18 },
     ]);
   });
 
