@@ -1,0 +1,2219 @@
+diff --git a/relayer/chain/parachain/writer.go b/relayer/chain/parachain/writer.go
+index 6a140b92..ebc4f53f 100644
+--- a/relayer/chain/parachain/writer.go
++++ b/relayer/chain/parachain/writer.go
+@@ -430,7 +430,7 @@ func (wr *ParachainWriter) queryAccountNonce() (uint32, error) {
+ 		return 0, err
+ 	}
+ 	if !ok {
+-		return 0, fmt.Errorf("no account info found for %s", wr.conn.Keypair().URI)
++		return 0, fmt.Errorf("no account info found for %s", wr.conn.Keypair().Address)
+ 	}
+ 
+ 	return uint32(accountInfo.Nonce), nil
+diff --git a/relayer/generate.go b/relayer/generate.go
+index 04771524..285c8d58 100644
+--- a/relayer/generate.go
++++ b/relayer/generate.go
+@@ -5,6 +5,7 @@
+ //go:generate bash -c "jq .abi ../contracts/out/BeefyClient.sol/BeefyClient.json | abigen --abi - --type BeefyClient --pkg contracts --out contracts/beefy_client.go"
+ //go:generate bash -c "jq .abi ../contracts/out/IGateway.sol/IGatewayV2.json | abigen --abi - --type Gateway --pkg contracts --out contracts/gateway.go"
+ //go:generate bash -c "jq .abi ../contracts/out/IGateway.sol/IGatewayV1.json | abigen --abi - --type Gateway --pkg contractsv1 --out contracts/v1/gateway.go"
+-//go:generate bash -c "jq .abi ../contracts/out/Multicall3.sol/Multicall3.json | abigen --abi - --type Multicall3 --pkg contracts --out contracts/multicall3.go"
++//
++// contracts/multicall3.go is not generated: the contracts project has no Multicall3 source.
+ 
+ package main
+diff --git a/relayer/relays/ethereum-v3/catchup.go b/relayer/relays/ethereum-v3/catchup.go
+index a5b7f5c4..6a7b35b4 100644
+--- a/relayer/relays/ethereum-v3/catchup.go
++++ b/relayer/relays/ethereum-v3/catchup.go
+@@ -175,6 +175,9 @@ func (r *Relay) collectV2ForCatchUp(
+ 		if _, ok := nonceSet[ev.Nonce]; !ok {
+ 			continue
+ 		}
++		if !r.admitMessage(ctx, ev) {
++			continue
++		}
+ 		if !r.passesStaticFeeFloor(ev) && !v2PastMaxDelay(ev, executionBlockNumber) {
+ 			continue
+ 		}
+diff --git a/relayer/relays/ethereum-v3/config.go b/relayer/relays/ethereum-v3/config.go
+index 22146dbc..2461492f 100644
+--- a/relayer/relays/ethereum-v3/config.go
++++ b/relayer/relays/ethereum-v3/config.go
+@@ -27,6 +27,8 @@ type Config struct {
+ 	// GasEstimation is optional dry-run profitability. service-fee-recipients here
+ 	// are also used for the static XCM service-fee decode when estimation is off.
+ 	GasEstimation gasestimator.Config `mapstructure:"gasEstimation"`
++	// Getcash restricts delivery to our own router messages. Off by default.
++	Getcash GetcashConfig `mapstructure:"getcash"`
+ }
+ 
+ type SourceConfig struct {
+@@ -72,5 +74,5 @@ func (c Config) Validate() error {
+ 	if err != nil {
+ 		return fmt.Errorf("gas estimation config: %w", err)
+ 	}
+-	return nil
++	return c.validateGetcash()
+ }
+diff --git a/relayer/relays/ethereum-v3/main.go b/relayer/relays/ethereum-v3/main.go
+index bb34983b..77381500 100644
+--- a/relayer/relays/ethereum-v3/main.go
++++ b/relayer/relays/ethereum-v3/main.go
+@@ -49,6 +49,7 @@ type Relay struct {
+ 	writer                  *parachain.ParachainWriter
+ 	headerCache             *ethereum.HeaderCache
+ 	ofac                    *ofac.OFAC
++	ours                    *oursFilter
+ 	chainID                 *big.Int
+ 	deadNonces              *error_tracking.DeadNonceStore
+ 	gasEstimator            *gasestimator.Estimator
+@@ -260,6 +261,9 @@ func (r *Relay) Start(ctx context.Context, eg *errgroup.Group) error {
+ 		"minRelayerFeeWei":     r.minMessageRelayerFee.String(),
+ 		"serviceFeeRecipients": len(r.serviceFeeRecipients),
+ 	}).Info("relayer config")
++	if err := r.startOursFilter(ctx, r.ethconn.Client()); err != nil {
++		return err
++	}
+ 
+ 	log.WithField("gasEstimation", r.gasEstimator.Enabled()).Info("[instant-eth] ethereum-v3: tip + beacon catch-up; V2 gas-estimator optional; V1 tip piggyback always")
+ 
+@@ -913,6 +917,9 @@ func (r *Relay) handleCandidateError(nonce uint64, err error) error {
+ 	if error_tracking.IsTransientError(err) {
+ 		return err
+ 	}
++	if r.alertOurCandidateError(nonce, err) {
++		return nil
++	}
+ 	log.WithError(err).WithField("nonce", nonce).Warn("[instant-eth] Non-transient candidate error, marking nonce dead")
+ 	if markErr := r.deadNonces.MarkDead(nonce, err.Error()); markErr != nil {
+ 		log.WithError(markErr).WithField("nonce", nonce).Error("[instant-eth] failed to persist dead-nonce record")
+@@ -1085,6 +1092,9 @@ func (r *Relay) doScanAndBatchRelay(ctx context.Context, checkpoint api.Finalize
+ 			if _, ok := nonceSet[ev.Nonce]; !ok {
+ 				continue
+ 			}
++			if !r.admitMessage(ctx, ev) {
++				continue
++			}
+ 			if !r.passesStaticFeeFloor(ev) && !v2PastMaxDelay(ev, executionBlockNumber) {
+ 				log.WithField("nonce", ev.Nonce).Debug("[instant-eth] RelayerFee+serviceFee below static floor; ignoring")
+ 				continue
+diff --git a/relayer/relays/ethereum-v3/ours.go b/relayer/relays/ethereum-v3/ours.go
+new file mode 100644
+index 00000000..ddf91307
+--- /dev/null
++++ b/relayer/relays/ethereum-v3/ours.go
+@@ -0,0 +1,436 @@
++package executionV3
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"math/big"
++	"sort"
++	"sync"
++
++	goeth "github.com/ethereum/go-ethereum"
++	"github.com/ethereum/go-ethereum/common"
++	"github.com/ethereum/go-ethereum/common/hexutil"
++	ethtypes "github.com/ethereum/go-ethereum/core/types"
++	"github.com/ethereum/go-ethereum/crypto"
++	log "github.com/sirupsen/logrus"
++	"github.com/snowfork/snowbridge/relayer/chain/parachain"
++	"github.com/snowfork/snowbridge/relayer/contracts"
++	"github.com/snowfork/snowbridge/relayer/relays/error_tracking"
++	"github.com/snowfork/snowbridge/relayer/relays/gasestimator"
++)
++
++const (
++	eventOursCheckFailed    = "getcash_ours_check_failed"
++	eventOursDryRunFailed   = "getcash_ours_dry_run_failed"
++	eventOursCandidateError = "getcash_ours_candidate_error"
++
++	defaultRegistryLogChunk = 10_000
++)
++
++var relayerChangedTopic = crypto.Keccak256Hash([]byte("RelayerChanged(address)"))
++
++// GetcashConfig switches the "ours only" mode: deliver only messages a router sent in a
++// transaction signed by the registry's trigger key, and skip every other message.
++type GetcashConfig struct {
++	Enabled  bool   `mapstructure:"enabled"`
++	Registry string `mapstructure:"registry"`
++	// One router per forwarder version.
++	Routers []string `mapstructure:"routers"`
++	// The block that deployed the registry. Its constructor must have emitted RelayerChanged.
++	RegistryDeployBlock uint64 `mapstructure:"registry-deploy-block"`
++	// Blocks per getLogs request when reading the key history. Zero means 10000.
++	RegistryLogChunk uint64 `mapstructure:"registry-log-chunk"`
++}
++
++func (c GetcashConfig) Validate() error {
++	if !c.Enabled {
++		return nil
++	}
++	if err := requireAddress("registry", c.Registry); err != nil {
++		return err
++	}
++	if len(c.Routers) == 0 {
++		return fmt.Errorf("getcash setting [routers] is empty")
++	}
++	for _, router := range c.Routers {
++		if err := requireAddress("routers", router); err != nil {
++			return err
++		}
++	}
++	if c.RegistryDeployBlock == 0 {
++		return fmt.Errorf("getcash setting [registry-deploy-block] is not set")
++	}
++	return nil
++}
++
++// validateGetcash also rejects V1: its messages carry no router origin, so none is ours.
++func (c Config) validateGetcash() error {
++	if err := c.Getcash.Validate(); err != nil {
++		return fmt.Errorf("getcash config: %w", err)
++	}
++	if c.Getcash.Enabled && c.V1Enabled() {
++		return fmt.Errorf("getcash config: source channel-id must be empty, V1 messages are never ours")
++	}
++	return nil
++}
++
++func requireAddress(name, value string) error {
++	if !common.IsHexAddress(value) {
++		return fmt.Errorf("getcash setting [%s] is not a hex address: %q", name, value)
++	}
++	if common.HexToAddress(value) == (common.Address{}) {
++		return fmt.Errorf("getcash setting [%s] is the zero address", name)
++	}
++	return nil
++}
++
++type oursChain interface {
++	CallContext(ctx context.Context, result interface{}, method string, args ...interface{}) error
++	FilterLogs(ctx context.Context, q goeth.FilterQuery) ([]ethtypes.Log, error)
++}
++
++type keyChange struct {
++	block    uint64
++	txIndex  uint
++	logIndex uint
++	key      common.Address
++}
++
++func (c keyChange) before(o keyChange) bool {
++	if c.block != o.block {
++		return c.block < o.block
++	}
++	if c.txIndex != o.txIndex {
++		return c.txIndex < o.txIndex
++	}
++	return c.logIndex < o.logIndex
++}
++
++// appliesTo is true when the change took effect before the transaction started, so a
++// rotation and a transaction in the same block are ordered by transaction index.
++func (c keyChange) appliesTo(block uint64, txIndex uint) bool {
++	return c.block < block || (c.block == block && c.txIndex < txIndex)
++}
++
++type oursFilter struct {
++	registry    common.Address
++	routers     map[common.Address]struct{}
++	deployBlock uint64
++	chain       oursChain
++	chainID     *big.Int
++	logChunk    uint64
++
++	historyMu sync.Mutex
++	changes   []keyChange
++	nextBlock uint64 // first block whose RelayerChanged logs are not in changes yet
++
++	verdictsMu sync.Mutex
++	verdicts   map[uint64]bool // by nonce; only answers that came without an error
++}
++
++func newOursFilter(cfg GetcashConfig, chain oursChain, chainID *big.Int) *oursFilter {
++	f := &oursFilter{
++		registry:    common.HexToAddress(cfg.Registry),
++		routers:     make(map[common.Address]struct{}, len(cfg.Routers)),
++		deployBlock: cfg.RegistryDeployBlock,
++		chain:       chain,
++		chainID:     chainID,
++		logChunk:    cfg.RegistryLogChunk,
++		nextBlock:   cfg.RegistryDeployBlock,
++		verdicts:    make(map[uint64]bool),
++	}
++	if f.logChunk == 0 {
++		f.logChunk = defaultRegistryLogChunk
++	}
++	for _, router := range cfg.Routers {
++		f.routers[common.HexToAddress(router)] = struct{}{}
++	}
++	return f
++}
++
++// isOurs reports whether the message is ours. Any error counts as not ours and is not
++// remembered. Both answers that come without an error are final: the message is finalized
++// and the key history only grows.
++func (f *oursFilter) isOurs(ctx context.Context, ev *contracts.GatewayOutboundMessageAccepted) bool {
++	f.verdictsMu.Lock()
++	ours, known := f.verdicts[ev.Nonce]
++	f.verdictsMu.Unlock()
++	if known {
++		return ours
++	}
++	ours, err := f.verdict(ctx, ev)
++	if err != nil {
++		log.WithError(err).WithFields(log.Fields{
++			"event": eventOursCheckFailed,
++			"nonce": ev.Nonce,
++			"tx":    ev.Raw.TxHash.Hex(),
++		}).Warn("[getcash] could not tell whether the message is ours; treating it as not ours this round")
++		return false
++	}
++	f.verdictsMu.Lock()
++	f.verdicts[ev.Nonce] = ours
++	f.verdictsMu.Unlock()
++	return ours
++}
++
++func (f *oursFilter) isOur(nonce uint64) bool {
++	f.verdictsMu.Lock()
++	defer f.verdictsMu.Unlock()
++	return f.verdicts[nonce]
++}
++
++// forgetSettled drops the answers for nonces that are no longer pending. Only nonces at or
++// below the highest pending one are judged: a concurrent scan with a newer view may have
++// answered for nonces above it, and those must survive while they are pending.
++func (f *oursFilter) forgetSettled(pending []uint64) {
++	if len(pending) == 0 {
++		return
++	}
++	keep := make(map[uint64]struct{}, len(pending))
++	highest := pending[0]
++	for _, n := range pending {
++		keep[n] = struct{}{}
++		highest = max(highest, n)
++	}
++	f.verdictsMu.Lock()
++	defer f.verdictsMu.Unlock()
++	for n := range f.verdicts {
++		if _, ok := keep[n]; !ok && n <= highest {
++			delete(f.verdicts, n)
++		}
++	}
++}
++
++func (f *oursFilter) verdict(ctx context.Context, ev *contracts.GatewayOutboundMessageAccepted) (bool, error) {
++	if _, ok := f.routers[ev.Payload.Origin]; !ok {
++		return false, nil
++	}
++	tx, err := f.transactionAt(ctx, ev)
++	if err != nil {
++		return false, err
++	}
++	signer, err := ethtypes.Sender(ethtypes.LatestSignerForChainID(f.chainID), tx)
++	if err != nil {
++		return false, fmt.Errorf("recover transaction signer: %w", err)
++	}
++	key, found, err := f.triggerKeyAt(ctx, ev.Raw.BlockNumber, ev.Raw.TxIndex)
++	if err != nil {
++		return false, err
++	}
++	return found && key != (common.Address{}) && signer == key, nil
++}
++
++// transactionAt fetches the transaction by its position in the log's block, not by hash, and
++// requires it to be the log's transaction. That ties the recovered signer to the receipt
++// Bridge Hub verifies.
++func (f *oursFilter) transactionAt(ctx context.Context, ev *contracts.GatewayOutboundMessageAccepted) (*ethtypes.Transaction, error) {
++	var raw json.RawMessage
++	err := f.chain.CallContext(ctx, &raw, "eth_getTransactionByBlockHashAndIndex", ev.Raw.BlockHash, hexutil.Uint(ev.Raw.TxIndex))
++	if err != nil {
++		return nil, fmt.Errorf("fetch transaction by position: %w", err)
++	}
++	if len(raw) == 0 || string(raw) == "null" {
++		return nil, errors.New("no transaction at the log's position")
++	}
++	var tx ethtypes.Transaction
++	var pos struct {
++		BlockHash *common.Hash  `json:"blockHash"`
++		Index     *hexutil.Uint `json:"transactionIndex"`
++	}
++	if err := json.Unmarshal(raw, &tx); err != nil {
++		return nil, fmt.Errorf("decode transaction: %w", err)
++	}
++	if err := json.Unmarshal(raw, &pos); err != nil {
++		return nil, fmt.Errorf("decode transaction position: %w", err)
++	}
++	if pos.BlockHash == nil || *pos.BlockHash != ev.Raw.BlockHash || pos.Index == nil || uint(*pos.Index) != ev.Raw.TxIndex {
++		return nil, errors.New("transaction is not at the log's position")
++	}
++	if tx.Hash() != ev.Raw.TxHash {
++		return nil, fmt.Errorf("transaction at the log's position is %s, not %s", tx.Hash().Hex(), ev.Raw.TxHash.Hex())
++	}
++	return &tx, nil
++}
++
++// triggerKeyAt returns the registry's trigger key as it stood when the transaction at
++// (block, txIndex) started. found is false before the constructor's RelayerChanged log.
++func (f *oursFilter) triggerKeyAt(ctx context.Context, block uint64, txIndex uint) (key common.Address, found bool, err error) {
++	f.historyMu.Lock()
++	defer f.historyMu.Unlock()
++
++	if block < f.deployBlock {
++		return common.Address{}, false, nil
++	}
++	if err := f.refreshLocked(ctx, block); err != nil {
++		return common.Address{}, false, err
++	}
++	for _, c := range f.changes {
++		if !c.appliesTo(block, txIndex) {
++			break
++		}
++		key, found = c.key, true
++	}
++	return key, found, nil
++}
++
++// refreshLocked reads the RelayerChanged logs up to and including upTo. A failed chunk
++// leaves the history as it was, so the next call retries from the same block.
++func (f *oursFilter) refreshLocked(ctx context.Context, upTo uint64) error {
++	for f.nextBlock <= upTo {
++		end := min(f.nextBlock+f.logChunk-1, upTo)
++		changes, err := f.registryChanges(ctx, f.nextBlock, end)
++		if err != nil {
++			return err
++		}
++		f.changes = append(f.changes, changes...)
++		f.nextBlock = end + 1
++	}
++	return nil
++}
++
++// registryChanges returns the registry's RelayerChanged logs in [from, to], ordered. Logs
++// that are not from the registry, not that event, or outside the range are ignored; a log
++// that is the event but not the expected shape is an error, since the history cannot be trusted.
++func (f *oursFilter) registryChanges(ctx context.Context, from, to uint64) ([]keyChange, error) {
++	logs, err := f.chain.FilterLogs(ctx, goeth.FilterQuery{
++		FromBlock: new(big.Int).SetUint64(from),
++		ToBlock:   new(big.Int).SetUint64(to),
++		Addresses: []common.Address{f.registry},
++		Topics:    [][]common.Hash{{relayerChangedTopic}},
++	})
++	if err != nil {
++		return nil, fmt.Errorf("query RelayerChanged logs %d-%d: %w", from, to, err)
++	}
++	changes := make([]keyChange, 0, len(logs))
++	for _, l := range logs {
++		if l.Address != f.registry || len(l.Topics) == 0 || l.Topics[0] != relayerChangedTopic || l.BlockNumber < from || l.BlockNumber > to {
++			continue
++		}
++		if len(l.Topics) != 1 || len(l.Data) != 32 {
++			return nil, fmt.Errorf("malformed RelayerChanged log in transaction %s", l.TxHash.Hex())
++		}
++		changes = append(changes, keyChange{block: l.BlockNumber, txIndex: l.TxIndex, logIndex: l.Index, key: common.BytesToAddress(l.Data)})
++	}
++	sort.SliceStable(changes, func(i, j int) bool { return changes[i].before(changes[j]) })
++	return changes, nil
++}
++
++// verifyRegistry fails when the registry did not emit RelayerChanged at the deploy block,
++// which means the address or block is wrong or the registry has no constructor event.
++func (f *oursFilter) verifyRegistry(ctx context.Context) error {
++	changes, err := f.registryChanges(ctx, f.deployBlock, f.deployBlock)
++	if err != nil {
++		return err
++	}
++	if len(changes) == 0 {
++		return fmt.Errorf("no RelayerChanged log from registry %s at registry-deploy-block %d", f.registry.Hex(), f.deployBlock)
++	}
++	return nil
++}
++
++func (r *Relay) startOursFilter(ctx context.Context, chain oursChain) error {
++	cfg := r.config.Getcash
++	if !cfg.Enabled {
++		return nil
++	}
++	f := newOursFilter(cfg, chain, r.chainID)
++	if err := f.verifyRegistry(ctx); err != nil {
++		return fmt.Errorf("getcash registry check: %w", err)
++	}
++	r.ours = f
++	log.WithFields(log.Fields{
++		"registry":            cfg.Registry,
++		"routers":             cfg.Routers,
++		"registryDeployBlock": cfg.RegistryDeployBlock,
++	}).Info("[getcash] ours-only mode: delivering only router messages signed by the trigger key")
++	return nil
++}
++
++// admitMessage is the screening step for a V2 message. With the mode off it admits
++// everything, as upstream does. With it on, only our messages pass, and the answer is kept
++// so the fee and profitability gates let them through.
++func (r *Relay) admitMessage(ctx context.Context, ev *contracts.GatewayOutboundMessageAccepted) bool {
++	if r.ours == nil {
++		return true
++	}
++	if !r.ours.isOurs(ctx, ev) {
++		log.WithField("nonce", ev.Nonce).Debug("[getcash] not ours; skipping")
++		return false
++	}
++	return true
++}
++
++func (r *Relay) isOurMessage(ev *contracts.GatewayOutboundMessageAccepted) bool {
++	return r.ours != nil && ev != nil && r.ours.isOur(ev.Nonce)
++}
++
++func (r *Relay) forgetOurNonces(pending []uint64) {
++	if r.ours != nil {
++		r.ours.forgetSettled(pending)
++	}
++}
++
++// priceOurMessage replaces the profitability gate for our messages. They are never priced
++// out; a failing Asset Hub dry-run keeps the message pending and raises an alert instead
++// of dead-lettering it.
++func (r *Relay) priceOurMessage(
++	ctx context.Context,
++	ev *contracts.GatewayOutboundMessageAccepted,
++	inboundMsg *parachain.MessageV3,
++	source string,
++) ([]string, *v2Economics, bool, error) {
++	if !r.gasEstimator.Enabled() {
++		return nil, ourEconomics(ev), true, nil
++	}
++	estimate, err := r.gasEstimator.EstimateGas(ctx, ev, inboundMsg, source, r.keypair.PublicKey())
++	return r.judgeOurEstimate(ev, estimate, err)
++}
++
++func (r *Relay) judgeOurEstimate(
++	ev *contracts.GatewayOutboundMessageAccepted,
++	estimate *gasestimator.GasEstimate,
++	err error,
++) ([]string, *v2Economics, bool, error) {
++	if err != nil {
++		if error_tracking.IsTransientError(err) {
++			return nil, nil, false, fmt.Errorf("gas estimation: %w", err)
++		}
++		alertOurs(eventOursDryRunFailed, ev.Nonce, fmt.Sprintf("gas estimator failed: %v", err))
++		return nil, nil, false, nil
++	}
++	if !estimate.AssetHubAccepted() {
++		reason := "Asset Hub dry-run failed"
++		if estimate != nil {
++			reason += ": " + gasEstimateErr(estimate.AssetHubDryRunError)
++		}
++		alertOurs(eventOursDryRunFailed, ev.Nonce, reason)
++		return nil, nil, false, nil
++	}
++	return estimate.Beneficiaries, ourEconomics(ev), true, nil
++}
++
++// ourEconomics marks the message as past its max delay, which the batch gate keeps even
++// when the batch does not pay for itself.
++func ourEconomics(ev *contracts.GatewayOutboundMessageAccepted) *v2Economics {
++	return &v2Economics{nonce: ev.Nonce, pastMaxDelay: true}
++}
++
++// alertOurCandidateError reports whether err was handled for one of our messages: it is
++// alerted and the nonce stays pending instead of being dead-lettered.
++func (r *Relay) alertOurCandidateError(nonce uint64, err error) bool {
++	if r.ours == nil || !r.ours.isOur(nonce) {
++		return false
++	}
++	alertOurs(eventOursCandidateError, nonce, err.Error())
++	return true
++}
++
++func alertOurs(event string, nonce uint64, reason string) {
++	log.WithFields(log.Fields{
++		"event":  event,
++		"nonce":  nonce,
++		"reason": reason,
++	}).Error("[getcash] our message needs attention; it stays pending and is retried")
++}
+diff --git a/relayer/relays/ethereum-v3/ours_test.go b/relayer/relays/ethereum-v3/ours_test.go
+new file mode 100644
+index 00000000..c561ad95
+--- /dev/null
++++ b/relayer/relays/ethereum-v3/ours_test.go
+@@ -0,0 +1,1064 @@
++package executionV3
++
++import (
++	"context"
++	"crypto/ecdsa"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"go/ast"
++	"go/parser"
++	"go/token"
++	"math/big"
++	"os"
++	"path/filepath"
++	"slices"
++	"sync"
++	"testing"
++
++	goeth "github.com/ethereum/go-ethereum"
++	"github.com/ethereum/go-ethereum/common"
++	"github.com/ethereum/go-ethereum/common/hexutil"
++	ethtypes "github.com/ethereum/go-ethereum/core/types"
++	"github.com/ethereum/go-ethereum/crypto"
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/snowfork/snowbridge/relayer/chain/parachain"
++	"github.com/snowfork/snowbridge/relayer/contracts"
++	"github.com/snowfork/snowbridge/relayer/crypto/sr25519"
++	"github.com/snowfork/snowbridge/relayer/relays/beacon/header/syncer/scale"
++	"github.com/snowfork/snowbridge/relayer/relays/error_tracking"
++	"github.com/snowfork/snowbridge/relayer/relays/gasestimator"
++)
++
++const testDeployBlock = 5
++
++var (
++	testRouter   = common.HexToAddress("0x00000000000000000000000000000000000000a1")
++	testRouterV2 = common.HexToAddress("0x00000000000000000000000000000000000000a2")
++	testRegistry = common.HexToAddress("0x00000000000000000000000000000000000000b2")
++	testForeign  = common.HexToAddress("0x00000000000000000000000000000000000000c3")
++	testChainID  = big.NewInt(11155111)
++)
++
++type txPos struct {
++	blockHash common.Hash
++	index     uint
++}
++
++type fakeChain struct {
++	mu   sync.Mutex
++	txs  map[txPos]*ethtypes.Transaction
++	logs []ethtypes.Log
++
++	// looseFilter makes FilterLogs ignore the query, as a careless node might.
++	looseFilter bool
++	// mutateRPC edits the transaction JSON a node would return.
++	mutateRPC func(m map[string]any)
++
++	txErr  error
++	logErr error
++
++	txFetches int
++	queries   []goeth.FilterQuery
++}
++
++func blockHashOf(block uint64) common.Hash { return common.BigToHash(new(big.Int).SetUint64(block)) }
++
++func (c *fakeChain) CallContext(_ context.Context, result interface{}, method string, args ...interface{}) error {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if method != "eth_getTransactionByBlockHashAndIndex" {
++		return fmt.Errorf("unexpected method %s", method)
++	}
++	c.txFetches++
++	if c.txErr != nil {
++		return c.txErr
++	}
++	pos := txPos{blockHash: args[0].(common.Hash), index: uint(args[1].(hexutil.Uint))}
++	out := result.(*json.RawMessage)
++	tx, ok := c.txs[pos]
++	if !ok {
++		*out = json.RawMessage("null")
++		return nil
++	}
++	encoded, err := tx.MarshalJSON()
++	if err != nil {
++		return err
++	}
++	var m map[string]any
++	if err := json.Unmarshal(encoded, &m); err != nil {
++		return err
++	}
++	m["blockHash"] = pos.blockHash
++	m["transactionIndex"] = hexutil.Uint(pos.index)
++	if c.mutateRPC != nil {
++		c.mutateRPC(m)
++	}
++	*out, err = json.Marshal(m)
++	return err
++}
++
++func (c *fakeChain) FilterLogs(_ context.Context, q goeth.FilterQuery) ([]ethtypes.Log, error) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.queries = append(c.queries, q)
++	if c.logErr != nil {
++		return nil, c.logErr
++	}
++	var out []ethtypes.Log
++	for _, l := range c.logs {
++		if !c.looseFilter {
++			if l.BlockNumber < q.FromBlock.Uint64() || l.BlockNumber > q.ToBlock.Uint64() {
++				continue
++			}
++			if len(q.Addresses) == 1 && l.Address != q.Addresses[0] {
++				continue
++			}
++			if len(q.Topics) == 1 && !slices.Contains(q.Topics[0], l.Topics[0]) {
++				continue
++			}
++		}
++		out = append(out, l)
++	}
++	return out, nil
++}
++
++type world struct {
++	t      *testing.T
++	chain  *fakeChain
++	filter *oursFilter
++	nonce  uint64
++	keyA   *ecdsa.PrivateKey
++	keyB   *ecdsa.PrivateKey
++	keyC   *ecdsa.PrivateKey
++	other  *ecdsa.PrivateKey
++}
++
++func newKey(t *testing.T) *ecdsa.PrivateKey {
++	key, err := crypto.GenerateKey()
++	require.NoError(t, err)
++	return key
++}
++
++func addr(key *ecdsa.PrivateKey) common.Address { return crypto.PubkeyToAddress(key.PublicKey) }
++
++// newBareWorld has no constructor log; newWorld has key A set at the registry's deploy block.
++func newBareWorld(t *testing.T) *world {
++	w := &world{t: t, keyA: newKey(t), keyB: newKey(t), keyC: newKey(t), other: newKey(t)}
++	w.chain = &fakeChain{txs: map[txPos]*ethtypes.Transaction{}}
++	w.filter = w.newFilter()
++	return w
++}
++
++func newWorld(t *testing.T) *world {
++	w := newBareWorld(t)
++	w.rotate(testDeployBlock, 0, 0, w.keyA)
++	return w
++}
++
++func (w *world) config() GetcashConfig {
++	return GetcashConfig{
++		Enabled:             true,
++		Registry:            testRegistry.Hex(),
++		Routers:             []string{testRouter.Hex(), testRouterV2.Hex()},
++		RegistryDeployBlock: testDeployBlock,
++	}
++}
++
++func (w *world) newFilter() *oursFilter { return newOursFilter(w.config(), w.chain, testChainID) }
++
++// rotate records a RelayerChanged log; logs are appended in call order, not sorted.
++func (w *world) rotate(block uint64, txIndex, logIndex uint, to *ecdsa.PrivateKey) {
++	w.rotateTo(block, txIndex, logIndex, addr(to))
++}
++
++func (w *world) rotateTo(block uint64, txIndex, logIndex uint, to common.Address) {
++	w.chain.logs = append(w.chain.logs, ethtypes.Log{
++		Address:     testRegistry,
++		Topics:      []common.Hash{relayerChangedTopic},
++		Data:        common.LeftPadBytes(to.Bytes(), 32),
++		BlockNumber: block,
++		TxIndex:     txIndex,
++		Index:       logIndex,
++	})
++}
++
++func (w *world) signTx(chainID *big.Int, key *ecdsa.PrivateKey) *ethtypes.Transaction {
++	w.nonce++
++	tx, err := ethtypes.SignTx(ethtypes.NewTx(&ethtypes.DynamicFeeTx{
++		ChainID:   chainID,
++		Nonce:     w.nonce,
++		GasFeeCap: big.NewInt(1),
++		GasTipCap: big.NewInt(1),
++		Gas:       21000,
++		To:        &testRouter,
++	}), ethtypes.LatestSignerForChainID(chainID), key)
++	require.NoError(w.t, err)
++	return tx
++}
++
++// message makes a Gateway event for a transaction at (block, txIndex) and registers the
++// transaction with the node. Positions must be unique within a test.
++func (w *world) message(origin common.Address, signer *ecdsa.PrivateKey, block uint64, txIndex uint) *contracts.GatewayOutboundMessageAccepted {
++	tx := w.signTx(testChainID, signer)
++	ev := &contracts.GatewayOutboundMessageAccepted{
++		Nonce: w.nonce,
++		Payload: contracts.Payload{
++			Origin:       origin,
++			Value:        big.NewInt(0),
++			ExecutionFee: big.NewInt(0),
++			RelayerFee:   big.NewInt(0),
++		},
++		Raw: ethtypes.Log{TxHash: tx.Hash(), BlockHash: blockHashOf(block), BlockNumber: block, TxIndex: txIndex},
++	}
++	w.place(ev, tx)
++	return ev
++}
++
++func (w *world) place(ev *contracts.GatewayOutboundMessageAccepted, tx *ethtypes.Transaction) {
++	w.chain.txs[txPos{blockHash: ev.Raw.BlockHash, index: ev.Raw.TxIndex}] = tx
++}
++
++func (w *world) fromRouter(signer *ecdsa.PrivateKey, block uint64, txIndex uint) *contracts.GatewayOutboundMessageAccepted {
++	return w.message(testRouter, signer, block, txIndex)
++}
++
++func TestOriginNotARouterIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	ev := w.message(testForeign, w.keyA, 10, 0)
++
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++	assert.Zero(t, w.chain.txFetches, "origin is the cheap first filter, no transaction is fetched")
++	assert.Empty(t, w.chain.queries)
++}
++
++func TestEveryConfiguredRouterIsAccepted(t *testing.T) {
++	w := newWorld(t)
++	ctx := context.Background()
++	assert.True(t, w.filter.isOurs(ctx, w.message(testRouter, w.keyA, 10, 0)))
++	assert.True(t, w.filter.isOurs(ctx, w.message(testRouterV2, w.keyA, 10, 1)))
++	assert.False(t, w.filter.isOurs(ctx, w.message(testForeign, w.keyA, 10, 2)))
++}
++
++func TestRouterOriginSignedByStrangerIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	assert.False(t, w.filter.isOurs(context.Background(), w.fromRouter(w.other, 10, 0)))
++}
++
++func TestRouterOriginSignedByTriggerKeyIsOurs(t *testing.T) {
++	w := newWorld(t)
++	assert.True(t, w.filter.isOurs(context.Background(), w.fromRouter(w.keyA, 10, 0)))
++}
++
++type keyCase struct {
++	name   string
++	signer func(w *world) *ecdsa.PrivateKey
++	block  uint64
++	tx     uint
++	ours   bool
++}
++
++func runKeyCases(t *testing.T, w *world, cases []keyCase, reverse bool) {
++	t.Helper()
++	events := make([]*contracts.GatewayOutboundMessageAccepted, len(cases))
++	for i, c := range cases {
++		events[i] = w.fromRouter(c.signer(w), c.block, c.tx)
++	}
++	order := make([]int, len(cases))
++	for i := range order {
++		order[i] = i
++		if reverse {
++			order[i] = len(cases) - 1 - i
++		}
++	}
++	for _, i := range order {
++		assert.Equal(t, cases[i].ours, w.filter.isOurs(context.Background(), events[i]), cases[i].name)
++	}
++}
++
++func keyA(w *world) *ecdsa.PrivateKey  { return w.keyA }
++func keyB(w *world) *ecdsa.PrivateKey  { return w.keyB }
++func keyC(w *world) *ecdsa.PrivateKey  { return w.keyC }
++func other(w *world) *ecdsa.PrivateKey { return w.other }
++
++func TestRotationInBacklog(t *testing.T) {
++	cases := []keyCase{
++		{"old key long before the rotation", keyA, 10, 0, true},
++		{"old key just before the rotation block", keyA, 19, 7, true},
++		{"old key earlier in the rotation block", keyA, 20, 1, true},
++		{"old key in the rotation transaction, key valid at its start", keyA, 20, 3, true},
++		{"old key after the rotation in the same block", keyA, 20, 4, false},
++		{"new key before the rotation in the same block", keyB, 20, 2, false},
++		{"new key after the rotation in the same block", keyB, 20, 5, true},
++		{"new key before the rotation block", keyB, 10, 1, false},
++		{"old key in a later block", keyA, 21, 0, false},
++		{"new key in a later block", keyB, 21, 1, true},
++		{"stranger after the rotation", other, 30, 1, false},
++	}
++	for _, reverse := range []bool{false, true} {
++		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
++			w := newWorld(t)
++			w.rotate(20, 3, 0, w.keyB)
++			runKeyCases(t, w, cases, reverse)
++		})
++	}
++}
++
++func TestSameBlockOrderingByTxIndex(t *testing.T) {
++	w := newWorld(t)
++	// Logged out of order on purpose: the history must sort by transaction index.
++	w.rotate(50, 20, 0, w.keyC)
++	w.rotate(50, 10, 0, w.keyB)
++
++	runKeyCases(t, w, []keyCase{
++		{"A before the first rotation", keyA, 50, 1, true},
++		{"A in the first rotation transaction", keyA, 50, 10, true},
++		{"A after the first rotation", keyA, 50, 11, false},
++		{"B between the rotations", keyB, 50, 12, true},
++		{"B in the second rotation transaction", keyB, 50, 20, true},
++		{"B after the second rotation", keyB, 50, 21, false},
++		{"C after the second rotation", keyC, 50, 22, true},
++		{"C between the rotations", keyC, 50, 13, false},
++	}, false)
++}
++
++func TestSameTransactionRotationsOrderedByLogIndex(t *testing.T) {
++	w := newWorld(t)
++	w.rotate(60, 2, 1, w.keyC)
++	w.rotate(60, 2, 0, w.keyB)
++
++	runKeyCases(t, w, []keyCase{
++		{"C after both rotations", keyC, 60, 3, true},
++		{"B after both rotations", keyB, 60, 4, false},
++		{"A in the rotation transaction", keyA, 60, 2, true},
++	}, false)
++}
++
++func TestMessageInDeployBlockAfterConstructorTx(t *testing.T) {
++	w := newBareWorld(t)
++	w.rotate(testDeployBlock, 2, 0, w.keyA)
++
++	runKeyCases(t, w, []keyCase{
++		{"before the constructor transaction", keyA, testDeployBlock, 1, false},
++		{"in the constructor transaction", keyA, testDeployBlock, 2, false},
++		{"after the constructor transaction", keyA, testDeployBlock, 3, true},
++		{"stranger after the constructor transaction", other, testDeployBlock, 4, false},
++	}, false)
++}
++
++func TestBlockBeforeRegistryDeploymentIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	ev := w.fromRouter(w.keyA, testDeployBlock-1, 0)
++	ours, err := w.filter.verdict(context.Background(), ev)
++	require.NoError(t, err)
++	assert.False(t, ours)
++	assert.Empty(t, w.chain.queries)
++}
++
++func TestZeroTriggerKeyIsNeverOurs(t *testing.T) {
++	w := newWorld(t)
++	w.rotateTo(20, 0, 0, common.Address{})
++	assert.False(t, w.filter.isOurs(context.Background(), w.fromRouter(w.keyA, 21, 0)))
++}
++
++func TestTransactionFetchErrorIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	ev := w.fromRouter(w.keyA, 10, 0)
++
++	w.chain.txErr = errors.New("connection reset")
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++	_, err := w.filter.verdict(context.Background(), ev)
++	require.Error(t, err)
++
++	w.chain.txErr = nil
++	assert.True(t, w.filter.isOurs(context.Background(), ev), "the failure is not remembered")
++}
++
++func TestMissingTransactionIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	ev := w.fromRouter(w.keyA, 10, 0)
++	delete(w.chain.txs, txPos{blockHash: ev.Raw.BlockHash, index: ev.Raw.TxIndex})
++	_, err := w.filter.verdict(context.Background(), ev)
++	require.Error(t, err)
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++}
++
++func TestTransactionAtThePositionMustBeTheLogsTransaction(t *testing.T) {
++	w := newWorld(t)
++	ev := w.fromRouter(w.keyA, 10, 0)
++	// Another transaction signed by the trigger key sits at the position the log names.
++	w.place(ev, w.signTx(testChainID, w.keyA))
++
++	_, err := w.filter.verdict(context.Background(), ev)
++	require.Error(t, err)
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++}
++
++func TestPendingOrMovedTransactionIsNotOurs(t *testing.T) {
++	tests := []struct {
++		name   string
++		mutate func(m map[string]any)
++	}{
++		{"pending, no block hash", func(m map[string]any) { m["blockHash"] = nil }},
++		{"another block", func(m map[string]any) { m["blockHash"] = blockHashOf(99) }},
++		{"another index", func(m map[string]any) { m["transactionIndex"] = hexutil.Uint(7) }},
++		{"no index", func(m map[string]any) { delete(m, "transactionIndex") }},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			w := newWorld(t)
++			ev := w.fromRouter(w.keyA, 10, 0)
++			w.chain.mutateRPC = tt.mutate
++			_, err := w.filter.verdict(context.Background(), ev)
++			require.Error(t, err)
++			assert.False(t, w.filter.isOurs(context.Background(), ev))
++		})
++	}
++}
++
++func TestTriggerKeySignatureForAnotherChainIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	ev := w.fromRouter(w.keyA, 10, 0)
++	foreign := w.signTx(big.NewInt(1), w.keyA)
++	w.place(ev, foreign)
++	ev.Raw.TxHash = foreign.Hash()
++
++	_, err := w.filter.verdict(context.Background(), ev)
++	require.Error(t, err, "a typed transaction for another chain id has no valid signer here")
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++}
++
++func TestLegacyTransactionSignerIsRecovered(t *testing.T) {
++	w := newWorld(t)
++	legacy, err := ethtypes.SignTx(ethtypes.NewTx(&ethtypes.LegacyTx{Nonce: 1, GasPrice: big.NewInt(1), Gas: 21000, To: &testRouter}), ethtypes.LatestSignerForChainID(testChainID), w.keyA)
++	require.NoError(t, err)
++
++	ev := w.fromRouter(w.keyA, 10, 0)
++	w.place(ev, legacy)
++	ev.Raw.TxHash = legacy.Hash()
++	assert.True(t, w.filter.isOurs(context.Background(), ev))
++}
++
++func TestLogQueryErrorIsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	ev := w.fromRouter(w.keyA, 10, 0)
++
++	w.chain.logErr = errors.New("rate limited")
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++	_, err := w.filter.verdict(context.Background(), ev)
++	require.Error(t, err)
++	assert.Equal(t, uint64(testDeployBlock), w.filter.nextBlock, "a failed query leaves the history where it was")
++
++	w.chain.logErr = nil
++	assert.True(t, w.filter.isOurs(context.Background(), ev))
++	assert.Equal(t, uint64(11), w.filter.nextBlock)
++}
++
++func TestHistoryRefreshPicksUpNewRotation(t *testing.T) {
++	w := newWorld(t)
++	ctx := context.Background()
++
++	assert.True(t, w.filter.isOurs(ctx, w.fromRouter(w.keyA, 10, 0)))
++	require.Len(t, w.chain.queries, 1)
++	assert.Equal(t, uint64(5), w.chain.queries[0].FromBlock.Uint64())
++	assert.Equal(t, uint64(10), w.chain.queries[0].ToBlock.Uint64())
++
++	assert.True(t, w.filter.isOurs(ctx, w.fromRouter(w.keyA, 8, 0)), "an older block needs no new query")
++	assert.Len(t, w.chain.queries, 1)
++
++	w.rotate(30, 1, 0, w.keyB)
++	assert.True(t, w.filter.isOurs(ctx, w.fromRouter(w.keyB, 31, 0)))
++	assert.False(t, w.filter.isOurs(ctx, w.fromRouter(w.keyA, 31, 1)))
++	require.Len(t, w.chain.queries, 2)
++	assert.Equal(t, uint64(11), w.chain.queries[1].FromBlock.Uint64(), "only the new range is read")
++	assert.Equal(t, uint64(31), w.chain.queries[1].ToBlock.Uint64())
++}
++
++func queryRanges(c *fakeChain) [][2]uint64 {
++	var ranges [][2]uint64
++	for _, q := range c.queries {
++		ranges = append(ranges, [2]uint64{q.FromBlock.Uint64(), q.ToBlock.Uint64()})
++	}
++	return ranges
++}
++
++func TestLogQueriesAreChunked(t *testing.T) {
++	w := newWorld(t)
++	w.filter.logChunk = 3
++	w.rotate(9, 1, 0, w.keyB)
++
++	assert.True(t, w.filter.isOurs(context.Background(), w.fromRouter(w.keyB, 12, 0)))
++	assert.Equal(t, [][2]uint64{{5, 7}, {8, 10}, {11, 12}}, queryRanges(w.chain))
++}
++
++func TestLogChunkIsConfigurable(t *testing.T) {
++	w := newWorld(t)
++	assert.Equal(t, uint64(defaultRegistryLogChunk), w.filter.logChunk)
++
++	cfg := w.config()
++	cfg.RegistryLogChunk = 4
++	f := newOursFilter(cfg, w.chain, testChainID)
++	assert.True(t, f.isOurs(context.Background(), w.fromRouter(w.keyA, 12, 0)))
++	assert.Equal(t, [][2]uint64{{5, 8}, {9, 12}}, queryRanges(w.chain))
++}
++
++type failingLogs struct {
++	*fakeChain
++	failFrom uint64
++}
++
++func (f *failingLogs) FilterLogs(ctx context.Context, q goeth.FilterQuery) ([]ethtypes.Log, error) {
++	if q.FromBlock.Uint64() >= f.failFrom {
++		return nil, errors.New("rate limited")
++	}
++	return f.fakeChain.FilterLogs(ctx, q)
++}
++
++func TestFailedChunkKeepsEarlierChunks(t *testing.T) {
++	w := newWorld(t)
++	w.filter.logChunk = 3
++	w.rotate(6, 1, 0, w.keyB)
++	ev := w.fromRouter(w.keyB, 12, 0)
++
++	w.filter.chain = &failingLogs{fakeChain: w.chain, failFrom: 8}
++	assert.False(t, w.filter.isOurs(context.Background(), ev))
++	assert.Equal(t, uint64(8), w.filter.nextBlock, "the first chunk is kept")
++	require.Len(t, w.filter.changes, 2)
++
++	w.filter.chain = w.chain
++	assert.True(t, w.filter.isOurs(context.Background(), ev))
++}
++
++func TestForeignWrongTopicAndOutOfRangeLogsAreIgnored(t *testing.T) {
++	w := newWorld(t)
++	w.chain.looseFilter = true
++	hostile := common.LeftPadBytes(addr(w.other).Bytes(), 32)
++	w.chain.logs = append(w.chain.logs,
++		ethtypes.Log{Address: testForeign, Topics: []common.Hash{relayerChangedTopic}, Data: hostile, BlockNumber: 6},
++		ethtypes.Log{Address: testRegistry, Topics: []common.Hash{crypto.Keccak256Hash([]byte("GuardianChanged(address)"))}, Data: hostile, BlockNumber: 6},
++		ethtypes.Log{Address: testRegistry, Data: hostile, BlockNumber: 6},
++		ethtypes.Log{Address: testRegistry, Topics: []common.Hash{relayerChangedTopic}, Data: hostile, BlockNumber: 500},
++	)
++
++	assert.False(t, w.filter.isOurs(context.Background(), w.fromRouter(w.other, 10, 0)))
++	assert.True(t, w.filter.isOurs(context.Background(), w.fromRouter(w.keyA, 10, 1)))
++}
++
++func TestMalformedRelayerChangedLogIsNotOurs(t *testing.T) {
++	good := common.LeftPadBytes(common.Address{1}.Bytes(), 32)
++	tests := []struct {
++		name   string
++		topics []common.Hash
++		data   []byte
++	}{
++		{"indexed argument", []common.Hash{relayerChangedTopic, common.BytesToHash(good)}, nil},
++		{"short data", []common.Hash{relayerChangedTopic}, good[:31]},
++		{"long data", []common.Hash{relayerChangedTopic}, append(slices.Clone(good), 0)},
++		{"no data", []common.Hash{relayerChangedTopic}, nil},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			w := newWorld(t)
++			w.chain.logs = append(w.chain.logs, ethtypes.Log{Address: testRegistry, Topics: tt.topics, Data: tt.data, BlockNumber: 7})
++			assert.False(t, w.filter.isOurs(context.Background(), w.fromRouter(w.keyA, 10, 0)))
++		})
++	}
++}
++
++func TestVerdictsAreCachedPerNonce(t *testing.T) {
++	w := newWorld(t)
++	ctx := context.Background()
++	ours := w.fromRouter(w.keyA, 10, 0)
++	stranger := w.fromRouter(w.other, 10, 1)
++
++	assert.True(t, w.filter.isOurs(ctx, ours))
++	assert.False(t, w.filter.isOurs(ctx, stranger))
++	fetches, queries := w.chain.txFetches, len(w.chain.queries)
++	require.Equal(t, 2, fetches)
++
++	for range 3 {
++		assert.True(t, w.filter.isOurs(ctx, ours))
++		assert.False(t, w.filter.isOurs(ctx, stranger))
++	}
++	assert.Equal(t, fetches, w.chain.txFetches, "neither a positive nor a negative answer is fetched again")
++	assert.Len(t, w.chain.queries, queries)
++	assert.True(t, w.filter.isOur(ours.Nonce))
++	assert.False(t, w.filter.isOur(stranger.Nonce))
++}
++
++func TestForgetSettledNeverDropsAnswersAboveThePendingSet(t *testing.T) {
++	w := newWorld(t)
++	ctx := context.Background()
++	settled := w.fromRouter(w.keyA, 10, 0)
++	pending := w.fromRouter(w.keyA, 10, 1)
++	newer := w.fromRouter(w.keyA, 10, 2)
++	for _, ev := range []*contracts.GatewayOutboundMessageAccepted{settled, pending, newer} {
++		require.True(t, w.filter.isOurs(ctx, ev))
++	}
++
++	w.filter.forgetSettled(nil)
++	assert.True(t, w.filter.isOur(settled.Nonce), "an empty pending set forgets nothing")
++
++	w.filter.forgetSettled([]uint64{pending.Nonce})
++	assert.False(t, w.filter.isOur(settled.Nonce), "settled and below the highest pending")
++	assert.True(t, w.filter.isOur(pending.Nonce))
++	assert.True(t, w.filter.isOur(newer.Nonce), "above the scan's view, a newer catch-up pass may still need it")
++}
++
++func TestNegativeAnswersArePrunedToo(t *testing.T) {
++	w := newWorld(t)
++	stranger := w.fromRouter(w.other, 10, 0)
++	pending := w.fromRouter(w.keyA, 10, 1)
++	w.filter.isOurs(context.Background(), stranger)
++
++	w.filter.forgetSettled([]uint64{pending.Nonce})
++	w.filter.verdictsMu.Lock()
++	defer w.filter.verdictsMu.Unlock()
++	assert.NotContains(t, w.filter.verdicts, stranger.Nonce)
++}
++
++func TestStartOursFilter(t *testing.T) {
++	ctx := context.Background()
++	newRelay := func(w *world, cfg GetcashConfig) *Relay {
++		r := NewRelay(&Config{Getcash: cfg}, sr25519.Alice())
++		r.chainID = testChainID
++		return r
++	}
++
++	t.Run("constructor log at the deploy block", func(t *testing.T) {
++		w := newWorld(t)
++		r := newRelay(w, w.config())
++		require.NoError(t, r.startOursFilter(ctx, w.chain))
++		assert.NotNil(t, r.ours)
++	})
++	t.Run("no log at the deploy block", func(t *testing.T) {
++		w := newBareWorld(t)
++		r := newRelay(w, w.config())
++		err := r.startOursFilter(ctx, w.chain)
++		require.Error(t, err)
++		assert.Contains(t, err.Error(), "no RelayerChanged log")
++		assert.Nil(t, r.ours)
++	})
++	t.Run("log at another block", func(t *testing.T) {
++		w := newBareWorld(t)
++		w.rotate(testDeployBlock+1, 0, 0, w.keyA)
++		r := newRelay(w, w.config())
++		require.Error(t, r.startOursFilter(ctx, w.chain))
++	})
++	t.Run("log from another address", func(t *testing.T) {
++		w := newBareWorld(t)
++		w.chain.looseFilter = true
++		w.chain.logs = append(w.chain.logs, ethtypes.Log{
++			Address: testForeign, Topics: []common.Hash{relayerChangedTopic},
++			Data: common.LeftPadBytes(addr(w.keyA).Bytes(), 32), BlockNumber: testDeployBlock,
++		})
++		r := newRelay(w, w.config())
++		require.Error(t, r.startOursFilter(ctx, w.chain))
++	})
++	t.Run("rpc error", func(t *testing.T) {
++		w := newWorld(t)
++		w.chain.logErr = errors.New("connection reset")
++		r := newRelay(w, w.config())
++		require.Error(t, r.startOursFilter(ctx, w.chain))
++	})
++	t.Run("malformed constructor log", func(t *testing.T) {
++		w := newBareWorld(t)
++		w.chain.logs = append(w.chain.logs, ethtypes.Log{
++			Address: testRegistry, Topics: []common.Hash{relayerChangedTopic}, BlockNumber: testDeployBlock,
++		})
++		r := newRelay(w, w.config())
++		require.Error(t, r.startOursFilter(ctx, w.chain))
++	})
++}
++
++func TestGetcashConfigValidation(t *testing.T) {
++	valid := GetcashConfig{
++		Enabled:             true,
++		Registry:            testRegistry.Hex(),
++		Routers:             []string{testRouter.Hex(), testRouterV2.Hex()},
++		RegistryDeployBlock: 7,
++	}
++	zero := common.Address{}.Hex()
++
++	tests := []struct {
++		name   string
++		mutate func(c *GetcashConfig)
++		errMsg string
++	}{
++		{"valid", func(c *GetcashConfig) {}, ""},
++		{"off with zero placeholders", func(c *GetcashConfig) {
++			*c = GetcashConfig{Registry: zero, Routers: []string{zero}}
++		}, ""},
++		{"registry missing", func(c *GetcashConfig) { c.Registry = "" }, "registry"},
++		{"registry not hex", func(c *GetcashConfig) { c.Registry = "0xnothex" }, "registry"},
++		{"registry zero", func(c *GetcashConfig) { c.Registry = zero }, "registry"},
++		{"no routers", func(c *GetcashConfig) { c.Routers = nil }, "routers"},
++		{"router not hex", func(c *GetcashConfig) { c.Routers = []string{testRouter.Hex(), "nope"} }, "routers"},
++		{"second router zero", func(c *GetcashConfig) { c.Routers = []string{testRouter.Hex(), zero} }, "routers"},
++		{"deploy block missing", func(c *GetcashConfig) { c.RegistryDeployBlock = 0 }, "registry-deploy-block"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			c := valid
++			tt.mutate(&c)
++			err := Config{Getcash: c}.validateGetcash()
++			if tt.errMsg == "" {
++				require.NoError(t, err)
++				return
++			}
++			require.Error(t, err)
++			assert.Contains(t, err.Error(), tt.errMsg)
++		})
++	}
++}
++
++func TestGetcashRequiresV1Disabled(t *testing.T) {
++	w := newWorld(t)
++	v1 := SourceConfig{ChannelID: ChannelID{1}}
++
++	require.Error(t, Config{Source: v1, Getcash: w.config()}.validateGetcash())
++	require.NoError(t, Config{Source: v1}.validateGetcash(), "V1 is untouched while the mode is off")
++	require.NoError(t, Config{Getcash: w.config()}.validateGetcash())
++}
++
++func captureLogs(t *testing.T) *logtest.Hook {
++	hook := logtest.NewGlobal()
++	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
++	return hook
++}
++
++func errorEvents(hook *logtest.Hook) []string {
++	var out []string
++	for _, e := range hook.AllEntries() {
++		if e.Level == log.ErrorLevel {
++			if event, ok := e.Data["event"].(string); ok {
++				out = append(out, event)
++			}
++		}
++	}
++	return out
++}
++
++func newOursRelay(w *world, cfg *Config) *Relay {
++	r := NewRelay(cfg, sr25519.Alice())
++	r.ours = w.filter
++	return r
++}
++
++func testInboundMsg() *parachain.MessageV3 {
++	return &parachain.MessageV3{Proof: parachain.ProofV2{
++		ReceiptProof:   &parachain.ProofDataV2{},
++		ExecutionProof: scale.HeaderUpdatePayload{ExecutionHeader: scale.VersionedExecutionPayloadHeader{Gloas: []byte{1}}},
++	}}
++}
++
++// failingEstimator is an estimator binary whose Asset Hub dry-run always fails.
++func failingEstimator(t *testing.T) gasestimator.Config {
++	script := filepath.Join(t.TempDir(), "estimator.sh")
++	body := `#!/bin/sh
++echo '{"bridge_hub":{"delivery_fee_in_ether":0},"beneficiaries":[],"asset_hub_dry_run_success":false,"asset_hub_dry_run_error":"FailedToTransactAsset"}'
++`
++	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
++	return gasestimator.Config{Enabled: true, BinaryPath: script, AssetHubURL: "ah", BridgeHubURL: "bh"}
++}
++
++func TestSwitchOffChangesNothing(t *testing.T) {
++	w := newWorld(t)
++	t.Setenv("PROFITABILITY_MAX_DELAY_SECS", "0")
++	ctx := context.Background()
++	r := NewRelay(&Config{MinMessageRelayerFeeWei: "1000000"}, nil)
++	r.chainID = testChainID
++
++	// The chain is offered to the startup hook, the only place that could attach it.
++	require.NoError(t, r.startOursFilter(ctx, w.chain))
++	require.Nil(t, r.ours)
++
++	// A message that would be ours, and one that would not: upstream gates decide both.
++	for _, ev := range []*contracts.GatewayOutboundMessageAccepted{
++		w.fromRouter(w.keyA, 10, 0),
++		w.message(testForeign, w.other, 10, 1),
++	} {
++		assert.True(t, r.admitMessage(ctx, ev), "upstream screens nothing here")
++		assert.False(t, r.isOurMessage(ev))
++		assert.False(t, r.passesStaticFeeFloor(ev), "upstream fee floor applies")
++		_, _, ok, err := r.checkV2Profitable(ctx, ev, nil, "", 100)
++		require.NoError(t, err)
++		assert.False(t, ok, "upstream profitability gate applies")
++	}
++	assert.Zero(t, w.chain.txFetches)
++	assert.Empty(t, w.chain.queries, "no registry read, no startup check")
++}
++
++func TestSwitchOffStillDeadLettersCandidateErrors(t *testing.T) {
++	store, err := error_tracking.NewDeadNonceStore(filepath.Join(t.TempDir(), "dead.json"))
++	require.NoError(t, err)
++	r := NewRelay(&Config{}, nil)
++	r.deadNonces = store
++
++	require.NoError(t, r.handleCandidateError(9, errors.New("permanent")))
++	assert.True(t, r.deadNonces.IsDead(9))
++}
++
++func TestSwitchOnSkipsMessagesThatAreNotOurs(t *testing.T) {
++	w := newWorld(t)
++	r := newOursRelay(w, &Config{})
++	ctx := context.Background()
++
++	stranger := w.fromRouter(w.other, 10, 0)
++	foreignOrigin := w.message(testForeign, w.keyA, 10, 1)
++	ours := w.fromRouter(w.keyA, 10, 2)
++
++	assert.False(t, r.admitMessage(ctx, stranger))
++	assert.False(t, r.admitMessage(ctx, foreignOrigin))
++	assert.True(t, r.admitMessage(ctx, ours))
++	assert.False(t, r.isOurMessage(stranger))
++	assert.True(t, r.isOurMessage(ours))
++}
++
++func TestSwitchOnTreatsRPCErrorsAsNotOurs(t *testing.T) {
++	w := newWorld(t)
++	r := newOursRelay(w, &Config{})
++	hook := captureLogs(t)
++	ev := w.fromRouter(w.keyA, 10, 0)
++
++	w.chain.txErr = errors.New("connection reset")
++	assert.False(t, r.admitMessage(context.Background(), ev))
++	assert.False(t, r.isOurMessage(ev))
++	found := false
++	for _, e := range hook.AllEntries() {
++		found = found || e.Data["event"] == eventOursCheckFailed
++	}
++	assert.True(t, found, "the failed check is logged")
++}
++
++func TestOurMessagesBypassFeeAndProfitabilityChecks(t *testing.T) {
++	w := newWorld(t)
++	r := newOursRelay(w, &Config{MinMessageRelayerFeeWei: "1000000000000000000"})
++	ev := w.fromRouter(w.keyA, 10, 0)
++
++	assert.False(t, r.passesStaticFeeFloor(ev), "not yet screened, the floor applies")
++	require.True(t, r.admitMessage(context.Background(), ev))
++	assert.True(t, r.passesStaticFeeFloor(ev), "the floor is skipped for ours")
++
++	_, econ, ok, err := r.checkV2Profitable(context.Background(), ev, nil, "", 11)
++	require.NoError(t, err)
++	assert.True(t, ok)
++	require.NotNil(t, econ)
++	assert.True(t, econ.coversOwnDelivery())
++	// selectProfitableBatch needs a live writer to run, so this mirrors its keep rule: a V2
++	// call with pastMaxDelay stays in an unprofitable batch.
++	assert.True(t, econ.pastMaxDelay)
++	assert.False(t, v2BatchCoversCost([]batchCall{{v2: econ}}, big.NewInt(100)), "the batch is unprofitable")
++}
++
++func TestPruneDeferredForgetsSettledOurNonces(t *testing.T) {
++	w := newWorld(t)
++	r := newOursRelay(w, &Config{})
++	ev := w.fromRouter(w.keyA, 10, 0)
++	next := w.fromRouter(w.keyA, 10, 1)
++	require.True(t, r.admitMessage(context.Background(), ev))
++
++	r.pruneDeferred([]uint64{ev.Nonce})
++	assert.True(t, r.isOurMessage(ev))
++	r.pruneDeferred([]uint64{next.Nonce})
++	assert.False(t, r.isOurMessage(ev))
++}
++
++// The worker scan prunes with the pending set of its older view while catch-up, under the same
++// read lock, has just answered for a newer nonce. The answer must survive, or catch-up prices
++// our message by the upstream path and can dead-letter it.
++func TestScanPruneDoesNotStripCatchUpsAnswerBeforePricing(t *testing.T) {
++	t.Setenv("PROFITABILITY_MAX_DELAY_SECS", "0")
++	ctx := context.Background()
++	w := newWorld(t)
++	store, err := error_tracking.NewDeadNonceStore(filepath.Join(t.TempDir(), "dead.json"))
++	require.NoError(t, err)
++	r := newOursRelay(w, &Config{GasEstimation: failingEstimator(t)})
++	r.deadNonces = store
++	hook := captureLogs(t)
++
++	scanPending := w.fromRouter(w.keyA, 10, 0)
++	catchUpOnly := w.fromRouter(w.keyA, 10, 1)
++	require.True(t, r.admitMessage(ctx, scanPending))
++	require.True(t, r.admitMessage(ctx, catchUpOnly), "catch-up answers for a nonce above the scan's ethNonce")
++
++	r.pruneDeferred([]uint64{scanPending.Nonce})
++
++	_, _, ok, err := r.checkV2Profitable(ctx, catchUpOnly, testInboundMsg(), "0xsource", 1_000_000)
++	require.NoError(t, err, "no upstream dead-letter path")
++	assert.False(t, ok)
++	assert.Equal(t, []string{eventOursDryRunFailed}, errorEvents(hook))
++	assert.False(t, r.deadNonces.IsDead(catchUpOnly.Nonce))
++}
++
++func TestOurCandidateErrorsAreAlertedNotDeadLettered(t *testing.T) {
++	w := newWorld(t)
++	store, err := error_tracking.NewDeadNonceStore(filepath.Join(t.TempDir(), "dead.json"))
++	require.NoError(t, err)
++	r := newOursRelay(w, &Config{})
++	r.deadNonces = store
++	hook := captureLogs(t)
++
++	ours := w.fromRouter(w.keyA, 10, 0)
++	require.True(t, r.admitMessage(context.Background(), ours))
++	permanent := fmt.Errorf("%w: FailedToTransactAsset", ErrAssetHubDryRunRejected)
++
++	require.NoError(t, r.handleCandidateError(ours.Nonce, permanent))
++	assert.False(t, r.deadNonces.IsDead(ours.Nonce))
++	assert.Equal(t, []string{eventOursCandidateError}, errorEvents(hook))
++
++	require.NoError(t, r.handleCandidateError(ours.Nonce+100, permanent))
++	assert.True(t, r.deadNonces.IsDead(ours.Nonce+100), "a message that is not ours is dead-lettered as upstream does")
++
++	transient := errors.New("connection timeout")
++	require.Error(t, r.handleCandidateError(ours.Nonce, fmt.Errorf("gas estimation: %w", transient)), "transient errors still propagate")
++}
++
++func TestOurDryRunVerdicts(t *testing.T) {
++	w := newWorld(t)
++	r := newOursRelay(w, &Config{})
++	ev := w.fromRouter(w.keyA, 10, 0)
++	yes, no := true, false
++	reason := "FailedToTransactAsset"
++
++	tests := []struct {
++		name     string
++		estimate *gasestimator.GasEstimate
++		err      error
++		ok       bool
++		alert    bool
++	}{
++		{"accepted", &gasestimator.GasEstimate{AssetHubDryRunSuccess: &yes, Beneficiaries: []string{"x"}}, nil, true, false},
++		{"asset hub rejected", &gasestimator.GasEstimate{AssetHubDryRunSuccess: &no, AssetHubDryRunError: &reason}, nil, false, true},
++		{"older binary, combined result failed", &gasestimator.GasEstimate{}, nil, false, true},
++		{"estimator failed permanently", nil, errors.New("exec failed"), false, true},
++		{"no estimate", nil, nil, false, true},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			hook := captureLogs(t)
++			beneficiaries, econ, ok, err := r.judgeOurEstimate(ev, tt.estimate, tt.err)
++			require.NoError(t, err, "never an error that would dead-letter the nonce")
++			assert.Equal(t, tt.ok, ok)
++			if tt.ok {
++				assert.Equal(t, []string{"x"}, beneficiaries)
++				require.NotNil(t, econ)
++				assert.True(t, econ.pastMaxDelay)
++				assert.Empty(t, errorEvents(hook))
++				return
++			}
++			assert.Nil(t, econ)
++			assert.Equal(t, []string{eventOursDryRunFailed}, errorEvents(hook))
++		})
++	}
++}
++
++func TestTransientEstimatorErrorsPropagateLikeUpstream(t *testing.T) {
++	w := newWorld(t)
++	r := newOursRelay(w, &Config{})
++	ev := w.fromRouter(w.keyA, 10, 0)
++	hook := captureLogs(t)
++
++	transient := errors.New("connection timeout")
++	require.True(t, error_tracking.IsTransientError(transient))
++	_, _, ok, err := r.judgeOurEstimate(ev, nil, transient)
++	require.Error(t, err)
++	assert.False(t, ok)
++	assert.True(t, error_tracking.IsTransientError(err), "handleCandidateError returns it, not alert and defer")
++	assert.Empty(t, errorEvents(hook))
++}
++
++// A stub estimator binary drives the real checkV2Profitable path end to end.
++func TestAssetHubDryRunFailureAlertsForOursAndDeadLettersForOthers(t *testing.T) {
++	t.Setenv("PROFITABILITY_MAX_DELAY_SECS", "0")
++	ctx := context.Background()
++	msg := testInboundMsg()
++
++	t.Run("ours", func(t *testing.T) {
++		w := newWorld(t)
++		r := newOursRelay(w, &Config{GasEstimation: failingEstimator(t)})
++		hook := captureLogs(t)
++		ev := w.fromRouter(w.keyA, 10, 0)
++		require.True(t, r.admitMessage(ctx, ev))
++
++		_, _, ok, err := r.checkV2Profitable(ctx, ev, msg, "0xsource", 1_000_000)
++		require.NoError(t, err, "no dead-letter even long past the hold period")
++		assert.False(t, ok, "not delivered while the dry-run fails")
++		assert.Equal(t, []string{eventOursDryRunFailed}, errorEvents(hook))
++	})
++
++	t.Run("not ours, switch off", func(t *testing.T) {
++		w := newWorld(t)
++		r := NewRelay(&Config{GasEstimation: failingEstimator(t)}, sr25519.Alice())
++		ev := w.fromRouter(w.keyA, 10, 0)
++
++		_, _, ok, err := r.checkV2Profitable(ctx, ev, msg, "0xsource", 1_000_000)
++		assert.False(t, ok)
++		require.Error(t, err)
++		assert.True(t, errors.Is(err, ErrAssetHubDryRunRejected), "upstream dead-letters it")
++	})
++}
++
++// The scan loops cannot run without a Bridge Hub connection, so this pins their shape: a message
++// that is not ours is skipped by an `if !r.admitMessage(...) { continue }` before it can become a
++// candidate, which is what keeps it away from buildCandidate (beacon proofs, includeBeacon) and
++// handleCandidateError.
++func TestNotOursIsSkippedBeforeAnyCandidateWork(t *testing.T) {
++	for _, tt := range []struct{ file, fn string }{
++		{"main.go", "doScanAndBatchRelay"},
++		{"catchup.go", "collectV2ForCatchUp"},
++	} {
++		t.Run(tt.fn, func(t *testing.T) {
++			fset := token.NewFileSet()
++			file, err := parser.ParseFile(fset, tt.file, nil, 0)
++			require.NoError(t, err)
++
++			var fn *ast.FuncDecl
++			for _, d := range file.Decls {
++				if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == tt.fn {
++					fn = f
++				}
++			}
++			require.NotNil(t, fn)
++
++			var gate token.Pos
++			var firstCandidateWork token.Pos
++			ast.Inspect(fn.Body, func(n ast.Node) bool {
++				switch n := n.(type) {
++				case *ast.IfStmt:
++					not, ok := n.Cond.(*ast.UnaryExpr)
++					if !ok || not.Op != token.NOT || len(n.Body.List) != 1 {
++						return true
++					}
++					call, ok := not.X.(*ast.CallExpr)
++					branch, isBranch := n.Body.List[0].(*ast.BranchStmt)
++					if ok && isBranch && branch.Tok == token.CONTINUE && selectorName(call) == "admitMessage" {
++						gate = n.Pos()
++					}
++				case *ast.CallExpr:
++					switch selectorName(n) {
++					case "buildCandidate", "handleCandidateError":
++						if firstCandidateWork == 0 || n.Pos() < firstCandidateWork {
++							firstCandidateWork = n.Pos()
++						}
++					}
++				}
++				return true
++			})
++			require.NotZero(t, gate, "the admitMessage gate is missing")
++			require.NotZero(t, firstCandidateWork)
++			assert.Less(t, int(gate), int(firstCandidateWork), "the gate must come before any candidate work")
++		})
++	}
++}
++
++func selectorName(call *ast.CallExpr) string {
++	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
++		return sel.Sel.Name
++	}
++	return ""
++}
+diff --git a/relayer/relays/ethereum-v3/profitability.go b/relayer/relays/ethereum-v3/profitability.go
+index ca8f13cb..4ee2d1f9 100644
+--- a/relayer/relays/ethereum-v3/profitability.go
++++ b/relayer/relays/ethereum-v3/profitability.go
+@@ -96,7 +96,7 @@ func (r *Relay) staticRewardWei(ev *contracts.GatewayOutboundMessageAccepted) *b
+ // floor is skipped here: add_tip is only in the estimator's V2RewardWei, so a
+ // RelayerFee-only check would drop tipped messages until max-delay.
+ func (r *Relay) passesStaticFeeFloor(ev *contracts.GatewayOutboundMessageAccepted) bool {
+-	if r.minMessageRelayerFee.Sign() <= 0 {
++	if r.isOurMessage(ev) || r.minMessageRelayerFee.Sign() <= 0 {
+ 		return true
+ 	}
+ 	if r.gasEstimator.Enabled() {
+@@ -116,6 +116,9 @@ func (r *Relay) checkV2Profitable(
+ 	source string,
+ 	currentBlock uint64,
+ ) (beneficiaries []string, econ *v2Economics, ok bool, err error) {
++	if r.isOurMessage(ev) {
++		return r.priceOurMessage(ctx, ev, inboundMsg, source)
++	}
+ 	pastDelay := v2PastMaxDelay(ev, currentBlock)
+ 	if !r.gasEstimator.Enabled() {
+ 		if !r.passesStaticFeeFloor(ev) {
+@@ -213,6 +216,7 @@ func (r *Relay) pruneDeferred(pending []uint64) {
+ 	for _, n := range pending {
+ 		keep[n] = struct{}{}
+ 	}
++	r.forgetOurNonces(pending)
+ 	r.deferredMu.Lock()
+ 	defer r.deferredMu.Unlock()
+ 	for n := range r.deferredV2 {
+diff --git a/web/packages/test/config/beefy-v3.json b/web/packages/test/config/beefy-v3.json
+new file mode 100644
+index 00000000..7d0fefdf
+--- /dev/null
++++ b/web/packages/test/config/beefy-v3.json
+@@ -0,0 +1,19 @@
++{
++  "source": {
++    "polkadot": {
++      "endpoint": "ws://127.0.0.1:9944",
++      "heartbeat-secs": 45
++    }
++  },
++  "sink": {
++    "ethereum": {
++      "endpoint": "ws://127.0.0.1:8546",
++      "heartbeat-secs": 600
++    },
++    "contracts": {
++      "BeefyClient": null,
++      "Gateway": null,
++      "Multicall3": "0xcA11bde05977b3631167028862bE2a173976CA11"
++    }
++  }
++}
+diff --git a/web/packages/test/config/ethereum-v3-gc.json b/web/packages/test/config/ethereum-v3-gc.json
+new file mode 100644
+index 00000000..6696b5be
+--- /dev/null
++++ b/web/packages/test/config/ethereum-v3-gc.json
+@@ -0,0 +1,61 @@
++{
++  "source": {
++    "ethereum": {
++      "endpoint": "ws://127.0.0.1:8546"
++    },
++    "contracts": {
++      "Gateway": null
++    },
++    "channel-id": "",
++    "beacon": {
++      "endpoint": "http://127.0.0.1:9596",
++      "stateServiceEndpoint": "http://127.0.0.1:8080",
++      "spec": {
++        "syncCommitteeSize": 512,
++        "slotsInEpoch": 32,
++        "epochsPerSyncCommitteePeriod": 256,
++        "forkVersions": {
++          "deneb": 0,
++          "electra": 0,
++          "fulu": 0,
++          "gloas": 0
++        }
++      },
++      "datastore": {
++        "location": "/tmp/snowbridge-v2/beaconstore-v3",
++        "maxEntries": 100
++      }
++    }
++  },
++  "sink": {
++    "parachain": {
++      "endpoint": "ws://127.0.0.1:11144",
++      "maxWatchedExtrinsics": 8,
++      "headerRedundancy": 20,
++      "heartbeat-secs": 45
++    },
++    "ss58Prefix": 42
++  },
++  "min-message-relayer-fee-wei": "0",
++  "tip": 0,
++  "ignoreNonces": [],
++  "deadNoncesPath": "/tmp/snowbridge-v2/ethereum-v3-gc-dead-nonces.json",
++  "ofac": {
++    "enabled": false,
++    "apiKey": ""
++  },
++  "gasEstimation": {
++    "enabled": false,
++    "binary-path": "../../../gas-estimator/target/release/snowbridge-gas-estimator",
++    "asset-hub-url": "ws://127.0.0.1:12144",
++    "bridge-hub-url": "ws://127.0.0.1:11144",
++    "service-fee-recipients": []
++  },
++  "getcash": {
++    "enabled": true,
++    "registry": "0x0000000000000000000000000000000000000000",
++    "routers": ["0x0000000000000000000000000000000000000000"],
++    "registry-deploy-block": 0,
++    "registry-log-chunk": 10000
++  }
++}
+diff --git a/web/packages/test/config/ethereum-v3.json b/web/packages/test/config/ethereum-v3.json
+new file mode 100644
+index 00000000..9d3d1c09
+--- /dev/null
++++ b/web/packages/test/config/ethereum-v3.json
+@@ -0,0 +1,54 @@
++{
++  "source": {
++    "ethereum": {
++      "endpoint": "ws://127.0.0.1:8546"
++    },
++    "contracts": {
++      "Gateway": null
++    },
++    "channel-id": "",
++    "beacon": {
++      "endpoint": "http://127.0.0.1:9596",
++      "stateServiceEndpoint": "http://127.0.0.1:8080",
++      "spec": {
++        "syncCommitteeSize": 512,
++        "slotsInEpoch": 32,
++        "epochsPerSyncCommitteePeriod": 256,
++        "forkVersions": {
++          "deneb": 0,
++          "electra": 0,
++          "fulu": 0,
++          "gloas": 0
++        }
++      },
++      "datastore": {
++        "location": "/tmp/snowbridge-v2/beaconstore-v3",
++        "maxEntries": 100
++      }
++    }
++  },
++  "sink": {
++    "parachain": {
++      "endpoint": "ws://127.0.0.1:11144",
++      "maxWatchedExtrinsics": 8,
++      "headerRedundancy": 20,
++      "heartbeat-secs": 45
++    },
++    "ss58Prefix": 42
++  },
++  "min-message-relayer-fee-wei": "0",
++  "tip": 0,
++  "ignoreNonces": [],
++  "deadNoncesPath": "/tmp/snowbridge-v2/ethereum-v3-dead-nonces.json",
++  "ofac": {
++    "enabled": false,
++    "apiKey": ""
++  },
++  "gasEstimation": {
++    "enabled": false,
++    "binary-path": "../../../gas-estimator/target/release/snowbridge-gas-estimator",
++    "asset-hub-url": "ws://127.0.0.1:12144",
++    "bridge-hub-url": "ws://127.0.0.1:11144",
++    "service-fee-recipients": []
++  }
++}
+diff --git a/web/packages/test/config/genesis.json b/web/packages/test/config/genesis.json
+index b59cb4ee..59611ab9 100644
+--- a/web/packages/test/config/genesis.json
++++ b/web/packages/test/config/genesis.json
+@@ -76,6 +76,10 @@
+     },
+     "0xACbd24742b87c34dED607FB87b22401B2Ede167E": {
+       "balance": "100000000000000000000"
++    },
++    "cA11bde05977b3631167028862bE2a173976CA11": {
++      "balance": "0x0",
++      "code": "0x6080604052600436106100f35760003560e01c80634d2301cc1161008a578063a8b0574e11610059578063a8b0574e1461025a578063bce38bd714610275578063c3077fa914610288578063ee82ac5e1461029b57600080fd5b80634d2301cc146101ec57806372425d9d1461022157806382ad56cb1461023457806386d516e81461024757600080fd5b80633408e470116100c65780633408e47014610191578063399542e9146101a45780633e64a696146101c657806342cbb15c146101d957600080fd5b80630f28c97d146100f8578063174dea711461011a578063252dba421461013a57806327e86d6e1461015b575b600080fd5b34801561010457600080fd5b50425b6040519081526020015b60405180910390f35b61012d610128366004610a85565b6102ba565b6040516101119190610bbe565b61014d610148366004610a85565b6104ef565b604051610111929190610bd8565b34801561016757600080fd5b50437fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0140610107565b34801561019d57600080fd5b5046610107565b6101b76101b2366004610c60565b610690565b60405161011193929190610cba565b3480156101d257600080fd5b5048610107565b3480156101e557600080fd5b5043610107565b3480156101f857600080fd5b50610107610207366004610ce2565b73ffffffffffffffffffffffffffffffffffffffff163190565b34801561022d57600080fd5b5044610107565b61012d610242366004610a85565b6106ab565b34801561025357600080fd5b5045610107565b34801561026657600080fd5b50604051418152602001610111565b61012d610283366004610c60565b61085a565b6101b7610296366004610a85565b610a1a565b3480156102a757600080fd5b506101076102b6366004610d18565b4090565b60606000828067ffffffffffffffff8111156102d8576102d8610d31565b60405190808252806020026020018201604052801561031e57816020015b6040805180820190915260008152606060208201528152602001906001900390816102f65790505b5092503660005b8281101561047757600085828151811061034157610341610d60565b6020026020010151905087878381811061035d5761035d610d60565b905060200281019061036f9190610d8f565b6040810135958601959093506103886020850185610ce2565b73ffffffffffffffffffffffffffffffffffffffff16816103ac6060870187610dcd565b6040516103ba929190610e32565b60006040518083038185875af1925050503d80600081146103f7576040519150601f19603f3d011682016040523d82523d6000602084013e6103fc565b606091505b50602080850191909152901515808452908501351761046d577f08c379a000000000000000000000000000000000000000000000000000000000600052602060045260176024527f4d756c746963616c6c333a2063616c6c206661696c656400000000000000000060445260846000fd5b5050600101610325565b508234146104e6576040517f08c379a000000000000000000000000000000000000000000000000000000000815260206004820152601a60248201527f4d756c746963616c6c333a2076616c7565206d69736d6174636800000000000060448201526064015b60405180910390fd5b50505092915050565b436060828067ffffffffffffffff81111561050c5761050c610d31565b60405190808252806020026020018201604052801561053f57816020015b606081526020019060019003908161052a5790505b5091503660005b8281101561068657600087878381811061056257610562610d60565b90506020028101906105749190610e42565b92506105836020840184610ce2565b73ffffffffffffffffffffffffffffffffffffffff166105a66020850185610dcd565b6040516105b4929190610e32565b6000604051808303816000865af19150503d80600081146105f1576040519150601f19603f3d011682016040523d82523d6000602084013e6105f6565b606091505b5086848151811061060957610609610d60565b602090810291909101015290508061067d576040517f08c379a000000000000000000000000000000000000000000000000000000000815260206004820152601760248201527f4d756c746963616c6c333a2063616c6c206661696c656400000000000000000060448201526064016104dd565b50600101610546565b5050509250929050565b43804060606106a086868661085a565b905093509350939050565b6060818067ffffffffffffffff8111156106c7576106c7610d31565b60405190808252806020026020018201604052801561070d57816020015b6040805180820190915260008152606060208201528152602001906001900390816106e55790505b5091503660005b828110156104e657600084828151811061073057610730610d60565b6020026020010151905086868381811061074c5761074c610d60565b905060200281019061075e9190610e76565b925061076d6020840184610ce2565b73ffffffffffffffffffffffffffffffffffffffff166107906040850185610dcd565b60405161079e929190610e32565b6000604051808303816000865af19150503d80600081146107db576040519150601f19603f3d011682016040523d82523d6000602084013e6107e0565b606091505b506020808401919091529015158083529084013517610851577f08c379a000000000000000000000000000000000000000000000000000000000600052602060045260176024527f4d756c746963616c6c333a2063616c6c206661696c656400000000000000000060445260646000fd5b50600101610714565b6060818067ffffffffffffffff81111561087657610876610d31565b6040519080825280602002602001820160405280156108bc57816020015b6040805180820190915260008152606060208201528152602001906001900390816108945790505b5091503660005b82811015610a105760008482815181106108df576108df610d60565b602002602001015190508686838181106108fb576108fb610d60565b905060200281019061090d9190610e42565b925061091c6020840184610ce2565b73ffffffffffffffffffffffffffffffffffffffff1661093f6020850185610dcd565b60405161094d929190610e32565b6000604051808303816000865af19150503d806000811461098a576040519150601f19603f3d011682016040523d82523d6000602084013e61098f565b606091505b506020830152151581528715610a07578051610a07576040517f08c379a000000000000000000000000000000000000000000000000000000000815260206004820152601760248201527f4d756c746963616c6c333a2063616c6c206661696c656400000000000000000060448201526064016104dd565b506001016108c3565b5050509392505050565b6000806060610a2b60018686610690565b919790965090945092505050565b60008083601f840112610a4b57600080fd5b50813567ffffffffffffffff811115610a6357600080fd5b6020830191508360208260051b8501011115610a7e57600080fd5b9250929050565b60008060208385031215610a9857600080fd5b823567ffffffffffffffff811115610aaf57600080fd5b610abb85828601610a39565b90969095509350505050565b6000815180845260005b81811015610aed57602081850181015186830182015201610ad1565b81811115610aff576000602083870101525b50601f017fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe0169290920160200192915050565b600082825180855260208086019550808260051b84010181860160005b84811015610bb1578583037fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe001895281518051151584528401516040858501819052610b9d81860183610ac7565b9a86019a9450505090830190600101610b4f565b5090979650505050505050565b602081526000610bd16020830184610b32565b9392505050565b600060408201848352602060408185015281855180845260608601915060608160051b870101935082870160005b82811015610c52577fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa0888703018452610c40868351610ac7565b95509284019290840190600101610c06565b509398975050505050505050565b600080600060408486031215610c7557600080fd5b83358015158114610c8557600080fd5b9250602084013567ffffffffffffffff811115610ca157600080fd5b610cad86828701610a39565b9497909650939450505050565b838152826020820152606060408201526000610cd96060830184610b32565b95945050505050565b600060208284031215610cf457600080fd5b813573ffffffffffffffffffffffffffffffffffffffff81168114610bd157600080fd5b600060208284031215610d2a57600080fd5b5035919050565b7f4e487b7100000000000000000000000000000000000000000000000000000000600052604160045260246000fd5b7f4e487b7100000000000000000000000000000000000000000000000000000000600052603260045260246000fd5b600082357fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff81833603018112610dc357600080fd5b9190910192915050565b60008083357fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe1843603018112610e0257600080fd5b83018035915067ffffffffffffffff821115610e1d57600080fd5b602001915036819003821315610a7e57600080fd5b8183823760009101908152919050565b600082357fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc1833603018112610dc357600080fd5b600082357fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa1833603018112610dc357600080fdfea2646970667358221220bb2b5c71a328032f97c676ae39a1ec2148d3e5d6f73d95e9b17910152d61f16264736f6c634300080c0033"
+     }
+   }
+ }
+diff --git a/web/packages/test/config/parachain-v3.json b/web/packages/test/config/parachain-v3.json
+new file mode 100644
+index 00000000..8199f52e
+--- /dev/null
++++ b/web/packages/test/config/parachain-v3.json
+@@ -0,0 +1,37 @@
++{
++  "source": {
++    "ethereum": {
++      "endpoint": "ws://127.0.0.1:8546",
++      "heartbeat-secs": 600
++    },
++    "polkadot": {
++      "endpoint": "ws://127.0.0.1:9944",
++      "heartbeat-secs": 45
++    },
++    "parachain": {
++      "endpoint": "ws://127.0.0.1:11144",
++      "heartbeat-secs": 45
++    },
++    "contracts": {
++      "BeefyClient": null,
++      "Gateway": null
++    }
++  },
++  "sink": {
++    "ethereum": {
++      "endpoint": "http://127.0.0.1:8545",
++      "pending-tx-timeout-secs": 180
++    },
++    "contracts": {
++      "Gateway": null,
++      "Multicall3": "0xcA11bde05977b3631167028862bE2a173976CA11"
++    }
++  },
++  "reward-address": "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d",
++  "ofac": {
++    "enabled": false,
++    "apiKey": ""
++  },
++  "ignoreNonces": [],
++  "deadNoncesPath": "/tmp/snowbridge-v2/parachain-v3-dead-nonces.json"
++}
+diff --git a/web/packages/test/scripts/deploy-ethereum.sh b/web/packages/test/scripts/deploy-ethereum.sh
+index a8ca56ed..a9cb16ab 100755
+--- a/web/packages/test/scripts/deploy-ethereum.sh
++++ b/web/packages/test/scripts/deploy-ethereum.sh
+@@ -98,6 +98,7 @@ start_lodestar() {
+         --params.DENEB_FORK_EPOCH 0 \
+         --params.ELECTRA_FORK_EPOCH 0 \
+         --params.FULU_FORK_EPOCH 0 \
++        --params.GLOAS_FORK_EPOCH 18446744073709551615 \
+         --rest.namespace="*" \
+         --jwt-secret $config_dir/jwtsecret \
+         --chain.archiveStateEpochFrequency 1 \
+diff --git a/web/packages/test/scripts/start-relayer.sh b/web/packages/test/scripts/start-relayer.sh
+index f2736307..b3e56d78 100755
+--- a/web/packages/test/scripts/start-relayer.sh
++++ b/web/packages/test/scripts/start-relayer.sh
+@@ -4,227 +4,72 @@ set -eu
+ source scripts/set-env.sh
+ 
+ config_relayer() {
+-    local electra_forked_epoch=0
+-    local fulu_forked_epoch=0
+-    local state_service_endpoint="http://127.0.0.1:8080"
+-    # Configure beefy relay
+-    jq \
+-        --arg k1 "$(address_for BeefyClient)" \
+-        --arg k2 "$(address_for GatewayProxy)" \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg eth_gas_limit $eth_gas_limit \
+-        '
+-      .sink.contracts.BeefyClient = $k1
+-    | .sink.contracts.Gateway = $k2
+-    | .sink.ethereum.endpoint = $eth_endpoint_ws
+-    | .sink.ethereum."gas-limit" = $eth_gas_limit
+-    ' \
+-        config/beefy-relay.json >$output_dir/beefy-relay.json
+-
+-    # Configure parachain relay v1
+-    jq \
+-        --arg k1 "$(address_for GatewayProxy)" \
+-        --arg k2 "$(address_for BeefyClient)" \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg eth_writer_endpoint $eth_writer_endpoint \
+-        --arg eth_gas_limit $eth_gas_limit \
+-        --arg channelID $ASSET_HUB_CHANNEL_ID \
+-        '
+-      .source.contracts.Gateway = $k1
+-    | .source.contracts.BeefyClient = $k2
+-    | .sink.contracts.Gateway = $k1
+-    | .source.ethereum.endpoint = $eth_endpoint_ws
+-    | .sink.ethereum.endpoint = $eth_writer_endpoint
+-    | .sink.ethereum."gas-limit" = $eth_gas_limit
+-    | .source."channel-id" = $channelID
+-    ' \
+-        config/parachain-relay-v1.json >$output_dir/parachain-relay-v1.json
++    local gateway="$(address_for GatewayProxy)"
++    local beefy_client="$(address_for BeefyClient)"
+ 
+-    # Configure parachain relay (primary governance)
+     jq \
+-        --arg k1 "$(address_for GatewayProxy)" \
+-        --arg k2 "$(address_for BeefyClient)" \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg eth_writer_endpoint $eth_writer_endpoint \
+-        --arg channelID $PRIMARY_GOVERNANCE_CHANNEL_ID \
+-        --arg eth_gas_limit $eth_gas_limit \
++        --arg gateway "$gateway" \
++        --arg beefy_client "$beefy_client" \
++        --arg eth_endpoint_ws "$eth_endpoint_ws" \
+         '
+-      .source.contracts.Gateway = $k1
+-    | .source.contracts.BeefyClient = $k2
+-    | .sink.contracts.Gateway = $k1
+-    | .source.ethereum.endpoint = $eth_endpoint_ws
+-    | .sink.ethereum.endpoint = $eth_writer_endpoint
+-    | .sink.ethereum."gas-limit" = $eth_gas_limit
+-    | .source."channel-id" = $channelID
+-    ' \
+-        config/parachain-relay-v1.json >$output_dir/parachain-relay-bridge-hub-01.json
+-
+-    # Configure parachain relay (secondary governance)
+-    jq \
+-        --arg k1 "$(address_for GatewayProxy)" \
+-        --arg k2 "$(address_for BeefyClient)" \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg eth_writer_endpoint $eth_writer_endpoint \
+-        --arg channelID $SECONDARY_GOVERNANCE_CHANNEL_ID \
+-        --arg eth_gas_limit $eth_gas_limit \
+-        '
+-      .source.contracts.Gateway = $k1
+-    | .source.contracts.BeefyClient = $k2
+-    | .sink.contracts.Gateway = $k1
+-    | .source.ethereum.endpoint = $eth_endpoint_ws
+-    | .sink.ethereum.endpoint = $eth_writer_endpoint
+-    | .sink.ethereum."gas-limit" = $eth_gas_limit
+-    | .source."channel-id" = $channelID
++      .sink.contracts.BeefyClient = $beefy_client
++    | .sink.contracts.Gateway = $gateway
++    | .sink.ethereum.endpoint = $eth_endpoint_ws
+     ' \
+-        config/parachain-relay-v1.json >$output_dir/parachain-relay-bridge-hub-02.json
++        config/beefy-v3.json >"$output_dir/beefy-v3.json"
+ 
+-    # Configure parachain relay v2
+     jq \
+-        --arg k1 "$(address_for GatewayProxy)" \
+-        --arg k2 "$(address_for BeefyClient)" \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg eth_writer_endpoint $eth_writer_endpoint \
+-        --arg eth_gas_limit $eth_gas_limit \
++        --arg gateway "$gateway" \
++        --arg beefy_client "$beefy_client" \
++        --arg eth_endpoint_ws "$eth_endpoint_ws" \
++        --arg eth_writer_endpoint "$eth_writer_endpoint" \
+         '
+-      .source.contracts.Gateway = $k1
+-    | .source.contracts.BeefyClient = $k2
+-    | .sink.contracts.Gateway = $k1
++      .source.contracts.Gateway = $gateway
++    | .source.contracts.BeefyClient = $beefy_client
+     | .source.ethereum.endpoint = $eth_endpoint_ws
++    | .sink.contracts.Gateway = $gateway
+     | .sink.ethereum.endpoint = $eth_writer_endpoint
+-    | .sink.ethereum."gas-limit" = $eth_gas_limit
+     ' \
+-        config/parachain-relay.json >$output_dir/parachain-relay.json
++        config/parachain-v3.json >"$output_dir/parachain-v3.json"
+ 
+-    # Configure fisherman relay
+     jq \
+-        --arg k2 "$(address_for BeefyClient)" \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg eth_writer_endpoint $eth_writer_endpoint \
+-        --arg eth_gas_limit $eth_gas_limit \
++        --arg gateway "$gateway" \
++        --arg eth_endpoint_ws "$eth_endpoint_ws" \
++        --arg beacon_endpoint_http "$beacon_endpoint_http" \
+         '
+-      .source.contracts.BeefyClient = $k2
++      .source.contracts.Gateway = $gateway
+     | .source.ethereum.endpoint = $eth_endpoint_ws
++    | .source.beacon.endpoint = $beacon_endpoint_http
+     ' \
+-        config/fisherman-relay.json >$output_dir/fisherman-relay.json
+-
+-    # Configure beacon relay
+-    jq \
+-        --arg beacon_endpoint_http $beacon_endpoint_http \
+-        --arg state_service_endpoint $state_service_endpoint \
+-        --argjson electra_forked_epoch $electra_forked_epoch \
+-        --argjson fulu_forked_epoch $fulu_forked_epoch \
+-        '
+-      .source.beacon.endpoint = $beacon_endpoint_http
+-    | .source.beacon.stateServiceEndpoint = $state_service_endpoint
+-    | .source.beacon.spec.forkVersions.electra = $electra_forked_epoch
+-    | .source.beacon.spec.forkVersions.fulu = $fulu_forked_epoch
+-    ' \
+-        config/beacon-relay.json >$output_dir/beacon-relay.json
+-
+-    # Configure execution relay v1
+-    jq \
+-        --arg eth_endpoint_ws $eth_endpoint_ws \
+-        --arg k1 "$(address_for GatewayProxy)" \
+-        --arg state_service_endpoint $state_service_endpoint \
+-        --argjson electra_forked_epoch $electra_forked_epoch \
+-        --argjson fulu_forked_epoch $fulu_forked_epoch \
+-        --arg channelID $ASSET_HUB_CHANNEL_ID \
+-        '
+-      .source.ethereum.endpoint = $eth_endpoint_ws
+-    | .source.contracts.Gateway = $k1
+-    | .source.beacon.stateServiceEndpoint = $state_service_endpoint
+-    | .source.beacon.spec.forkVersions.electra = $electra_forked_epoch
+-    | .source.beacon.spec.forkVersions.fulu = $fulu_forked_epoch
+-    | .source."channel-id" = $channelID
+-
+-    ' \
+-        config/execution-relay-v1.json >$output_dir/execution-relay-v1.json
+-
+-    # Configure execution relay v2
+-      jq \
+-          --arg eth_endpoint_ws $eth_endpoint_ws \
+-          --arg k1 "$(address_for GatewayProxy)" \
+-          --arg state_service_endpoint $state_service_endpoint \
+-          --argjson electra_forked_epoch $electra_forked_epoch \
+-          --argjson fulu_forked_epoch $fulu_forked_epoch \
+-          '
+-        .source.ethereum.endpoint = $eth_endpoint_ws
+-      | .source.contracts.Gateway = $k1
+-      | .source.beacon.spec.forkVersions.electra = $electra_forked_epoch
+-      | .source.beacon.spec.forkVersions.fulu = $fulu_forked_epoch
+-
+-      ' \
+-          config/execution-relay.json >$output_dir/execution-relay.json
+-
+-    # Configure reward relay
+-      jq \
+-          --arg eth_endpoint_ws $eth_endpoint_ws \
+-          --arg k1 "$(address_for GatewayProxy)" \
+-          --arg state_service_endpoint $state_service_endpoint \
+-          --argjson electra_forked_epoch $electra_forked_epoch \
+-          --argjson fulu_forked_epoch $fulu_forked_epoch \
+-          '
+-        .source.ethereum.endpoint = $eth_endpoint_ws
+-      | .source.contracts.Gateway = $k1
+-      | .source.beacon.stateServiceEndpoint = $state_service_endpoint
+-      | .source.beacon.spec.forkVersions.electra = $electra_forked_epoch
+-      | .source.beacon.spec.forkVersions.fulu = $fulu_forked_epoch
+-
+-      ' \
+-          config/reward-relay.json >$output_dir/reward-relay.json
++        config/ethereum-v3.json >"$output_dir/ethereum-v3.json"
+ }
+ 
+ start_relayer() {
+     echo "Starting relay services"
+-    # Launch beefy relay
++
++    # BEEFY light client updates on Ethereum (validator set handovers)
+     (
+         : >"$output_dir"/beefy-relay.log
+         while :; do
+             echo "Starting beefy relay at $(date)"
+             "${relayer}" run beefy \
+-                --config "$output_dir/beefy-relay.json" \
++                --config "$output_dir/beefy-v3.json" \
+                 --ethereum.private-key $beefy_relay_eth_key \
+                 >>"$output_dir"/beefy-relay.log 2>&1 || true
+             sleep 20
+         done
+     ) &
+ 
+-    # Launch parachain relay v1
+-    (
+-        : >"$output_dir"/parachain-relay-v1.log
+-        while :; do
+-            echo "Starting parachain relay v1 at $(date)"
+-            "${relayer}" run parachain \
+-                --config "$output_dir/parachain-relay-v1.json" \
+-                --ethereum.private-key $parachain_relay_primary_gov_eth_key \
+-                >>"$output_dir"/parachain-relay-v1.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch parachain relay v2
++    # Polkadot to Ethereum messages
+     (
+-        : >"$output_dir"/parachain-relay-v2.log
++        : >"$output_dir"/parachain-relay-v3.log
+         while :; do
+-            echo "Starting parachain relay v2 at $(date)"
+-            "${relayer}" run parachain-v2 \
+-                --config "$output_dir/parachain-relay.json" \
++            echo "Starting parachain relay v3 at $(date)"
++            "${relayer}" run parachain-v3 \
++                --config "$output_dir/parachain-v3.json" \
++                --beefy.config "$output_dir/beefy-v3.json" \
+                 --ethereum.private-key $parachain_relay_assethub_eth_key \
+-                >>"$output_dir"/parachain-relay-v2.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch equivocation fisherman
+-    (
+-        : >"$output_dir"/equivocation-fisherman.log
+-        while :; do
+-            echo "Starting equivocation fisherman at $(date)"
+-            "${relayer}" run fisherman \
+-                --config "$output_dir/fisherman-relay.json" \
+-                --ethereum.private-key $parachain_relay_primary_gov_eth_key \
+-                --substrate.private-key "//ExecutionRelayAssetHub" \
+-                >>"$output_dir"/equivocation-fisherman.log 2>&1 || true
++                >>"$output_dir"/parachain-relay-v3.log 2>&1 || true
+             sleep 20
+         done
+     ) &
+@@ -232,80 +77,15 @@ start_relayer() {
+     # Wait for beacon state service to be ready
+     sleep 5
+ 
+-    # Launch beacon relay
+-    (
+-        : >"$output_dir"/beacon-relay.log
+-        while :; do
+-            echo "Starting beacon relay at $(date)"
+-            "${relayer}" run beacon \
+-                --config $output_dir/beacon-relay.json \
+-                --substrate.private-key "//BeaconRelay" \
+-                >>"$output_dir"/beacon-relay.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch ethereum relay v1
+-    (
+-        : >$output_dir/ethereum-relay-v1.log
+-        while :; do
+-            echo "Starting ethereum relay v1 at $(date)"
+-            "${relayer}" run ethereum \
+-                --config $output_dir/execution-relay-v1.json \
+-                --substrate.private-key "//ExecutionRelayAssetHub" \
+-                >>"$output_dir"/ethereum-relay-v1.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch ethereum relay v2
++    # Ethereum to Polkadot messages, including beacon light client updates
+     (
+-        : >$output_dir/ethereum-relay-v2.log
++        : >"$output_dir"/ethereum-relay-v3.log
+         while :; do
+-            echo "Starting ethereum relay v2 at $(date)"
+-            "${relayer}" run ethereum-v2 \
+-                --config $output_dir/execution-relay.json \
++            echo "Starting ethereum relay v3 at $(date)"
++            "${relayer}" run ethereum-v3 \
++                --config "$output_dir/ethereum-v3.json" \
+                 --substrate.private-key "//ExecutionRelayAssetHub" \
+-                >>"$output_dir"/ethereum-relay-v2.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch reward relay
+-    (
+-        : >$output_dir/reward-relay.log
+-        while :; do
+-            echo "Starting reward relay at $(date)"
+-            "${relayer}" run reward \
+-                --config $output_dir/reward-relay.json \
+-                --substrate.private-key "//ExecutionRelayAssetHub" \
+-                >>"$output_dir"/reward-relay.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch parachain relay for bridgehub (primary governance)
+-    (
+-        : >"$output_dir"/parachain-relay-bridge-hub-01.log
+-        while :; do
+-            echo "Starting parachain-relay (primary governance) at $(date)"
+-            "${relayer}" run parachain \
+-                --config "$output_dir/parachain-relay-bridge-hub-01.json" \
+-                --ethereum.private-key $parachain_relay_primary_gov_eth_key \
+-                >>"$output_dir"/parachain-relay-bridge-hub-01.log 2>&1 || true
+-            sleep 20
+-        done
+-    ) &
+-
+-    # Launch parachain relay for bridgehub (secondary governance)
+-    (
+-        : >"$output_dir"/parachain-relay-bridge-hub-02.log
+-        while :; do
+-            echo "Starting parachain-relay (secondary governance) at $(date)"
+-            "${relayer}" run parachain \
+-                --config "$output_dir/parachain-relay-bridge-hub-02.json" \
+-                --ethereum.private-key $parachain_relay_secondary_gov_eth_key \
+-                >>"$output_dir"/parachain-relay-bridge-hub-02.log 2>&1 || true
++                >>"$output_dir"/ethereum-relay-v3.log 2>&1 || true
+             sleep 20
+         done
+     ) &

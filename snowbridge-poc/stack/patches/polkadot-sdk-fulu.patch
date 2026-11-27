@@ -1,0 +1,13 @@
+diff --git a/cumulus/parachains/runtimes/bridge-hubs/bridge-hub-westend/src/bridge_to_ethereum_config.rs b/cumulus/parachains/runtimes/bridge-hubs/bridge-hub-westend/src/bridge_to_ethereum_config.rs
+index fca8422ce36..d69830b1ec9 100644
+--- a/cumulus/parachains/runtimes/bridge-hubs/bridge-hub-westend/src/bridge_to_ethereum_config.rs
++++ b/cumulus/parachains/runtimes/bridge-hubs/bridge-hub-westend/src/bridge_to_ethereum_config.rs
+@@ -282,7 +282,7 @@ parameter_types! {
+ 		},
+ 		fulu: Fork {
+ 			version: hex!("06000000"),
+-			epoch: 5000000,
++			epoch: 0,
+ 		}
+ 	};
+ }

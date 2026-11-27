@@ -1,0 +1,72 @@
+{
+  "compact": [
+    {
+      "value": "0",
+      "hex": "0x00"
+    },
+    {
+      "value": "1",
+      "hex": "0x04"
+    },
+    {
+      "value": "63",
+      "hex": "0xfc"
+    },
+    {
+      "value": "64",
+      "hex": "0x0101"
+    },
+    {
+      "value": "16383",
+      "hex": "0xfdff"
+    },
+    {
+      "value": "16384",
+      "hex": "0x02000100"
+    },
+    {
+      "value": "1073741823",
+      "hex": "0xfeffffff"
+    },
+    {
+      "value": "1073741824",
+      "hex": "0x0300000040"
+    },
+    {
+      "value": "4294967295",
+      "hex": "0x03ffffffff"
+    },
+    {
+      "value": "4294967296",
+      "hex": "0x070000000001"
+    },
+    {
+      "value": "18446744073709551616",
+      "hex": "0x17000000000000000001"
+    },
+    {
+      "value": "1000000000000000000",
+      "hex": "0x13000064a7b3b6e00d"
+    },
+    {
+      "value": "340282366920938463463374607431768211455",
+      "hex": "0x33ffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "transfers": [
+    {
+      "chainId": "11155111",
+      "token": "0x54d6643762e46036b3448659791adaf554225541",
+      "amount": "1000000000000000000",
+      "account": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "message": "0x05040404020209079edaa802030054d6643762e46036b3448659791adaf5542255410013000064a7b3b6e00d000101001111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "chainId": "1",
+      "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+      "amount": "5",
+      "account": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "message": "0x0504040402020907040300dac17f958d2ee523a2206206994597c13d831ec7001400010100ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ]
+}

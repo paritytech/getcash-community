@@ -1,0 +1,6 @@
+.work/
+assethub/deployments/
+e2e/deployments/
+
+# the repository root ignores .env.*; the examples are tracked
+!.env.*.example

@@ -1,0 +1,21 @@
+{
+  "name": "getcash-poc-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "tsx src/deploy.ts",
+    "e2e": "tsx src/run.ts",
+    "relayer": "tsx src/relayer.ts",
+    "scenarios": "tsx src/scenarios.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "^2.58.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

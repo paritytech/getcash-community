@@ -1,0 +1,38 @@
+{
+  "name": "getcash-poc-assethub",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:contracts": "node scripts/build-contracts.mjs",
+    "test": "forge test",
+    "test:ts": "tsx --test test/ts/delivered.offline.test.ts test/ts/template.test.ts test/ts/precompile.test.ts",
+    "fixtures": "tsx src/fixtures.ts",
+    "facts": "tsx src/facts.ts",
+    "send": "tsx src/send.ts",
+    "claim": "tsx src/claim.ts",
+    "frontflow": "tsx src/frontflow.ts",
+    "template": "tsx src/template.ts",
+    "deploy": "node scripts/build-contracts.mjs && tsx src/deploy.ts",
+    "dryrun": "tsx src/dryrun.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@polkadot/api": "^16.5.0",
+    "@polkadot/keyring": "^14.0.0",
+    "@polkadot/types": "^16.5.6",
+    "@polkadot/util": "^14.0.0",
+    "@polkadot/util-crypto": "^14.0.0",
+    "viem": "^2.58.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

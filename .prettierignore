@@ -6,3 +6,4 @@ coverage/
 .papi/
 public/fonts/
 pnpm-lock.yaml
+snowbridge-poc/
