@@ -6,7 +6,7 @@ import { useSessionStore } from "../stores/session";
 import { networkIcon, tokenIcon } from "../utils/icons";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { isCryptoSourceId } from "./source-ids";
-import { effectiveSourceId, type TopUpRecord } from "./requests/model";
+import type { TopUpRecord } from "./requests/model";
 import { rowStateOf } from "./requests/views";
 import { listHeadline, listProgress } from "./timeline/list";
 import {
@@ -68,8 +68,6 @@ export function projectCryptoTopUps(
         ...(timeline === undefined ? {} : { timeline }),
         details: topUpDetails(record),
         ...quoteOf(record),
-        // The request's own identity, so a refund can be walked back to its key with no world.
-        request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
         state: rowStateOf(record, listHeadline("crypto", timeline).text, now),
       },
     ];

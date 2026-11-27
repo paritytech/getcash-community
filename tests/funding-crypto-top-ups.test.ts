@@ -126,7 +126,6 @@ describe("crypto top-up adapter", () => {
     );
     const [row] = projectCryptoTopUps([usdc], 200);
     expect(row?.id).toBe("crypto:usdc-assethub#9");
-    expect(row?.request).toEqual({ sourceId: "usdc-assethub", tradeN: 9 });
     expect(row?.details).toEqual({
       network: { label: "Polkadot", icon: "/icons/polkadot.svg" },
       token: { label: "USDC", icon: "/icons/usdc.svg" },

@@ -2047,10 +2047,6 @@ exports[`request list projection > projects the fixture records exactly as today
         "amount": "6.91",
         "symbol": "DOT",
       },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 4,
-      },
       "route": "crypto",
       "startedAt": 1746553200000,
       "state": {
@@ -2081,10 +2077,6 @@ exports[`request list projection > projects the fixture records exactly as today
         "amount": "4.32",
         "symbol": "DOT",
       },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 3,
-      },
       "route": "crypto",
       "startedAt": 1746552600000,
       "state": {
@@ -2114,10 +2106,6 @@ exports[`request list projection > projects the fixture records exactly as today
       "quote": {
         "amount": "0.87",
         "symbol": "DOT",
-      },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 2,
       },
       "route": "crypto",
       "startedAt": 1746550800000,
@@ -2180,10 +2168,6 @@ exports[`request list projection > projects the fixture records exactly as today
         "amount": "1.73",
         "symbol": "DOT",
       },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 1,
-      },
       "route": "crypto",
       "startedAt": 1746547200000,
       "state": {
@@ -2214,10 +2198,6 @@ exports[`request list projection > projects the fixture records exactly as today
       "quote": {
         "amount": "2.59",
         "symbol": "DOT",
-      },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 7,
       },
       "route": "crypto",
       "startedAt": 1746295200000,
@@ -2375,10 +2355,6 @@ exports[`request list projection > projects the fixture records with live status
         "amount": "6.91",
         "symbol": "DOT",
       },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 4,
-      },
       "route": "crypto",
       "startedAt": 1746553200000,
       "state": {
@@ -2440,10 +2416,6 @@ exports[`request list projection > projects the fixture records with live status
         "amount": "4.32",
         "symbol": "DOT",
       },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 3,
-      },
       "route": "crypto",
       "startedAt": 1746552600000,
       "state": {
@@ -2501,10 +2473,6 @@ exports[`request list projection > projects the fixture records with live status
       "quote": {
         "amount": "0.87",
         "symbol": "DOT",
-      },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 2,
       },
       "route": "crypto",
       "startedAt": 1746550800000,
@@ -2567,10 +2535,6 @@ exports[`request list projection > projects the fixture records with live status
         "amount": "1.73",
         "symbol": "DOT",
       },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 1,
-      },
       "route": "crypto",
       "startedAt": 1746547200000,
       "state": {
@@ -2601,10 +2565,6 @@ exports[`request list projection > projects the fixture records with live status
       "quote": {
         "amount": "2.59",
         "symbol": "DOT",
-      },
-      "request": {
-        "sourceId": "dot-assethub",
-        "tradeN": 7,
       },
       "route": "crypto",
       "startedAt": 1746295200000,

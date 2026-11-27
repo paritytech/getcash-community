@@ -70,9 +70,6 @@ export type FundingTopUp = Readonly<{
    *  not (yet) live in the store — and for the fee breakdown behind it, which is why the fee's
    *  own components ride along. */
   quote?: StoredQuote;
-  /** The request this top-up is, as the store names it, so a screen can reach the request without
-   *  a live world behind it. */
-  request?: Readonly<{ sourceId: string; tradeN: number }>;
   /** The rail's own id for the payment, as the buyer would quote it to support. Persisted with
    *  the request, so a journey opened long after the session that made it still carries it. */
   reference?: string;
