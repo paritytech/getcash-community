@@ -64,6 +64,7 @@ describe("lostRequestHandoff", () => {
       remoteFeeBuffer: "43",
       keepNativeForFees: "0",
       quotedDeposit: "12093512",
+      exactClaim: true,
     });
     expect(fees.estimateDotUsdFundingSizing).toHaveBeenCalledWith(
       expect.objectContaining({ settleAmount: 12_000_000n, probeAddress: "5Burner" }),

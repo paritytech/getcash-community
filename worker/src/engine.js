@@ -92,6 +92,9 @@ const saveJobs = () => store.save();
  *                                            // its claims under ids that key never used
  *   wayHome?: true,                          // that key's way home: a trap fails the job
  *                                            // rather than start a recovery no one funds
+ *   exactClaim?: true,                       // a direct deposit's top-up: CASH that lands less
+ *                                            // than EXACT_CLAIM_MARGIN over settleAmount is
+ *                                            // claimed as settleAmount (see claimSize)
  *   phase: "starting" | FundingStep | "recovering" | "failed",
  *                                            // await-native: the route's deposit asset
  *                                            // recovering: the CASH is in People's trap and
@@ -252,6 +255,8 @@ function newRecord(input, nowMs) {
     // A sale's key on its way home: no buyer stands behind it to pay a claim's fee, so a trap
     // fails the job for the sale to report instead of starting a recovery.
     ...(input.wayHome === true ? { wayHome: true } : {}),
+    // A direct deposit's top-up: its claim is held to the target (see claimSize).
+    ...(input.exactClaim === true ? { exactClaim: true } : {}),
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -485,15 +490,14 @@ const conversionPending = (record) => record.state.nonceAtSubmit !== null;
 const staleRegistering = (record) =>
   record.claim?.phase === "registering" && record.state.attempts > record.claim.sizedAt;
 
-/** The burner's CASH on People at the best block, floored to the claim unit: the run is done once
- *  the best block shows the arrival. */
-async function claimableOn(peoplePort, burner, what) {
-  const held = await bounded(
+/** The burner's CASH on People at the best block: the run is done once the best block shows the
+ *  arrival. */
+async function cashHeldOn(peoplePort, burner, what) {
+  return bounded(
     peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "best" }),
     DEFAULT_TICK_TIMEOUT_MS,
     what,
   );
-  return (held / CLAIM_UNIT) * CLAIM_UNIT;
 }
 
 /**
@@ -501,6 +505,9 @@ async function claimableOn(peoplePort, burner, what) {
  * registered amount is exactly what the host can mint.
  */
 export const CLAIM_UNIT = 10_000n;
+/** A job marked `exactClaim` whose CASH lands less than this over its target is credited the
+ *  target, and the rest stays on the burner. */
+const EXACT_CLAIM_MARGIN = 2n * CLAIM_UNIT;
 /** Timeout for one host top-up call. */
 const CLAIM_TIMEOUT_MS = 45_000;
 /** Minimum wait before a failed registration is retried. */
@@ -550,10 +557,34 @@ async function claimFor(record) {
   }
 }
 
-/** Sizes the burner on People and registers the attempt for what it holds, or settles. */
+/**
+ * What an attempt claims of `held`, the burner's CASH on People: every whole claim unit of it.
+ * A job marked `exactClaim` is held to its target, `settleAmount` rounded up to the claim unit,
+ * when `credited`, what earlier attempts minted, and `held` together reach the target and are
+ * less than EXACT_CLAIM_MARGIN over it: the attempt claims what the target still lacks, nothing
+ * once it is credited.
+ */
+export function claimSize({ held, settleAmount, credited, exactClaim }) {
+  const whole = (held / CLAIM_UNIT) * CLAIM_UNIT;
+  if (!exactClaim) return whole;
+  const target = roundUpToClaimUnit(settleAmount);
+  const total = credited + held;
+  if (total < target || total >= target + EXACT_CLAIM_MARGIN) return whole;
+  if (credited >= target) return 0n;
+  const lacking = roundUpToClaimUnit(target - credited);
+  return lacking < whole ? lacking : whole;
+}
+
+/** Sizes the attempt from the burner's CASH on People and registers it, or settles. */
 async function sizeClaim(record, burner, peoplePort) {
-  const amount = await claimableOn(peoplePort, burner, "burner CASH read");
+  const held = await cashHeldOn(peoplePort, burner, "burner CASH read");
   const claim = record.claim ?? null;
+  const amount = claimSize({
+    held,
+    settleAmount: asBig(record.settleAmount),
+    credited: asBig(claim?.credited ?? "0"),
+    exactClaim: record.exactClaim === true,
+  });
   if (amount === 0n) {
     // Nothing to claim after a part was credited settles for that part. Nothing at all, after
     // the host claimed none, only means the CASH left People with a discarded block and is on
@@ -714,15 +745,19 @@ const nextAttempt = (claim) => ({
   attempts: 0,
 });
 
-/** Nothing more will be registered: what the host minted is the claim, or there was none. */
+/** Nothing more will be registered: what the host minted is the claim, or there was none. A job
+ *  marked `exactClaim` that was credited its target is not short of anything. */
 function settleOnCredited(record) {
   const credited = record.claim.credited ?? "0";
   if (asBig(credited) > 0n) {
+    const inFull =
+      record.exactClaim === true &&
+      asBig(credited) >= roundUpToClaimUnit(asBig(record.settleAmount));
     record.claim = {
       ...record.claim,
       phase: "claimed",
       amount: credited,
-      partial: true,
+      ...(inFull ? {} : { partial: true }),
       at: Date.now(),
     };
     return;

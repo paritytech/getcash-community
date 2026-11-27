@@ -696,6 +696,12 @@ function askRounding(
   return added === 0n ? {} : { askRoundingNative: added.toString() };
 }
 
+/** The mark a direct deposit's hand-off carries, which holds its claim to the target (see
+ *  `WorkerHandoffPayload.exactClaim`). Nothing for any other top-up. */
+export function exactClaimOf(sourceId: string): Pick<WorkerHandoffPayload, "exactClaim"> {
+  return isManualSourceId(sourceId) ? { exactClaim: true } : {};
+}
+
 export interface CoinageSessionArgs {
   /** Settle amount in CASH base units (6 decimals). */
   amount: bigint;
@@ -868,6 +874,7 @@ export async function createMockCoinageSession(
     ...(args.nativeBudget === undefined
       ? {}
       : askRounding(args.sourceId, route, args.nativeBudget)),
+    ...exactClaimOf(args.sourceId),
     ...route,
   }));
   return {
@@ -1339,6 +1346,7 @@ export async function createCoinageSession(
       // The same live estimates that sized the deposit.
       ...handoffFees(sizing),
       ...askRounding(args.sourceId, args.route, budget),
+      ...exactClaimOf(args.sourceId),
       // The worker consumes the recorded tier and never re-decides.
       ...args.route,
     };

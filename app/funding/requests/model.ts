@@ -215,6 +215,10 @@ export interface WorkerHandoffPayload {
    *  `keepAliveNative`. Absent when nothing was added, as on a payload from before it was
    *  recorded. */
   askRoundingNative?: string;
+  /** A direct deposit only: the worker claims exactly `settleAmount` when the CASH that lands is
+   *  less than two cents over it, and every whole cent otherwise. Absent on any other top-up and
+   *  on a payload from before it was recorded, whose claims take every whole cent. */
+  exactClaim?: true;
   /** The conversion tier decided at quote time and frozen here; the worker consumes it and never
    *  re-decides. A payload from before tiers were recorded is a pool one. */
   tier: ConversionRoute["tier"];

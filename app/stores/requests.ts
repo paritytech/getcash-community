@@ -444,6 +444,7 @@ type WorkerJob = {
   tier?: unknown;
   external?: unknown;
   feeRate?: unknown;
+  exactClaim?: unknown;
   createdAt?: number;
   armedAt?: number;
 };
@@ -802,6 +803,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     remoteFeeBuffer,
     keepNativeForFees,
     ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
+    ...(job.exactClaim === true ? { exactClaim: true } : {}),
     ...route,
   };
 }
