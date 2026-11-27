@@ -5,13 +5,15 @@
 // there any balance is the deposit, since the provider delivers what was asked.
 
 import { describe, expect, it } from "vitest";
-import { DIRECT_SLIPPAGE_PCT, withHeadroom } from "@getsome/funding";
+import { TOKENS } from "@getsome/core";
+import { ceilToTwoDecimals, DIRECT_SLIPPAGE_PCT, withHeadroom } from "@getsome/funding";
 import { reduce } from "../app/funding/requests/reducer";
-import type {
-  AcceptedDepositTerms,
-  Observation,
-  TopUpRecord,
-  WorkerHandoffPayload,
+import {
+  directDepositGate,
+  type AcceptedDepositTerms,
+  type Observation,
+  type TopUpRecord,
+  type WorkerHandoffPayload,
 } from "../app/funding/requests/model";
 
 const ASKED = 10_093_533n;
@@ -131,6 +133,18 @@ describe("a Polkadot deposit", () => {
     expect(reduce(keptOpen, reading(quoted + keep - 1n, 10, null)).depositMismatch?.kind).toBe(
       "short",
     );
+
+    // Nor is what rounding the ask up added: the gate is the unrounded ask's.
+    const unrounded = BigInt(keptOpen.deposit!.amount);
+    const rounded = ceilToTwoDecimals(unrounded, TOKENS.PAS.decimals);
+    expect(rounded).toBeGreaterThan(unrounded);
+    const roundedUp = record("dot-assethub", {
+      asset: "DOT",
+      amount: rounded,
+      handoff: { ...keptOpen.handoff, askRoundingNative: (rounded - unrounded).toString() },
+    });
+    expect(directDepositGate(roundedUp)).toBe(directDepositGate(keptOpen));
+    expect(directDepositGate(roundedUp)).toBe(quoted + keep);
   });
 
   it("records a balance in another direct token as a wrong-token deposit", () => {

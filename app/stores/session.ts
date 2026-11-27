@@ -155,8 +155,8 @@ export interface ActiveFlowRecord {
   meldSubmittedAt?: number;
   /** Timestamp of the claim. A settled record is kept as history; nothing drives or resumes it. */
   settledAt?: number;
-  /** Amount claimed, in base units. The claim sweeps the whole burner, so this can exceed the
-   *  typed amount. */
+  /** Amount claimed, in base units. More than the target can land on the burner and be claimed,
+   *  so this can exceed the typed amount. */
   claimed?: string;
   /** Meld fiat requests only: the adapter's funding-request id, used to resume the status poll
    *  after a reload. */
@@ -2143,6 +2143,7 @@ export const useSessionStore = defineStore("session", () => {
       quotedDeposit: _q,
       tier: _t,
       keepAliveNative: _k,
+      askRoundingNative: _r,
       ...rest
     } = handoff;
     return {

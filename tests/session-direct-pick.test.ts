@@ -17,6 +17,8 @@ import { useSessionStore } from "../app/stores/session";
 const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 /** What the deposit must land on the burner, in PAS. */
 const BUDGET = 58_694_260_960n;
+/** The figure the deposit asks: the budget rounded up to two decimals. */
+const ASKED = 58_700_000_000n;
 /** What the next world sizes its budget at; a test moves it to stand for a rebuild on reopen. */
 const sizing = { budget: BUDGET };
 /** Set, the error the next world's rail refuses its quote with. */
@@ -147,7 +149,10 @@ describe("a hosted Polkadot pick", () => {
     });
     await session.start();
     expect(requests.phase).toBe("awaiting-deposit");
-    expect(requests.foregroundRecord).toMatchObject({ rail: { provider: "manual" } });
+    expect(requests.foregroundRecord).toMatchObject({
+      rail: { provider: "manual" },
+      deposit: { amount: ASKED.toString(), formatted: "5.87" },
+    });
     // A direct deposit has no refund leg.
     expect(session.refundAddress).toBeNull();
   });
@@ -169,6 +174,6 @@ describe("a hosted Polkadot pick", () => {
     const session = await quoteDot();
     await session.start();
     await session.fundFaucet();
-    expect(faucet.calls).toEqual([{ address: BURNER, amount: BUDGET, route: { tier: "pool" } }]);
+    expect(faucet.calls).toEqual([{ address: BURNER, amount: ASKED, route: { tier: "pool" } }]);
   });
 });

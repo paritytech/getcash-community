@@ -36,6 +36,7 @@ import {
   burnerSecretOf,
   createCoinageSession,
   DEFAULT_SOURCE_ID,
+  exactClaimOf,
   handoffFees,
   hostSafeEntropy,
   nextFreeTradeNumber,
@@ -227,6 +228,7 @@ export async function lostRequestHandoff(
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
     ...(await lostRequestFees(sourceId, tradeN, address, route, settleAmount)),
+    ...exactClaimOf(sourceId),
     ...route,
   };
 }

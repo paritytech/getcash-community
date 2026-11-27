@@ -60,7 +60,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
       await store.fetchQuote("Polkadot", "dotUSD");
       expect(store.quoteError).toBeNull();
       expect(store.quoted).toMatchObject({
-        send: "10",
+        send: "10.00",
         symbol: "dotUSD",
         sourceAsset: "dotUSD",
         sourceChain: "Polkadot",
@@ -101,7 +101,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
       expect(store.quoteError).toBeNull();
       // One to one in the fakes: the figure is exact, in the token picked.
       expect(store.quoted).toMatchObject({
-        send: "10",
+        send: "10.00",
         symbol: "USDC",
         sourceAsset: "USDC",
         sourceChain: "Polkadot",
@@ -118,7 +118,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         asset: "USDC",
         route: "crypto",
         rail: { provider: "manual" },
-        sourceAmount: "10",
+        sourceAmount: "10.00",
         sourceSymbol: "USDC",
       });
       expect(record.deposit?.assetSymbol).toBe("USDC");

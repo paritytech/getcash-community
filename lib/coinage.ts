@@ -36,6 +36,7 @@ import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import {
+  ceilToTwoDecimals,
   type ConversionRoute,
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
@@ -681,6 +682,26 @@ export function handoffFees(
   };
 }
 
+/** What rounding the ask up added to a native direct deposit sized at `budget`, as the hand-off
+ *  carries it. Nothing for any other deposit, whose gate does not read the ask. */
+function askRounding(
+  sourceId: SourceId,
+  route: ConversionRoute,
+  budget: bigint,
+): Pick<WorkerHandoffPayload, "askRoundingNative"> {
+  if (!isManualSourceId(sourceId) || route.tier !== "pool" || route.external !== undefined) {
+    return {};
+  }
+  const added = ceilToTwoDecimals(budget, depositTokenOf(route).decimals) - budget;
+  return added === 0n ? {} : { askRoundingNative: added.toString() };
+}
+
+/** The mark a direct deposit's hand-off carries, which holds its claim to the target (see
+ *  `WorkerHandoffPayload.exactClaim`). Nothing for any other top-up. */
+export function exactClaimOf(sourceId: string): Pick<WorkerHandoffPayload, "exactClaim"> {
+  return isManualSourceId(sourceId) ? { exactClaim: true } : {};
+}
+
 export interface CoinageSessionArgs {
   /** Settle amount in CASH base units (6 decimals). */
   amount: bigint;
@@ -850,6 +871,10 @@ export async function createMockCoinageSession(
     assetHubGenesis: "",
     peopleGenesis: "",
     ...handoffFees(fundingSizing),
+    ...(args.nativeBudget === undefined
+      ? {}
+      : askRounding(args.sourceId, route, args.nativeBudget)),
+    ...exactClaimOf(args.sourceId),
     ...route,
   }));
   return {
@@ -1320,6 +1345,8 @@ export async function createCoinageSession(
       peopleGenesis: PEOPLE_GENESIS,
       // The same live estimates that sized the deposit.
       ...handoffFees(sizing),
+      ...askRounding(args.sourceId, args.route, budget),
+      ...exactClaimOf(args.sourceId),
       // The worker consumes the recorded tier and never re-decides.
       ...args.route,
     };

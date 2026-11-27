@@ -1,6 +1,7 @@
 // A ChainflipRail stand-in for networks Chainflip cannot reach: the user sends the rail's token
-// directly to the ephemeral's Asset Hub address. The quote is identity and the status poll stays
-// 'waiting'; the funding pipeline and the session's funded-gate own progress.
+// directly to the ephemeral's Asset Hub address. The quote is the target rounded up to the token's
+// second decimal and the status poll stays 'waiting'; the funding pipeline and the session's
+// funded-gate own progress.
 
 import {
   TOKENS,
@@ -16,6 +17,7 @@ import {
   type TokenSpec,
 } from "@getsome/core";
 import type { DepositAsset } from "./route";
+import { ceilToTwoDecimals, formatTwoDecimals } from "./two-decimals";
 
 /** The sources a direct deposit runs under, one per token: the token each takes and what the
  *  route decision calls it. The source keys the token's trade counter and burner labels. */
@@ -47,12 +49,6 @@ export const manualDepositOf = (sourceId: ManualSourceId): DepositAsset =>
 /** The name a direct token goes by on the deposit screen: the rails' name for it, so the native
  *  is named after its Polkadot counterpart. */
 export const directAssetName = (token: TokenSpec): string => token.chainflipAsset ?? token.symbol;
-
-/** Exact base-units -> decimal string (trailing zeros trimmed). */
-function formatUnits(base: bigint, decimals: number): string {
-  const s = base.toString().padStart(decimals + 1, "0");
-  return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "") || "0";
-}
 
 /** Ceil-normalizes the target to the token's base units. */
 function toBaseUnits(target: { amount: bigint; decimals: number }, decimals: number): bigint {
@@ -90,12 +86,12 @@ export function createManualRail(opts: ManualRailOptions = {}): ChainflipRail {
 
   return {
     async getQuote(req: ReverseQuoteInput): Promise<Quote> {
-      const amount = toBaseUnits(req.target, token.decimals);
+      const amount = ceilToTwoDecimals(toBaseUnits(req.target, token.decimals), token.decimals);
       return {
         sourceId: req.sourceId,
         source: {
           amount,
-          formatted: formatUnits(amount, token.decimals),
+          formatted: formatTwoDecimals(amount, token.decimals),
           assetSymbol: descriptor.asset,
           decimals: token.decimals,
         },

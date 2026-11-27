@@ -210,6 +210,15 @@ export interface WorkerHandoffPayload {
    *  worker's gate does not count it, so the page takes it back out of the ask to find that gate.
    *  Absent when nothing was added, as on a payload from before it was recorded. */
   keepAliveNative?: string;
+  /** Native pool tier only: what rounding the ask up to its second decimal added to it. The
+   *  worker's gate does not count it either, so the page takes it back out with
+   *  `keepAliveNative`. Absent when nothing was added, as on a payload from before it was
+   *  recorded. */
+  askRoundingNative?: string;
+  /** A direct deposit only: the worker claims exactly `settleAmount` when the CASH that lands is
+   *  less than two cents over it, and every whole cent otherwise. Absent on any other top-up and
+   *  on a payload from before it was recorded, whose claims take every whole cent. */
+  exactClaim?: true;
   /** The conversion tier decided at quote time and frozen here; the worker consumes it and never
    *  re-decides. A payload from before tiers were recorded is a pool one. */
   tier: ConversionRoute["tier"];
@@ -952,8 +961,8 @@ export const isDirectDeposit = (record: Pick<TopUpRecord, "ref">): boolean =>
 /**
  * The balance at which a direct deposit counts as arrived: the figure the worker converts at, not
  * the ask. The fixed-rate tiers and the stable pool carry it on the hand-off. The native pool's
- * gate is the live quote plus the fee native, so it is the ask with its headroom and what it
- * carries for a burner the chain keeps open taken back out.
+ * gate is the live quote plus the fee native, so it is the ask with its headroom, what it
+ * carries for a burner the chain keeps open and what rounding it up added taken back out.
  */
 export function directDepositGate(record: Pick<TopUpRecord, "deposit" | "handoff">): bigint {
   const asked = BigInt(record.deposit?.amount ?? "0");
@@ -961,7 +970,8 @@ export function directDepositGate(record: Pick<TopUpRecord, "deposit" | "handoff
   if (handoff?.quotedDeposit !== undefined) return BigInt(handoff.quotedDeposit);
   if (handoff !== undefined && handoff.tier === "pool" && handoff.external === undefined) {
     const keep = BigInt(handoff.keepNativeForFees);
-    const carried = keep + BigInt(handoff.keepAliveNative ?? "0");
+    const carried =
+      keep + BigInt(handoff.keepAliveNative ?? "0") + BigInt(handoff.askRoundingNative ?? "0");
     if (asked > carried) {
       return (
         keep + ((asked - carried) * 10_000n) / BigInt(Math.round((100 + DIRECT_SLIPPAGE_PCT) * 100))

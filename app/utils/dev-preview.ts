@@ -1290,7 +1290,7 @@ function base(session: Session, flow: Flow) {
 }
 
 /** Baseline for the direct deposit scenes: 10 CASH from a Polkadot token, quoted as the manual
- *  rail quotes it, the exact figure in the token itself. */
+ *  rail quotes it, the figure in the token itself with two decimals. */
 function polkadotDeposit(
   session: Session,
   flow: Flow,
@@ -1923,12 +1923,12 @@ export const SCENES: Scene[] = [
     // A direct deposit short of the figure asked: the sheet with what arrived and what it gives.
     name: "top-up / crypto / deposit: less than asked",
     apply: async (s, f, i) => {
-      polkadotDeposit(s, f, "USDC", "10");
+      polkadotDeposit(s, f, "USDC", "10.00");
       const r = await previewRequest(s, { sourceId: "usdc-assethub", index: i });
       await core(r, 0, awaitingDeposit(0, "usdc-assethub"));
       f.previewMismatch = {
         kind: "short",
-        asked: { amount: "10", symbol: "USDC" },
+        asked: { amount: "10.00", symbol: "USDC" },
         landed: { amount: "8", symbol: "USDC" },
         target: "10",
         receive: "7.94",
@@ -1939,12 +1939,12 @@ export const SCENES: Scene[] = [
     // A direct deposit in the wrong token: the same sheet, worded for the token.
     name: "top-up / crypto / deposit: different token",
     apply: async (s, f, i) => {
-      polkadotDeposit(s, f, "USDC", "10");
+      polkadotDeposit(s, f, "USDC", "10.00");
       const r = await previewRequest(s, { sourceId: "usdc-assethub", index: i });
       await core(r, 0, awaitingDeposit(0, "usdc-assethub"));
       f.previewMismatch = {
         kind: "token",
-        asked: { amount: "10", symbol: "USDC" },
+        asked: { amount: "10.00", symbol: "USDC" },
         landed: { amount: "10", symbol: "USDT" },
         target: "10",
         receive: "9.85",

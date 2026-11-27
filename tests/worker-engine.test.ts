@@ -1847,7 +1847,13 @@ describe("worker funding engine", () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(
-      JSON.stringify({ ...HANDOFF, tier: "pool", external: "USDC", quotedDeposit: "10300000" }),
+      JSON.stringify({
+        ...HANDOFF,
+        tier: "pool",
+        external: "USDC",
+        quotedDeposit: "10300000",
+        exactClaim: true,
+      }),
     );
     const amended = await engine.amendFunding(
       JSON.stringify({
@@ -1864,9 +1870,15 @@ describe("worker funding engine", () => {
       tier: "dotusd",
       quotedDeposit: "8000000",
     });
-    // The old route's stable is gone with it, and the job's identity is kept.
+    // The old route's stable is gone with it, and the job's identity and its claim's mark are
+    // kept.
     expect(job.external).toBeUndefined();
-    expect(job).toMatchObject({ sessionId: "s-1", label: HANDOFF.label, phase: "starting" });
+    expect(job).toMatchObject({
+      sessionId: "s-1",
+      label: HANDOFF.label,
+      phase: "starting",
+      exactClaim: true,
+    });
 
     // Once the worker has seen funds the job is no longer amended.
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
@@ -2315,6 +2327,81 @@ describe("worker funding engine", () => {
       amount: credited.toString(),
       partial: true,
     });
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it.each<[string, { held: bigint; credited?: bigint; settleAmount?: bigint }, bigint, bigint]>([
+    ["a third of a cent over the target", { held: 10_003_400n }, 10_000_000n, 10_000_000n],
+    ["just under two cents over", { held: 10_019_900n }, 10_000_000n, 10_010_000n],
+    ["two cents over", { held: 10_020_000n }, 10_020_000n, 10_020_000n],
+    ["well over", { held: 10_111_900n }, 10_110_000n, 10_110_000n],
+    ["short of the target", { held: 9_987_600n }, 9_980_000n, 9_980_000n],
+    [
+      "the rest after a part was credited",
+      { held: 4_013_400n, credited: 6_000_000n },
+      4_000_000n,
+      4_010_000n,
+    ],
+    [
+      "what is left once the target was credited",
+      { held: 13_400n, credited: 10_000_000n },
+      0n,
+      10_000n,
+    ],
+    [
+      "a target off the claim unit",
+      { held: 10_023_400n, settleAmount: 10_005_000n },
+      10_010_000n,
+      10_020_000n,
+    ],
+  ])("sizes a claim with and without the mark: %s", async (_name, landing, marked, plain) => {
+    const { claimSize } = await freshEngine();
+    const sizing = { credited: 0n, settleAmount: 10_000_000n, ...landing };
+    expect(claimSize({ ...sizing, exactClaim: true })).toBe(marked);
+    expect(claimSize({ ...sizing, exactClaim: false })).toBe(plain);
+  });
+
+  it("claims a marked job's target, and ends claimed in full when only the rest is left on the burner", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify({ ...HANDOFF, exactClaim: true }));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 1;
+      state.nonceAtSubmit = 0;
+      return outcome("done");
+    });
+    const rest = 13_400n;
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE + rest);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenCalledExactlyOnceWith(
+      SETTLE,
+      expect.any(Uint8Array),
+      BURNER.publicKey,
+    );
+    expect(storedJob()).toMatchObject({
+      exactClaim: true,
+      claim: { phase: "claiming", amount: SETTLE.toString() },
+    });
+
+    // The conversion went out again before the host settled, so the burner is sized once more:
+    // the target is credited and the rest is not a claim.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 2;
+      state.nonceAtSubmit = null;
+      return outcome("done");
+    });
+    await engine.tickAllFunding();
+    pushStatus(claimed(true));
+    expect((await sessionStatus(engine)).claim).toMatchObject({ phase: "sizing", attempt: 1 });
+    mocks.settlementBalance.mockResolvedValueOnce(rest);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+    expect(storedJob()).toMatchObject({
+      phase: "done",
+      claim: { phase: "claimed", amount: SETTLE.toString(), credited: SETTLE.toString() },
+    });
+    expect(storedJob().claim.partial).toBeUndefined();
     expect((await engine.tickAllFunding()).ticked).toBe(0);
   });
 
