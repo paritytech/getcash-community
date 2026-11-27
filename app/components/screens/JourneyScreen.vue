@@ -47,13 +47,12 @@ const props = withDefaults(
   }>(),
   { topUp: null, purse: "unknown" },
 );
-// fees and refund ask the host to swap in their drill-ins; cancel asks it for the cancel
+// fees and recover ask the host to swap in their drill-ins; cancel asks it for the cancel
 // confirmation; close leaves the finished journey; startOver asks it to re-enter this route for a
 // fresh attempt at the same top-up. recoverFromBalance and recoverDeposit are the two ways to pay
 // a trapped top-up's claim fee: the purse, or a deposit on the top-up's own account.
 const emit = defineEmits<{
   fees: [];
-  refund: [];
   recover: [];
   recoverFromBalance: [];
   recoverDeposit: [];
@@ -146,9 +145,7 @@ const quotedAmount = computed(() => session.amountHuman || (props.topUp?.amount 
  *
  * The bank rail only. A card is priced and bought minutes apart, and `claimedBase` is a whole
  * burner sweep rather than the typed figure, so a card's claim differs by rounding rather than by
- * a rate — news the buyer cannot act on, under a sentence about money being on its way. A crypto
- * swap that misses its bounds is refunded rather than filled short, and that ending has its own
- * words.
+ * a rate — news the buyer cannot act on, under a sentence about money being on its way.
  */
 const revisedAmount = computed<string | null>(() => {
   if (!bank.value) return null;
@@ -428,12 +425,11 @@ const { success, successShown, successPlaying, drawn, band } = useJourneySuccess
         </PillButton>
       </div>
 
-      <!-- The refund guide for money the provider returned to the refund key, the recovery guide
-           for money on the top-up's own account. -->
+      <!-- The recovery guide for money on the top-up's own account. -->
       <PillButton
         v-if="failureAction?.kind === 'get-back'"
         class="mt-auto"
-        @click="failureAction.from === 'refund-key' ? emit('refund') : emit('recover')"
+        @click="emit('recover')"
       >
         Get your {{ failureAction.source }} back
       </PillButton>

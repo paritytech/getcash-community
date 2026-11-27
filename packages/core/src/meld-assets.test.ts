@@ -42,7 +42,7 @@ describe("the adapter's asset table", () => {
     expect(meldAssetsInstalled()).toBe(true);
     expect(meldCodeOf("dot@assethub")).toBe("DOT");
     expect(meldCodeOf("usdt@assethub")).toBe("USDT_DOT");
-    expect(meldAssetOf("USDC_ARBITRUM")).toBe("usdc@arbitrum");
+    expect(meldAssetOf("USDC_ARBITRUM")).toBeUndefined();
     expect(meldAssetOf("DOT_ASSETHUB")).toBeUndefined();
     expect(meldAssetOf(undefined)).toBeUndefined();
   });
@@ -65,8 +65,9 @@ describe("the adapter's asset table", () => {
   });
 
   it("tells an asset id from anything else, a Meld code included", () => {
-    expect(isMeldAssetId("usdc@solana")).toBe(true);
-    expect(isMeldAssetId("USDC_SOLANA")).toBe(false);
+    expect(isMeldAssetId("usdc@assethub")).toBe(true);
+    expect(isMeldAssetId("usdc@solana")).toBe(false);
+    expect(isMeldAssetId("USDC_ASSETHUB")).toBe(false);
     expect(isMeldAssetId(undefined)).toBe(false);
   });
 });

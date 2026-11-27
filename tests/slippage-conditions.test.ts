@@ -1,29 +1,16 @@
-// The slippage figures against what they are meant to hold to: a Chainflip channel asks about half
-// a point, and a purchase through the PSM pays about 0.5 to 0.75% over what it needs; the routes
-// through the Asset Hub pool run on a dry-run figure with 0.7 to 1% headroom, and a purchase
-// through it pays about 1.5% over spot.
+// The slippage figures against what they are meant to hold to: the routes through the Asset Hub
+// pool run on a dry-run figure with 0.7 to 1% headroom, and a purchase through it pays about 1.5%
+// over spot.
 //
 // Each pool is a snapshot of its reserves at one block, with the chain's own quotes at that block:
 // Paseo Asset Hub next v2's PAS/CASH pool, the one the app trades on, and a pool some 28 times
 // deeper, to see the figures hold with more liquidity behind them.
 // The pool model here is pallet-asset-conversion's own constant-product math and must give the
 // chain's answers to the planck before anything is judged on it. The app's own code then runs
-// against it: priceSale for a withdrawal's sale, sizeNativeBudget and the conversion gate for a
-// deposit on the pool tier, computeQuote and the channel for a Chainflip deposit, against a
-// Chainflip modelled on its live quotes.
+// against it: priceSale for a withdrawal's sale, and sizeNativeBudget and the conversion gate for
+// a deposit on the pool tier.
 
 import { describe, expect, it } from "vitest";
-import { TOKENS } from "@getsome/core";
-import {
-  BelowMinimumSwapAmountError,
-  chainflipTokenOf,
-  channelSlippagePct,
-  computeQuote,
-  egressFor,
-  requestDepositAddress,
-  SOURCE_CONFIG_BY_ID,
-  type QuoteBackend,
-} from "@getsome/chainflip";
 import { DEFAULT_SLIPPAGE_PCT, DIRECT_SLIPPAGE_PCT, sizeNativeBudget } from "@getsome/funding";
 import { DEFAULT_WITHDRAW_SLIPPAGE_PCT, priceSale } from "@getsome/withdraw";
 import { decideStep, quoteNativeIn } from "../packages/funding/src/pipeline";
@@ -352,146 +339,5 @@ describe("on Paseo Asset Hub next v2's pool, the one the app trades on", () => {
     );
     expect(traps).toBeGreaterThan(USD(480));
     expect(traps).toBeLessThan(USD(560));
-  });
-});
-
-/**
- * Chainflip as its live quotes price a stable into Asset Hub USDT (Ethereum USDC): the
- * deposit less the ingress fee, less the network fee (0.1%, 0.5 USDC at least), less the broker's
- * 5 bps, swapped at 0.9999, less the egress fee; 0.5% recommended, 20 USDC the minimum.
- */
-function stableIntoUsdt(deposit: bigint): Record<string, unknown> {
-  if (deposit < 20_000_000n) throw new BelowMinimumSwapAmountError(20_000_000n);
-  const ingress = 439_479n;
-  const egressFee = 21_924n;
-  const afterIngress = deposit - ingress;
-  const network = afterIngress / 1_000n > 500_000n ? afterIngress / 1_000n : 500_000n;
-  const afterNetwork = afterIngress - network;
-  const swapped = afterNetwork - (afterNetwork * 5n) / 10_000n;
-  const egress = (swapped * 9_999n) / 10_000n - egressFee;
-  return {
-    type: "REGULAR",
-    depositAmount: deposit.toString(),
-    egressAmount: egress.toString(),
-    includedFees: [
-      { type: "INGRESS", chain: "Ethereum", asset: "USDC", amount: ingress.toString() },
-      { type: "NETWORK", chain: "Ethereum", asset: "USDC", amount: network.toString() },
-      { type: "EGRESS", chain: "Assethub", asset: "USDT", amount: egressFee.toString() },
-    ],
-    recommendedSlippageTolerancePercent: 0.5,
-  };
-}
-
-/** BTC into Asset Hub USDT the same way, at 82,067 USDT a BTC, 2% recommended. */
-function btcIntoUsdt(deposit: bigint): Record<string, unknown> {
-  if (deposit < 40_000n) throw new BelowMinimumSwapAmountError(40_000n);
-  const ingress = 361n;
-  const egressFee = 21_924n;
-  const usdc = ((deposit - ingress) * 820_670n) / 1_000n;
-  const network = usdc / 1_000n > 500_000n ? usdc / 1_000n : 500_000n;
-  const afterNetwork = usdc - network;
-  const swapped = afterNetwork - (afterNetwork * 5n) / 10_000n;
-  const egress = (swapped * 9_999n) / 10_000n - egressFee;
-  return {
-    type: "REGULAR",
-    depositAmount: deposit.toString(),
-    egressAmount: egress.toString(),
-    includedFees: [
-      { type: "INGRESS", chain: "Bitcoin", asset: "BTC", amount: ingress.toString() },
-      { type: "EGRESS", chain: "Assethub", asset: "USDT", amount: egressFee.toString() },
-    ],
-    recommendedSlippageTolerancePercent: 2,
-  };
-}
-
-const backendOf = (model: (deposit: bigint) => Record<string, unknown>): QuoteBackend => ({
-  async getQuoteV2(args) {
-    return { quotes: [model(BigInt(args.amount))] };
-  },
-});
-
-/** The least deposit whose quoted delivery covers `target`: what a buyer would pay with no
- *  tolerance at all. */
-function fairDeposit(
-  model: (deposit: bigint) => Record<string, unknown>,
-  target: bigint,
-  from: bigint,
-) {
-  const delivers = (deposit: bigint) => BigInt(model(deposit)["egressAmount"] as string) >= target;
-  let lo = from;
-  let hi = from * 2n;
-  while (!delivers(hi)) hi *= 2n;
-  while (hi - lo > 1n) {
-    const mid = (lo + hi) / 2n;
-    if (delivers(mid)) hi = mid;
-    else lo = mid;
-  }
-  return hi;
-}
-
-/** What a channel opened on `quote` delivers at the worst fill it accepts, the SDK's way: the
- *  estimated price less the tolerance, on what the ingress fee leaves, less the egress fee. */
-function worstDelivery(quote: Record<string, unknown>, tolerancePct: number): bigint {
-  const fees = quote["includedFees"] as { type: string; amount: string }[];
-  const egressFee = BigInt(fees.find((f) => f.type === "EGRESS")!.amount);
-  const paidOut = BigInt(quote["egressAmount"] as string) + egressFee;
-  return (paidOut * BigInt(Math.round((100 - tolerancePct) * 100))) / 10_000n - egressFee;
-}
-
-const USDT = egressFor(chainflipTokenOf(TOKENS.USDT)!);
-
-describe("a top-up through Chainflip and the PSM", () => {
-  it("opens its channel at half a point, and Chainflip's own figure when that is higher", async () => {
-    const usdcEth = SOURCE_CONFIG_BY_ID.get("usdc-eth")!;
-    const quote = await computeQuote(backendOf(stableIntoUsdt), usdcEth, USD(100), 0n, USDT);
-    let sent: unknown;
-    await requestDepositAddress(
-      {
-        async requestDepositAddressV2(args) {
-          sent = args.fillOrKillParams.slippageTolerancePercent;
-          return { depositAddress: "0xabc", depositChannelId: "1-Ethereum-1" };
-        },
-      },
-      usdcEth,
-      {
-        quote,
-        destAddress: "5Burner",
-        refundAddress: "0x0000000000000000000000000000000000000001",
-      },
-    );
-    expect(sent).toBe("0.5");
-    expect(channelSlippagePct(btcIntoUsdt(1_000_000n))).toBe(2);
-  });
-
-  it("pays about 0.75% over what it needs for a stable at every size, its worst fill covering the target", async () => {
-    // The half point the channel may fill under, and a quarter point on top; nothing more at any
-    // size, however much the fixed fees weigh.
-    const usdcEth = SOURCE_CONFIG_BY_ID.get("usdc-eth")!;
-    for (const dollars of [20, 50, 100, 250, 1_000, 5_000]) {
-      const target = USD(dollars);
-      const quote = await computeQuote(backendOf(stableIntoUsdt), usdcEth, target, 0n, USDT);
-      const raw = quote.raw as Record<string, unknown>;
-      const fair = fairDeposit(stableIntoUsdt, target, target);
-      const over = pct(quote.source.amount - fair, fair);
-      expect(over).toBeGreaterThanOrEqual(0.7);
-      expect(over).toBeLessThanOrEqual(0.8);
-      expect(worstDelivery(raw, channelSlippagePct(raw))).toBeGreaterThanOrEqual(
-        target + (target * 25n) / 10_000n,
-      );
-    }
-  });
-
-  it("pays Chainflip's 2% and a quarter point for BTC, at every size", async () => {
-    const btc = SOURCE_CONFIG_BY_ID.get("btc")!;
-    for (const dollars of [50, 200, 1_000, 5_000]) {
-      const target = USD(dollars);
-      const quote = await computeQuote(backendOf(btcIntoUsdt), btc, target, 0n, USDT);
-      const raw = quote.raw as Record<string, unknown>;
-      const fair = fairDeposit(btcIntoUsdt, target, 40_000n);
-      const over = pct(quote.source.amount - fair, fair);
-      expect(over).toBeGreaterThanOrEqual(2.25);
-      expect(over).toBeLessThanOrEqual(2.35);
-      expect(worstDelivery(raw, 2)).toBeGreaterThanOrEqual(target + (target * 25n) / 10_000n);
-    }
   });
 });

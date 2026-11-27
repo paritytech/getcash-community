@@ -40,7 +40,7 @@ function capturingClient(
 }
 
 function args(quote: Quote): OpenChannelArgs {
-  return { quote, destAddress: BURNER, refundAddress: "" };
+  return { quote, destAddress: BURNER };
 }
 
 describe("requestMeldDeposit", () => {

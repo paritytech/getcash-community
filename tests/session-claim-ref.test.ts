@@ -47,8 +47,6 @@ vi.mock("../lib/coinage-live", () => ({
       },
       sourceId: args.sourceId ?? "dot-assethub",
       tradeN: args.tradeN ?? 1,
-      refundAddress: null,
-      revealRefundKey: () => null,
       runFunding: async () => {},
       dispose() {},
     };

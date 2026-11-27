@@ -124,9 +124,6 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
       expect(record.deposit?.assetSymbol).toBe("USDC");
       // The deposit address is the mock burner itself, an Asset Hub account, not the fake rail's.
       expect(AccountId().enc(record.deposit!.address)).toHaveLength(32);
-      // A direct deposit has no refund leg.
-      expect(store.refundAddress).toBeNull();
-      expect(store.revealRefundKey()).toBeNull();
 
       store.simulateDeposit();
       const waitFor = async (pred: () => boolean, ms: number) => {

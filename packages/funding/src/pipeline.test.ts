@@ -3993,12 +3993,10 @@ describe("createManualRail", () => {
     const channel = await rail.requestDepositAddress({
       quote,
       destAddress: "5EphemeralOnAssetHub",
-      refundAddress: "unused",
     });
     expect(channel.deposit.address).toBe("5EphemeralOnAssetHub");
     expect(channel.deposit.expiresAt).toBe(1_500);
     expect((await rail.getStatus("manual")).status).toBe("waiting");
-    expect((await rail.probeLiquidity("dot-assethub")).status).toBe("available");
     expect(rail.sources()[0]?.sourceId).toBe("dot-assethub");
   });
 

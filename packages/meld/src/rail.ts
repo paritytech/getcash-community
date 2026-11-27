@@ -1,15 +1,14 @@
-// The Meld rail: core's ChainflipRail port over the Meld quote, session and status pieces.
+// The Meld rail: core's FundingRail port over the Meld quote, session and status pieces.
 // Meld delivers the rail's token to the burner on Asset Hub; the rest of the pipeline is unchanged.
 // SourceId is 'meld-card' or 'meld-bank'.
 
 import {
   TOKENS,
-  type ChainflipRail,
   type DepositChannel,
+  type FundingRail,
   type OpenChannelArgs,
   type Quote,
   type ReverseQuoteInput,
-  type SourceAvailability,
   type SourceDescriptor,
   type SourceId,
 } from "@getsome/core";
@@ -49,8 +48,8 @@ const DEFAULT_PAYMENT_METHOD: Record<MeldMethod, string> = {
   BANK_TRANSFER: "ACH",
 };
 
-/** ChainflipRail plus the hosted pay URL for an opened session. */
-export interface MeldRail extends ChainflipRail {
+/** FundingRail plus the hosted pay URL for an opened session. */
+export interface MeldRail extends FundingRail {
   /**
    * The hosted pay page for an opened session, keyed by depositChannelId. Undefined until
    * requestDepositAddress ran.
@@ -87,7 +86,7 @@ export function createMeldRail(opts: MeldRailOptions): MeldRail {
   const descriptor: SourceDescriptor = Object.freeze({
     sourceId: METHOD_SOURCE_ID[method],
     chain: "AssetHub",
-    asset: token.chainflipAsset,
+    asset: token.railAsset,
     displayName: `${METHOD_LABEL[method]} · Meld`,
     decimals: token.decimals,
   });
@@ -104,10 +103,6 @@ export function createMeldRail(opts: MeldRailOptions): MeldRail {
     },
     getStatus(depositChannelId: string) {
       return getMeldStatus(opts.client, depositChannelId);
-    },
-    async probeLiquidity(): Promise<SourceAvailability> {
-      // Availability is decided by the quote; getQuote fails for an unrouted region or method.
-      return { status: "available" };
     },
     sources(): readonly SourceDescriptor[] {
       return [descriptor];

@@ -17,7 +17,7 @@ describe("mock world: reverse-quote denomination", () => {
     const world = await createMockCoinageSession({
       recipient: RECIPIENT,
       amount: CASH,
-      sourceId: "btc",
+      sourceId: "dotusd-assethub",
       rail,
     });
     await world.session.ready;

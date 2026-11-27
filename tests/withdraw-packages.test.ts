@@ -9,7 +9,7 @@ import {
 
 // vitest has no Vue plugin, and this test never renders the screens the registries bundle.
 vi.mock("../app/components/funding/routes/MeldFundingStatusRoute.vue", () => ({ default: {} }));
-vi.mock("../app/components/funding/routes/ChainflipFundingStatusRoute.vue", () => ({
+vi.mock("../app/components/funding/routes/CryptoFundingStatusRoute.vue", () => ({
   default: {},
 }));
 vi.mock("../app/components/withdraw/routes/CryptoWithdrawRoute.vue", () => ({

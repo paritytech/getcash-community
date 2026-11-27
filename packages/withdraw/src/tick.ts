@@ -132,7 +132,7 @@ export const arrivalFloor = (sizing: Pick<XcmSizing, "args" | "landed">, slippag
  *  run passed each time. Something the dry run cannot see differs at inclusion. */
 export class WithdrawRejectedError extends Error {
   constructor(
-    readonly call: TickCall | "sweep" | "pay",
+    readonly call: TickCall | "pay",
     readonly reason: string,
   ) {
     super(`withdrawal given up: ${call} rejected ${MAX_REJECTIONS} times, last: ${reason}`);

@@ -59,12 +59,12 @@ function setup(
     deriveKey: () => HANDOFF_KEY,
     deps: {
       chain: harness.chain,
-      chainflip: rail,
+      rail,
       storage,
       entropy: fakeEntropy(opts.deterministic ?? true),
     },
     budget: { amount: AMOUNT, asset: { kind: "native" } },
-    sourceId: "btc",
+    sourceId: "dot-assethub",
     ...opts.config,
   });
   return { fake, harness, rail, storage, session };
@@ -81,7 +81,7 @@ function handoffFlow(overrides: Partial<FlowState> = {}): FlowState {
   return {
     version: FLOW_SCHEMA_VERSION,
     mode: "handoff",
-    sourceId: "btc",
+    sourceId: "dot-assethub",
     recipient: RECIPIENT,
     ephemeralAddress: KEY_ADDRESS,
     phase: "awaiting-deposit",
@@ -91,7 +91,7 @@ function handoffFlow(overrides: Partial<FlowState> = {}): FlowState {
     priceEvm: "0",
     handoffAmount: AMOUNT.toString(),
     settlement: { kind: "native" },
-    depositAddress: "bc1q-fake-deposit",
+    depositAddress: "fake-deposit",
     depositChannelId: "chan-1",
     depositExpiresAt: Date.now() + 86_400_000,
     ...overrides,
@@ -127,11 +127,11 @@ describe("createPayment session, handoff mode", () => {
     await session.quote();
     // Handoff quotes with zero on-chain overhead.
     expect(rail.stats.lastQuoteRequest?.onChainOverheadPlancks).toBe(0n);
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     expect(rail.stats.lastChannelArgs?.destAddress).toBe(KEY_ADDRESS);
 
     // The persisted slot is a handoff flow carrying the settle amount, never the secret.
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     const persisted = await store.load();
     expect(persisted?.mode).toBe("handoff");
     expect(persisted?.handoffAmount).toBe(AMOUNT.toString());
@@ -153,8 +153,8 @@ describe("createPayment session, handoff mode", () => {
     expect(fake.stats.lastCtx?.amount).toBe(AMOUNT);
     // Sub-states surfaced: funded -> awaiting-consent -> verifying.
     expect(mintSteps(states)).toEqual(["funded", "awaiting-consent", "verifying"]);
-    expect(completed).toEqual([{ id: "settled-1", sourceId: "btc" }]);
-    await expect(settledP).resolves.toEqual({ id: "settled-1", sourceId: "btc" });
+    expect(completed).toEqual([{ id: "settled-1", sourceId: "dot-assethub" }]);
+    await expect(settledP).resolves.toEqual({ id: "settled-1", sourceId: "dot-assethub" });
     session.dispose();
   });
 
@@ -167,7 +167,7 @@ describe("createPayment session, handoff mode", () => {
     session.events.on("completed", (e) => completed.push(e));
 
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -193,7 +193,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup({ handoff: { creditShort: AMOUNT / 2n } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -209,7 +209,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup({ handoff: { manualConsent: true } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -237,7 +237,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup({ handoff: { manualConsent: true } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -266,7 +266,7 @@ describe("createPayment session, handoff mode", () => {
 
   it("resume of a settled working flow completes without re-settling (no consent re-pop)", async () => {
     const storage = createMemoryAdapter();
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     await store.save(handoffFlow({ phase: "working" }));
 
     // Fresh session (a reload): the attempt already settled host-side.
@@ -282,7 +282,7 @@ describe("createPayment session, handoff mode", () => {
 
   it("resume of a persisted 'done' flow recovers the receipt via the probe, no event re-fire", async () => {
     const storage = createMemoryAdapter();
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     await store.save(handoffFlow({ phase: "done" }));
 
     const { fake, session } = setup({ storage, handoff: { startSettled: true } });
@@ -300,7 +300,7 @@ describe("createPayment session, handoff mode", () => {
 
   it("resume with non-deterministic entropy -> failed:stale (key unrecoverable)", async () => {
     const storage = createMemoryAdapter();
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     await store.save(handoffFlow());
 
     const { fake, session } = setup({ storage, deterministic: false });
@@ -317,13 +317,13 @@ describe("createPayment session, handoff mode", () => {
 
   it("start() over an in-flight working slot routes to probe-first resume: no re-key, no second channel", async () => {
     const storage = createMemoryAdapter();
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     await store.save(handoffFlow({ phase: "working" }));
 
     // Fresh session (a reload): the attempt already settled host-side; user re-taps Pay.
     const { fake, rail, session } = setup({ storage, handoff: { startSettled: true } });
     await session.ready;
-    await session.start({ refundAddress: "bc1-refund" }); // no quote; must not open a channel
+    await session.start(); // no quote; must not open a channel
     await flush();
 
     expect(session.getState().phase).toBe("done");
@@ -336,7 +336,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup({ handoff: { manualConsent: true } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -360,13 +360,13 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, rail, session } = setup({ handoff: { manualConsent: true } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
     expect(fake.stats.pendingConsent).toBe(true);
 
-    const startP = session.start({ refundAddress: "bc1-refund" }); // user re-taps Pay
+    const startP = session.start(); // user re-taps Pay
     await flush();
     expect(rail.stats.channelsOpened).toBe(1); // no second channel, no re-key
     expect(fake.stats.settles).toBe(1);
@@ -382,7 +382,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, storage, session } = setup({ handoff: { manualConsent: true } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -402,7 +402,7 @@ describe("createPayment session, handoff mode", () => {
     // ...and the flow is cancellable/clearable normally afterwards.
     await session.clear();
     expect(session.getState().phase).toBe("idle");
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     expect(await store.load()).toBeNull();
     session.dispose();
   });
@@ -411,7 +411,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, storage, session } = setup({ handoff: { manualConsent: true } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -431,7 +431,7 @@ describe("createPayment session, handoff mode", () => {
     fake.confirmConsent();
     await flush();
     expect(waiterFired).toBe(false); // waiters stay pending by design, even after the claim
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     // No storage write after dispose: the slot never advanced to 'done'.
     expect((await store.load())?.phase).toBe("working");
   });
@@ -444,7 +444,7 @@ describe("createPayment session, handoff mode", () => {
       if (s.phase === "failed") void session.retry();
     });
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -477,7 +477,7 @@ describe("createPayment session, handoff mode", () => {
     // The reverse-quote target carries the configured decimals, not the DOT default.
     expect(rail.stats.lastQuoteRequest?.target).toEqual({ amount: CASH_AMOUNT, decimals: 6 });
 
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     // Native stays zero; only the settlement-asset balance is funded.
     harness.setSettlementBalance(CASH_AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
@@ -497,7 +497,7 @@ describe("createPayment session, handoff mode", () => {
     await session.ready;
     await session.quote();
     // A CASH budget paired with a port that cannot read it fails at start().
-    await expect(session.start({ refundAddress: "bc1-refund" })).rejects.toThrow(/not wired/);
+    await expect(session.start()).rejects.toThrow(/not wired/);
     session.dispose();
   });
 
@@ -505,7 +505,7 @@ describe("createPayment session, handoff mode", () => {
     const { harness, session } = setup();
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(1_000n); // far below DUST_GUARD_PLANCKS AND below the settle gate
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -520,7 +520,7 @@ describe("createPayment session, handoff mode", () => {
     const { harness, session } = setup({ config: { cancelDustThreshold: 2_000n } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(1_000n);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -535,9 +535,9 @@ describe("createPayment session, handoff mode", () => {
     const { storage, session } = setup({ config: { conversion } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
 
-    const persisted = await createFlowStore(storage, "btc", RECIPIENT).load();
+    const persisted = await createFlowStore(storage, "dot-assethub", RECIPIENT).load();
     expect(persisted?.conversion).toEqual(conversion);
   });
 
@@ -557,7 +557,7 @@ describe("createPayment session, handoff mode", () => {
     // The rail is sized by the native budget, not the settle amount.
     expect(rail.stats.lastQuoteRequest?.target).toEqual({ amount: NATIVE_BUDGET, decimals: 10 });
 
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     // The gate reads the settlement asset.
     harness.setSettlementBalance(SETTLE);
     await vi.advanceTimersByTimeAsync(6_000);
@@ -573,7 +573,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup();
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -581,7 +581,7 @@ describe("createPayment session, handoff mode", () => {
     await session.clear();
 
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
     expect(session.getState().phase).toBe("done");
@@ -595,7 +595,7 @@ describe("createPayment session, handoff mode", () => {
     });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -609,7 +609,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup({ handoff: { failProbeAt: 1 } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -633,7 +633,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, session } = setup({ handoff: { failProbeAt: 2 } });
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
     harness.setBalance(AMOUNT);
     await vi.advanceTimersByTimeAsync(6_000);
     await flush();
@@ -652,7 +652,7 @@ describe("createPayment session, handoff mode", () => {
 
   it("resume of an unsettled working flow settles exactly once (the deliberate re-pop)", async () => {
     const storage = createMemoryAdapter();
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     await store.save(handoffFlow({ phase: "working" }));
 
     const { fake, harness, session } = setup({ storage });
@@ -668,7 +668,7 @@ describe("createPayment session, handoff mode", () => {
 
   it("corrupt slot (missing settle amount) -> non-recoverable failure, never a settle", async () => {
     const storage = createMemoryAdapter();
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     await store.save(handoffFlow({ phase: "working", handoffAmount: undefined }));
 
     const { fake, harness, session } = setup({ storage });
@@ -691,7 +691,7 @@ describe("createPayment session, handoff mode", () => {
     const { fake, harness, storage, session } = setup();
     await session.ready;
     await session.quote();
-    await session.start({ refundAddress: "bc1-refund" });
+    await session.start();
 
     // Partially funded: above the dust guard, below the settle gate; never fires the handoff.
     harness.setBalance(DUST_GUARD_PLANCKS * 2n);
@@ -703,7 +703,7 @@ describe("createPayment session, handoff mode", () => {
     expect(harness.stats.sweeps).toBe(1);
     expect(harness.stats.lastSweepDest).toBe(RECIPIENT);
     expect(fake.stats.settles).toBe(0);
-    const store = createFlowStore(storage, "btc", RECIPIENT);
+    const store = createFlowStore(storage, "dot-assethub", RECIPIENT);
     expect(await store.load()).toBeNull();
     expect(session.getState().phase).toBe("idle");
     session.dispose();

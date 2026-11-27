@@ -4,7 +4,7 @@
 import { computed, onMounted, onUnmounted } from "vue";
 import { isDemoBuild } from "../../../utils/demo";
 import { previewStage } from "../../../utils/dev-preview-stage";
-import { useChainflipHandoff } from "../../../composables/useChainflipHandoff";
+import { useCryptoHandoff } from "../../../composables/useCryptoHandoff";
 import { useScreen } from "../../../composables/useScreen";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
@@ -20,7 +20,7 @@ const props = defineProps<{ selection: FundingSelection }>();
 const emit = defineEmits<FundingPackageEmits>();
 
 if (props.selection.route !== "crypto") {
-  throw new Error(`Chainflip cannot handle the ${props.selection.route} route`);
+  throw new Error(`The crypto route cannot handle the ${props.selection.route} route`);
 }
 
 const session = useSessionStore();
@@ -28,7 +28,7 @@ const requests = useRequestsStore();
 const flow = useFlowStore();
 useVisibilityReconcile();
 useStateDirector();
-const { handedOff } = useChainflipHandoff(emit);
+const { handedOff } = useCryptoHandoff(emit);
 
 /** A price that could not be had takes the picker's place, in the two steps every quote screen
  *  shows: a retry, then a change of amount. The rail cannot be swapped for itself. */

@@ -11,57 +11,17 @@ import {
 import { directSellTokenOf } from "@getsome/meld";
 import { devLog } from "./log";
 
-// Chain and asset identifiers, as Chainflip and the icon set name them.
+// Chain and asset identifiers, as the icon set names them.
 export const CHAINS = {
-  Bitcoin: "Bitcoin",
-  Ethereum: "Ethereum",
-  Arbitrum: "Arbitrum",
-  Bsc: "Bsc",
-  Solana: "Solana",
-  Tron: "Tron",
   Polkadot: "Polkadot",
 } as const;
 
 export const ASSETS = {
-  BTC: "BTC",
-  ETH: "ETH",
-  USDC: "USDC",
-  USDT: "USDT",
-  BNB: "BNB",
-  SOL: "SOL",
-  TRX: "TRX",
   DOT: "DOT",
   DOTUSD: "dotUSD",
-  CASH: "CASH",
+  USDT: "USDT",
+  USDC: "USDC",
 } as const;
-
-// The Chainflip source chains with their available assets, in the order Chainflip's own app
-// lists them. `native` is the network's own coin. The withdraw side reads this catalog; the
-// direct network below stays out of it.
-export const SOURCE_CHAINS = [
-  { chain: CHAINS.Bitcoin, native: ASSETS.BTC, assets: [ASSETS.BTC], label: "Bitcoin" },
-  {
-    chain: CHAINS.Ethereum,
-    native: ASSETS.ETH,
-    assets: [ASSETS.ETH, ASSETS.USDC, ASSETS.USDT],
-    label: "Ethereum",
-  },
-  {
-    chain: CHAINS.Solana,
-    native: ASSETS.SOL,
-    assets: [ASSETS.SOL, ASSETS.USDC, ASSETS.USDT],
-    label: "Solana",
-  },
-  { chain: CHAINS.Tron, native: ASSETS.TRX, assets: [ASSETS.TRX, ASSETS.USDT], label: "Tron" },
-  // Chainflip names the chain Bsc; the screens say BNB Chain.
-  { chain: CHAINS.Bsc, native: ASSETS.BNB, assets: [ASSETS.BNB, ASSETS.USDT], label: "BNB Chain" },
-  {
-    chain: CHAINS.Arbitrum,
-    native: ASSETS.ETH,
-    assets: [ASSETS.ETH, ASSETS.USDC, ASSETS.USDT],
-    label: "Arbitrum",
-  },
-] as const;
 
 /** The direct network: the buyer sends the token from any wallet to the request's own account
  *  on Asset Hub. The token picks the tier: DOT the pool, dotUSD sent as it is with no conversion,
@@ -77,30 +37,11 @@ export const POLKADOT_CHAIN = {
 export const FUNDING_CHAINS = [POLKADOT_CHAIN] as const;
 export type FundingChain = (typeof FUNDING_CHAINS)[number];
 
-/** A network as the screens name it, from the name Chainflip and the records give it. */
+/** A network as the screens name it, from the name the records give it. */
 export const chainLabel = (chain: string): string =>
-  [POLKADOT_CHAIN, ...SOURCE_CHAINS].find((candidate) => candidate.chain === chain)?.label ?? chain;
+  chain === POLKADOT_CHAIN.chain ? POLKADOT_CHAIN.label : chain;
 
 // The destination is always CASH; this app has no other destination assets.
-
-/** UI pair to Chainflip SourceId, also the `?source=` deep-link vocabulary. A pair with no
- *  entry has no swap source. */
-export const SOURCE_ID_BY_KEY: Readonly<Record<string, SourceId>> = {
-  "Bitcoin:BTC": "btc",
-  "Ethereum:ETH": "eth",
-  "Ethereum:USDC": "usdc-eth",
-  "Ethereum:USDT": "usdt-eth",
-  "Arbitrum:ETH": "eth-arbitrum",
-  "Arbitrum:USDC": "usdc-arbitrum",
-  "Arbitrum:USDT": "usdt-arbitrum",
-  "Bsc:BNB": "bnb-bsc",
-  "Bsc:USDT": "usdt-bsc",
-  "Solana:SOL": "sol-solana",
-  "Solana:USDC": "usdc-solana",
-  "Solana:USDT": "usdt-solana",
-  "Tron:USDT": "usdt-tron",
-  "Tron:TRX": "trx-tron",
-};
 
 /** The direct sources, one per token, as the funding package defines them. */
 export type DirectSourceId = ManualSourceId;
@@ -132,20 +73,17 @@ export function directTokenNamed(
 }
 
 export function sourceIdFor(chain: string, asset: string): SourceId | undefined {
-  const key = `${chain}:${asset}`;
-  return DIRECT_SOURCE_ID_BY_KEY[key] ?? SOURCE_ID_BY_KEY[key];
+  return DIRECT_SOURCE_ID_BY_KEY[`${chain}:${asset}`];
 }
 
 const PAIR_BY_SOURCE_ID: ReadonlyMap<string, { chain: string; asset: string }> = new Map(
-  [...Object.entries(DIRECT_SOURCE_ID_BY_KEY), ...Object.entries(SOURCE_ID_BY_KEY)].map(
-    ([key, sourceId]) => {
-      const [chain, asset] = key.split(":") as [string, string];
-      return [sourceId, { chain, asset }];
-    },
-  ),
+  Object.entries(DIRECT_SOURCE_ID_BY_KEY).map(([key, sourceId]) => {
+    const [chain, asset] = key.split(":") as [string, string];
+    return [sourceId, { chain, asset }];
+  }),
 );
 
-/** The UI pair a source id names, in either catalog; undefined for a Meld or unknown id. */
+/** The UI pair a direct source id names; undefined for a Meld or unknown id. */
 export const sourcePairFor = (sourceId: string): { chain: string; asset: string } | undefined =>
   PAIR_BY_SOURCE_ID.get(sourceId);
 
@@ -155,7 +93,7 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
  *  USDT at a fixed rate where DOT takes the pool's price.
  *  VITE_OFFRAMP_LANES overrides the list, comma separated; an asset left out is not offered,
  *  whatever the adapter lists. An entry that is not an asset id, or names an asset no sale sells
- *  directly on Asset Hub (`usdc@arbitrum`), is dropped with a warning. */
+ *  (`usdc@assethub`), is dropped with a warning. */
 export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
   const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
   const listed = (raw ?? "")
@@ -179,7 +117,7 @@ export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
   );
   ignored(
     assets.filter((asset) => !lanes.includes(asset)),
-    "which a sale cannot sell on Asset Hub",
+    "which a sale cannot sell",
   );
   return lanes.length > 0 ? lanes : ["usdt@assethub", "dot@assethub"];
 })();

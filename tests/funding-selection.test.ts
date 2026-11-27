@@ -229,7 +229,7 @@ describe("funding keypad", () => {
 describe("funding handoff", () => {
   it("recognizes only supported route names", () => {
     expect(isFundingRoute("crypto")).toBe(true);
-    expect(isFundingRoute("chainflip")).toBe(false);
+    expect(isFundingRoute("swap")).toBe(false);
   });
 
   it("creates a canonical immutable selection", () => {

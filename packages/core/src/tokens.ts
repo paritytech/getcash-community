@@ -34,8 +34,9 @@ export interface TokenSpec {
   locationOnPeople?: XcmLocation;
   /** pallet-assets u32 id on Asset Hub, for the calls that still take one. */
   assetHubId?: number;
-  /** Chainflip egress asset name, when the rail can deliver it. */
-  chainflipAsset?: string;
+  /** The name the rails give the asset, after its Polkadot counterpart (`DOT` for the native on
+   *  any network), when a rail delivers it. */
+  railAsset?: string;
   /** The app's own name for the asset on Meld's rail, when Meld can deliver it. */
   meldAsset?: MeldAssetId;
   /** Meld destinationCurrencyCode, when Meld can deliver it: whatever the adapter currently names
@@ -87,7 +88,7 @@ export const TOKENS = {
     location: RELAY_NATIVE,
     locationOnPeople: RELAY_NATIVE,
     // Both rails name the native after its Polkadot counterpart.
-    chainflipAsset: "DOT",
+    railAsset: "DOT",
     meldAsset: "dot@assethub",
     get meldCurrencyCode(): string {
       return meldCodeOf("dot@assethub");
@@ -115,7 +116,7 @@ export const TOKENS = {
     decimals: 6,
     assetHubId: 1984,
     location: assetHubAssetLocation(1984),
-    chainflipAsset: "USDT",
+    railAsset: "USDT",
     meldAsset: "usdt@assethub",
     get meldCurrencyCode(): string {
       return meldCodeOf("usdt@assethub");

@@ -72,7 +72,6 @@ export {
   RailFailedError,
   railTickOnce,
   readingFailed,
-  sameChannelAddress,
 } from "./rail-leg";
 export type {
   RailChannelRecord,
@@ -83,8 +82,6 @@ export type {
   RailLegState,
   RailStep,
 } from "./rail-leg";
-export { buildSweep, freshSweepState, readUnswept, sweepOnce } from "./sweep";
-export type { SweepInput, SweepState } from "./sweep";
 export {
   exactPaymentFloor,
   exactPaymentLanded,

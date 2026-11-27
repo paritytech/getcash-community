@@ -22,7 +22,6 @@ const ARRIVAL_MS = MINUTE;
 const NOMINAL: Readonly<Record<WithdrawalRailProvider, readonly [number, ...number[]]>> = {
   // The direct rail lands with the XCM itself: its arrival absorbs the send.
   direct: [90 * SECOND, ARRIVAL_MS],
-  chainflip: [90 * SECOND, ARRIVAL_MS, MINUTE, 3 * MINUTE, 2 * MINUTE, 15 * MINUTE],
   // A payout the provider settles in its own time, a bank's included.
   meld: [90 * SECOND, ARRIVAL_MS, 5 * MINUTE, 10 * MINUTE, HOUR, 23 * HOUR],
 };

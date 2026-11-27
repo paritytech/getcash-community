@@ -14,14 +14,7 @@ import {
 } from "./flow-store";
 import type { HandoffAction, HandoffKey } from "./handoff";
 import { fnv1a32Hex } from "./hash";
-import type {
-  ChainflipFailureInfo,
-  EphemeralSigner,
-  PaymentDeps,
-  SourceAvailability,
-  SourceDescriptor,
-  SwapStatusResult,
-} from "./ports";
+import type { EphemeralSigner, PaymentDeps, RailFailureInfo, SwapStatusResult } from "./ports";
 import { reEnter, reEnterHandoff, type ReEnterOutcome } from "./reenter";
 import type {
   DepositInfo,
@@ -68,7 +61,7 @@ export interface PaymentConfigBase {
    * 0.5 DOT in spend mode and 0 in deliver and handoff modes.
    */
   onChainOverheadPlancks?: bigint;
-  /** Chainflip status-poll interval, ms. Default 5_000. */
+  /** Rail status-poll interval, ms. Default 5_000. */
   statusPollIntervalMs?: number;
   /** Age after which an un-funded flow is stale, ms. Default 86_400_000. */
   staleFlowMs?: number;
@@ -103,8 +96,8 @@ export interface SpendPaymentConfig<T> extends PaymentConfigBase {
 }
 
 /**
- * Deliver mode: no action; Chainflip egresses directly to `recipient`. No ephemeral or funding
- * gate; the rail's egress witness (txRef) is the terminal.
+ * Deliver mode: no action; the rail delivers directly to `recipient`. No ephemeral or funding
+ * gate; the rail's delivery (txRef) is the terminal.
  */
 export interface DeliverPaymentConfig extends PaymentConfigBase {
   action?: undefined;
@@ -168,23 +161,6 @@ export interface PaymentEvents {
   ): Subscription;
 }
 
-/** Source catalog + per-source availability. */
-export interface SourceController {
-  /** Sync, descriptive, no network. Filtered by config.sources when set. */
-  list(): readonly SourceDescriptor[];
-  /** Sync current cached verdict; 'unknown' before the first probe. */
-  availability(sourceId: SourceId): SourceAvailability;
-  /** Pushes the full availability map on each change. */
-  subscribeAvailability(
-    cb: (byId: Readonly<Record<SourceId, SourceAvailability>>) => void,
-  ): Subscription;
-  /**
-   * Warm the liquidity gate for one (or all) sources. Idempotent: checking/available are not
-   * re-probed.
-   */
-  probe(sourceId?: SourceId): void;
-}
-
 /** Thrown by settled() when the flow ends in a terminal 'failed'. */
 export class PaymentError extends Error {
   readonly failure: PaymentFailure;
@@ -208,8 +184,6 @@ export interface PaymentSession<T> {
   /** Push on every transition. Primary render path. */
   subscribe(cb: (s: PaymentState) => void): Subscription;
   readonly events: PaymentEvents;
-  /** Source catalog + streamed availability. */
-  readonly sources: SourceController;
   /** Switch the source while idle only; no-op mid-flow. */
   selectSource(id: SourceId): void;
   /**
@@ -217,7 +191,7 @@ export interface PaymentSession<T> {
    */
   quote(): Promise<Quote>;
   /** Opens the deposit channel. `payload` is required in spend mode. */
-  start(args?: { refundAddress?: string; payload?: T }): Promise<void>;
+  start(args?: { payload?: T }): Promise<void>;
   /** Re-derive key, re-probe isComplete() first, re-attach polls. Concurrent calls dedup. */
   resume(): Promise<void>;
   /** Re-enters from a recoverable failure. No-op in any other state. */
@@ -235,28 +209,13 @@ export interface PaymentSession<T> {
 const FAILURE_KINDS: readonly FailureKind[] = [
   "quote",
   "deposit-rejected",
-  "egress-failed",
-  "fallback-egress",
   "mint",
   "under-credit",
-  "refunded",
-  "refund-failed",
   "expired",
   "stale",
   "unknown",
 ];
 const FAILURE_STEPS: readonly FailureStep[] = ["deposit", "swap", "mint"];
-
-/** The message of a Chainflip swap whose send to Asset Hub failed or went to the fallback. */
-export const CHAINFLIP_SEND_FAILED_MESSAGE =
-  "Chainflip exchanged your funds but couldn't send them.";
-
-const REFUND_FAILED: PaymentFailure = {
-  kind: "refund-failed",
-  step: "swap",
-  message: "Chainflip couldn't return your funds.",
-  recoverable: false,
-};
 
 /** ASCII-only byte encoding for the default entropy label. */
 function asciiBytes(s: string): Uint8Array {
@@ -265,46 +224,25 @@ function asciiBytes(s: string): Uint8Array {
   return out;
 }
 
-const failureCode = (failure: ChainflipFailureInfo): { code?: string } =>
+const failureCode = (failure: RailFailureInfo): { code?: string } =>
   failure.reason?.code === undefined ? {} : { code: failure.reason.code };
 
-/** Map a Chainflip status result to the failure vocabulary. */
-function mapSwapFailure(r: SwapStatusResult): PaymentFailure {
+/** The message of a rail that reported a failure without naming one. */
+export const RAIL_FAILED_MESSAGE = "The payment provider couldn't complete this payment.";
+
+/** Map a rail's failed status to the failure vocabulary. The rail's own kind and message take
+ *  precedence over the defaults. */
+function mapRailFailure(r: SwapStatusResult): PaymentFailure {
   if (r.depositFailure) {
-    // The rail's own kind and message take precedence over the Chainflip defaults.
     return {
       kind: r.depositFailure.kind ?? "deposit-rejected",
       step: "deposit",
-      message:
-        r.depositFailure.reason?.message ?? "Deposit rejected by Chainflip; funds not recoverable",
+      message: r.depositFailure.reason?.message ?? RAIL_FAILED_MESSAGE,
       recoverable: false,
       ...failureCode(r.depositFailure),
     };
   }
-  if (r.swapEgressFailure) {
-    return {
-      kind: r.swapEgressFailure.kind ?? "egress-failed",
-      step: "swap",
-      message: r.swapEgressFailure.reason?.message ?? CHAINFLIP_SEND_FAILED_MESSAGE,
-      recoverable: false,
-      ...failureCode(r.swapEgressFailure),
-    };
-  }
-  if (r.fallbackEgress) {
-    return {
-      kind: "fallback-egress",
-      step: "swap",
-      message: CHAINFLIP_SEND_FAILED_MESSAGE,
-      recoverable: false,
-    };
-  }
-  // Plain SDK failed: Chainflip streams the deposit back to the refund address.
-  return {
-    kind: "refunded",
-    step: "swap",
-    message: "The deposit didn't go through. It is being returned to your recovery address.",
-    recoverable: false,
-  };
+  return { kind: "unknown", step: "deposit", message: RAIL_FAILED_MESSAGE, recoverable: false };
 }
 
 export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
@@ -436,7 +374,7 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
    */
   function currentDeposit(): DepositInfo {
     if (liveDeposit) return liveDeposit;
-    const desc = deps.chainflip.sources().find((s) => s.sourceId === currentSourceId);
+    const desc = deps.rail.sources().find((s) => s.sourceId === currentSourceId);
     return {
       address: flow?.depositAddress ?? "",
       amount: flow?.depositAmount !== undefined ? BigInt(flow.depositAmount) : 0n,
@@ -567,12 +505,8 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
     if (!channelId) return;
     statusBusy = true;
     try {
-      const result = await deps.chainflip.getStatus(channelId);
-      const implicitFailure = !!(
-        result.depositFailure ||
-        result.swapEgressFailure ||
-        result.fallbackEgress
-      );
+      const result = await deps.rail.getStatus(channelId);
+      const implicitFailure = result.depositFailure !== undefined;
 
       if (result.status === "complete") {
         // Swap done. Spend: funds detection stays with the balance poll.
@@ -596,7 +530,7 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
         phase !== "done"
       ) {
         stopBalancePoll();
-        await toFailed(mapSwapFailure(result));
+        await toFailed(mapRailFailure(result));
       } else if (
         !implicitFailure &&
         result.status !== "failed" &&
@@ -610,33 +544,11 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
           quote: lastQuote,
           deposit: currentDeposit(),
           swap: result.status,
-          ...(result.progress === undefined ? {} : { progress: result.progress }),
-          ...(result.egress?.scheduledAt === undefined
-            ? {}
-            : { egressScheduledAt: result.egress.scheduledAt }),
         });
       }
 
-      // A refund in flight is reported on the failed state as far as Chainflip has taken it.
-      if (state.phase === "failed" && result.refundEgress) {
-        const { amount, txRef, witnessedAt, failure } = result.refundEgress;
-        if (failure && state.failure.kind !== "refund-failed") await toFailed(REFUND_FAILED);
-        const failed = state;
-        if (failed.phase === "failed") {
-          setState({ ...failed, refund: { amount, txRef, witnessedAt } });
-        }
-      }
-
-      // Terminal for the status poll: hard deposit/egress failure, or refund witnessed/failed.
-      // A failed flow with a refund still streaming keeps polling.
-      if (
-        result.depositFailure ||
-        result.swapEgressFailure ||
-        result.refundEgress?.witnessedAt ||
-        result.refundEgress?.failure
-      ) {
-        stopStatusPoll();
-      }
+      // Terminal for the status poll: the rail reported the flow failed.
+      if (result.status === "failed" || implicitFailure) stopStatusPoll();
     } catch {
       // self-recovers on the next tick
     } finally {
@@ -777,66 +689,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
     await reEnterHandoffNow();
   }
 
-  const availabilityCache = new Map<SourceId, SourceAvailability>();
-  const availabilitySubs = new Set<
-    (byId: Readonly<Record<SourceId, SourceAvailability>>) => void
-  >();
-
-  function listSources(): readonly SourceDescriptor[] {
-    const all = deps.chainflip.sources();
-    return config.sources ? all.filter((d) => config.sources?.includes(d.sourceId)) : all;
-  }
-
-  function availabilitySnapshot(): Readonly<Record<SourceId, SourceAvailability>> {
-    const out = {} as Record<SourceId, SourceAvailability>;
-    for (const d of listSources()) {
-      out[d.sourceId] = availabilityCache.get(d.sourceId) ?? { status: "unknown" };
-    }
-    return out;
-  }
-
-  function notifyAvailability(): void {
-    const snap = availabilitySnapshot();
-    availabilitySubs.forEach((cb) => cb(snap));
-  }
-
-  function probeOne(id: SourceId): void {
-    const cur = availabilityCache.get(id);
-    // Checking and available verdicts are not re-probed; unavailable is.
-    if (cur && (cur.status === "checking" || cur.status === "available")) return;
-    availabilityCache.set(id, { status: "checking" });
-    notifyAvailability();
-    void deps.chainflip.probeLiquidity(id).then(
-      (verdict) => {
-        availabilityCache.set(id, verdict);
-        notifyAvailability();
-      },
-      (err: unknown) => {
-        availabilityCache.set(id, {
-          status: "unavailable",
-          reason: err instanceof Error ? err.message : String(err),
-        });
-        notifyAvailability();
-      },
-    );
-  }
-
-  const sourcesController: SourceController = {
-    list: listSources,
-    availability: (id) => availabilityCache.get(id) ?? { status: "unknown" },
-    subscribeAvailability(cb) {
-      availabilitySubs.add(cb);
-      return {
-        unsubscribe() {
-          availabilitySubs.delete(cb);
-        },
-      };
-    },
-    probe(id) {
-      (id ? [id] : listSources().map((d) => d.sourceId)).forEach(probeOne);
-    },
-  };
-
   async function quoteVerb(): Promise<Quote> {
     // quote() is only valid before a flow starts.
     if (flow) throw new Error("a flow is in progress; cancel() it before re-quoting");
@@ -845,7 +697,7 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       // budget.amount is already in plancks for native settlement. Deliver and handoff modes
       // default the on-chain overhead to zero; spend mode defers to the rail's default.
       const overhead = config.onChainOverheadPlancks ?? (mode !== "spend" ? 0n : undefined);
-      const q = await deps.chainflip.getQuote({
+      const q = await deps.rail.getQuote({
         sourceId: currentSourceId,
         target: { amount: config.budget.amount, decimals: config.targetDecimals ?? 10 },
         ...(overhead !== undefined ? { onChainOverheadPlancks: overhead } : {}),
@@ -869,7 +721,7 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
     }
   }
 
-  function start(args: { refundAddress?: string; payload?: T } = {}): Promise<void> {
+  function start(args: { payload?: T } = {}): Promise<void> {
     // Double-start guard: concurrent calls share one in-flight attempt.
     if (startInFlight) return startInFlight;
     startInFlight = doStart(args).finally(() => {
@@ -878,7 +730,7 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
     return startInFlight;
   }
 
-  async function doStart(args: { refundAddress?: string; payload?: T }): Promise<void> {
+  async function doStart(args: { payload?: T }): Promise<void> {
     await hydration;
 
     const existing = flow ?? peekCache;
@@ -937,10 +789,9 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       await deps.chain.settlementBalance(key.address, settlement);
       // No payload seam in handoff; the settle amount is the domain input.
       const idempotencyKey = fnv1a32Hex(`${config.recipient}|handoff|${settleAmount}|${startedAt}`);
-      const channel = await deps.chainflip.requestDepositAddress({
+      const channel = await deps.rail.requestDepositAddress({
         quote: q,
         destAddress: key.address,
-        refundAddress: args.refundAddress,
       });
       liveDeposit = channel.deposit;
       await saveFlow({
@@ -977,10 +828,9 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
 
     // Deliver mode: the channel's destination is the recipient; no ephemeral, no gate.
     if (!spend) {
-      const channel = await deps.chainflip.requestDepositAddress({
+      const channel = await deps.rail.requestDepositAddress({
         quote: q,
         destAddress: config.recipient,
-        refundAddress: args.refundAddress,
       });
       liveDeposit = channel.deposit;
       await saveFlow({
@@ -1021,10 +871,9 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
     const payloadJson = JSON.stringify(args.payload);
     const idempotencyKey = fnv1a32Hex(`${config.recipient}|${payloadJson}|${startedAt}`);
 
-    const channel = await deps.chainflip.requestDepositAddress({
+    const channel = await deps.rail.requestDepositAddress({
       quote: q,
       destAddress: s.address,
-      refundAddress: args.refundAddress,
     });
 
     liveDeposit = channel.deposit;
@@ -1154,8 +1003,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       case "failed": {
         const failure = parseStoredFailure(stored.errorMessage);
         setState({ phase: "failed", sourceId: currentSourceId, failure });
-        // A refund may still be streaming; keep polling.
-        if (failure.kind === "refunded" && stored.depositChannelId) startStatusPoll();
         break;
       }
       default:
@@ -1283,7 +1130,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       };
     },
     events: { on: emitter.on },
-    sources: sourcesController,
     selectSource,
     quote: quoteVerb,
     start,
@@ -1300,7 +1146,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       epoch += 1;
       flow = null;
       subscribers.clear();
-      availabilitySubs.clear();
       emitter.clear();
       // No state change; pending settled() waiters stay pending.
     },

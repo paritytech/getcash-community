@@ -23,6 +23,7 @@ export const meldSourceIdFor = (method: MeldMethod): MeldSourceId =>
 export const meldMethodFor = (sourceId: MeldSourceId): MeldMethod =>
   sourceId === "meld-card" ? "card" : "bank";
 
-/** A source the crypto rail serves: a direct Asset Hub deposit, a Chainflip swap, or none. */
+/** A source the crypto rail serves: a direct Asset Hub deposit, or none, which a record from
+ *  before source ids were kept means. */
 export const isCryptoSourceId = (sourceId: string | undefined): boolean =>
   sourceId === undefined || sourcePairFor(sourceId) !== undefined;

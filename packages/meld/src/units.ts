@@ -5,10 +5,8 @@
 
 import type { TokenSpec } from "@getsome/core";
 
-/**
- * An asset as Meld names and sizes it: its currency code on the wire and the decimals its amounts
- * carry. A token of the table, or a lane's asset on another chain, which no TokenSpec describes.
- */
+/** An asset as Meld names and sizes it: its currency code on the wire and the decimals its
+ *  amounts carry. */
 export type MeldToken = Pick<TokenSpec, "symbol" | "decimals"> &
   Required<Pick<TokenSpec, "meldCurrencyCode">>;
 

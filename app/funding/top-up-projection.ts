@@ -38,11 +38,6 @@ export interface FundingTopUpRecord {
   claimed?: string;
   /** Why the request failed. */
   failureReason?: string;
-  /** The failed swap was refunded to the request's own key, with what came back and the
-   *  transaction that returned it. */
-  refunded?: boolean;
-  refundAmount?: string;
-  refundTxRef?: string;
 }
 
 /**

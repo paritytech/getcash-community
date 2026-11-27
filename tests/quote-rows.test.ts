@@ -23,7 +23,7 @@ describe("a failure's details rows", () => {
   });
 
   it("drops a row the record cannot fill rather than showing it blank", () => {
-    expect(failureDetailRows({ provider: "Chainflip" }).map((r) => r.label)).toEqual(["Provider"]);
+    expect(failureDetailRows({ provider: "Meld" }).map((r) => r.label)).toEqual(["Provider"]);
     expect(failureDetailRows({})).toEqual([]);
   });
 });
@@ -51,8 +51,8 @@ describe("a live quote's rows", () => {
   });
 
   it("keeps the crypto rail's full-precision ticker form", () => {
-    const crypto: QuoteView = { amount: "0.00045", symbol: "BTC", crypto: true };
-    expect(quoteDetailRows(crypto)[0]?.value).toBe("0.00045 BTC");
+    const crypto: QuoteView = { amount: "4.32178", symbol: "DOT", crypto: true };
+    expect(quoteDetailRows(crypto)[0]?.value).toBe("4.32178 DOT");
   });
 
   it("has nothing to show without a quote", () => {

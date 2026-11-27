@@ -9,9 +9,8 @@ import { shortAddress } from "../../utils/address";
 import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { depositQrValue } from "../../funding/deposit-qr";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
-import { depositGone, effectiveSourceId } from "../../funding/requests/model";
+import { depositGone } from "../../funding/requests/model";
 import { directDepositDropped } from "../../funding/requests/views";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import DepositMismatchSheet from "../funding/DepositMismatchSheet.vue";
@@ -72,37 +71,22 @@ const deposit = computed(() => {
   return requests.phase === "awaiting-deposit" && d ? { ...d, amount: BigInt(d.amount) } : null;
 });
 
-/** The address the copy row carries; the QR may wrap it in a payment URI. */
+/** The address the copy row carries and the QR encodes. */
 const address = computed(() => deposit.value?.address ?? "");
 
-/** How much to send, split so the copy carries the bare number: the swap network's figure when it
- *  priced this purchase, the estimate marked ≈ otherwise, the bare native figure when no source is
- *  chosen. */
+/** How much to send, split so the copy carries the bare number: the rail's own figure, the
+ *  browser world's estimate marked ≈, or the bare native figure when no source is chosen. */
 const amount = computed<{ value: string; symbol: string; approx: boolean } | null>(() => {
   const d = deposit.value;
   if (!d) return null;
   const q = session.quoted;
-  const priced = session.sourcePrice;
-  if (priced?.kind === "price" && q?.sourceAsset) {
-    return { value: priced.price.formatted, symbol: q.sourceAsset, approx: false };
-  }
-  // TODO(production): the floor and browser estimates below are demo conveniences; remove them
-  // with estimateSourceFromCash.
-  // Below the floor: the floor quote's rate, scaled linearly to this purchase.
-  if (priced?.kind === "minimum") {
-    return {
-      value: priced.minimum.neededFormatted,
-      symbol: priced.minimum.assetSymbol,
-      approx: true,
-    };
-  }
-  // The figure is the rail's own, exact: a direct Polkadot deposit in the token the buyer picked,
-  // or a reopened swap in the channel's asset, read back off the record.
+  // The figure is the rail's own, exact: a direct Polkadot deposit in the token the buyer picked.
   if (q?.send && q.symbol === q.sourceAsset) {
     const bare = q.send.endsWith(q.symbol) ? q.send.slice(0, -q.symbol.length).trim() : q.send;
     return { value: bare, symbol: q.symbol, approx: false };
   }
-  // The browser world's estimate scales from the CASH amount.
+  // TODO(production): the browser estimate below is a demo convenience; remove it with
+  // estimateSourceFromCash. The browser world's estimate scales from the CASH amount.
   if (!session.live && q?.sourceAsset && session.amountBase !== null) {
     const estimate = estimateSourceFromCash(session.amountBase, q.sourceAsset);
     if (estimate) return { value: estimate, symbol: q.sourceAsset, approx: true };
@@ -115,20 +99,6 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
 const amountText = computed(() => {
   const a = amount.value;
   return a ? `${a.approx ? "≈ " : ""}${a.value} ${a.symbol}` : "";
-});
-
-/** What the QR encodes: a payment URI a wallet can scan when the source has one and the figure
- *  is the channel's own, the bare address otherwise. */
-const qrValue = computed(() => {
-  const record = requests.foregroundRecord;
-  const d = deposit.value;
-  if (!record || !d) return address.value;
-  return depositQrValue({
-    sourceId: effectiveSourceId(record.ref),
-    address: d.address,
-    amount: d.amount.toString(),
-    exact: amount.value?.approx === false,
-  });
 });
 
 const source = computed(() => {
@@ -190,7 +160,7 @@ function copy(target: "amount" | "address") {
     <!-- The one flexible block on the screen. Short webviews shrink the QR to a scannable
          floor. The basis carries the card's 288px plus this block's own 16px bottom gap. -->
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
-      <QrCard :value="qrValue" />
+      <QrCard :value="address" />
     </div>
 
     <!-- Each row copies its value; the pill above the buttons confirms. -->

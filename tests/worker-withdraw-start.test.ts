@@ -19,7 +19,7 @@ vi.mock("../worker/src/host.js", () => ({
     },
   }),
 }));
-vi.mock("../worker/src/providers.js", () => ({ railFor: vi.fn(), payRail: vi.fn() }));
+vi.mock("../worker/src/providers.js", () => ({ railFor: vi.fn() }));
 vi.mock("@polkadot-api/descriptors", () => ({
   paseo_next_v2: { fake: "asset-hub" },
   paseo_people_next: { fake: "people" },
@@ -86,7 +86,7 @@ const convertingJob = (sessionId: string, waitingSince: number | null): StoredJo
     waitingSince,
     workedMs: RUN_TIMEOUT_MS,
   },
-  leg: { handoff: null, paid: false, sweep: { attempts: 0, rejections: 0 }, reading: null },
+  leg: { handoff: null, paid: false, reading: null },
   txs: [],
 });
 

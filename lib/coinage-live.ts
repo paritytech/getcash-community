@@ -8,8 +8,8 @@ import {
   requestPermission,
 } from "@parity/product-sdk-host";
 import { getStorageWorkerManager } from "./worker-rpc";
-import { createFlowStore, type ChainflipRail, type FlowState, type SourceId } from "@getsome/core";
-import { deriveKeypair, type RefundKey } from "@getsome/ephemeral";
+import { createFlowStore, type FlowState, type FundingRail, type SourceId } from "@getsome/core";
+import { deriveKeypair } from "@getsome/ephemeral";
 import {
   chooseRoute,
   type ConversionRoute,
@@ -42,7 +42,6 @@ import {
   readDepositOnAh,
   readPurseBalance,
   readTradeCounter,
-  recoverRefundKey,
   stage,
   tradeEntropyLabel,
   tradeEntropyLabelString,
@@ -98,21 +97,6 @@ export async function probeTradeBurner(
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   return { address, free: await readDepositOnAh(api, route, address) };
-}
-
-/**
- * A refunded request's recovery key, from the record's own fields. No session, no network.
- *
- * The host derives the seed, exactly as it did when the request was opened, so this returns the
- * same key the rail was given — which is why a refund can be recovered long after the world that
- * created it is gone. Null off-host, where there is no entropy root to ask.
- */
-export async function probeRefundKey(
-  sourceId: SourceId,
-  tradeN: number,
-): Promise<RefundKey | null> {
-  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
-  return recoverRefundKey(entropy, sourceId, tradeN);
 }
 
 /** Runs `watch` at the best and at the finalized block; the returned function ends both. */
@@ -309,17 +293,9 @@ export async function chooseHostedRoute(
   });
 }
 
-/** The conversion tiers a hosted request with no named deposit could take, best first, read off
- *  the live PSM: a Chainflip pick asks its provider about each in order, before any deposit
- *  address exists, and keeps the first it can quote. */
-export async function rankHostedRoutes(
-  amount: bigint,
-): Promise<[ConversionRoute, ...ConversionRoute[]]> {
-  return rankRoutes(await routeApi(), { direction: "mint", internalAmount: amount });
-}
-
-/** The tiers a card or bank top-up asks its provider about, best first: `rankHostedRoutes`'
- *  order, then USDC, through the PSM when it can take the amount and the pool otherwise. */
+/** The tiers a card or bank top-up asks its provider about, best first: the tiers a request with
+ *  no named deposit could take, read off the live PSM, then USDC, through the PSM when it can
+ *  take the amount and the pool otherwise. */
 export async function rankMeldRoutes(
   amount: bigint,
 ): Promise<[ConversionRoute, ...ConversionRoute[]]> {
@@ -346,7 +322,7 @@ export async function createHostedCoinageWorld(args: {
   /** Which request's burner to derive; omit for a new one (see CoinageSessionArgs.tradeN). */
   tradeN?: number;
   /** Fiat rail and its source id, when the fiat route drives this run. */
-  rail?: ChainflipRail;
+  rail?: FundingRail;
   sourceId?: SourceId;
   /** Core's stale bound for the flow slot (see CoinageSessionArgs.staleFlowMs). */
   staleFlowMs?: number;
@@ -411,8 +387,7 @@ export async function startLiveCoinage(args: {
   await world.session.ready;
   const quote = await world.session.quote();
   devLog("coinage", `quoted native budget: ${quote.source.formatted} ${quote.source.assetSymbol}`);
-  const { refundAddress } = world;
-  await world.session.start(refundAddress === null ? {} : { refundAddress });
+  await world.session.start();
   void world.runFunding({
     onStep: (step: FundingStep) => devLog("coinage", `funding step: ${step}`),
     onTransientError: (e) => devLog("coinage", "funding transient", e, "warn"),

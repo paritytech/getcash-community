@@ -12,7 +12,6 @@ import { DepositUnpricedError } from "@getsome/funding";
 const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
   railFor: vi.fn(),
-  payRail: vi.fn(),
   payRailExact: vi.fn(),
   exactPaymentOut: vi.fn(),
   /** What became of a payment seen in a best block. */
@@ -59,7 +58,6 @@ vi.mock("../worker/src/host.js", () => ({
 vi.mock("../worker/src/providers.js", () => ({
   PAY_TIMEOUT_MS: 300_000,
   railFor: mocks.railFor,
-  payRail: mocks.payRail,
   payRailExact: mocks.payRailExact,
   exactPaymentOut: mocks.exactPaymentOut,
   paymentOutcome: mocks.paymentOutcome,
@@ -227,7 +225,6 @@ function landedJob(): StoredJob {
     leg: {
       handoff: { id: channel.id, address: DEPOSIT, openedAt: channel.openedAt, expiresAt: 0 },
       paid: false,
-      sweep: { attempts: 0, rejections: 0 },
       exact: { nonce: 0, inFlight: false, balanceBefore: null, rejections: 0 },
       reading: null,
     },
@@ -263,7 +260,6 @@ describe("the worker's side of a fiat sale", () => {
     mocks.stored.clear();
     for (const fn of [
       mocks.railFor,
-      mocks.payRail,
       mocks.payRailExact,
       mocks.exactPaymentOut,
       mocks.status,
@@ -316,7 +312,6 @@ describe("the worker's side of a fiat sale", () => {
     const engine = await engineWith({ "s-1": landedJob() });
     await engine.tickAllWithdraw();
     expect(mocks.channel).toHaveBeenCalledWith("funding-sell-1");
-    expect(mocks.payRail).not.toHaveBeenCalled();
     expect(mocks.payRailExact).toHaveBeenCalledTimes(1);
     const [, paidHandoff, paidAmount, exact] = mocks.payRailExact.mock.calls[0]!;
     expect(paidHandoff).toMatchObject({ id: "funding-sell-1", address: DEPOSIT });
@@ -414,13 +409,12 @@ describe("the worker's side of a fiat sale", () => {
     mocks.paymentOutcome.mockResolvedValue("pending");
     const engine = await engineWith({ "s-1": paidAtBest() });
     await engine.tickAllWithdraw();
-    // The exact payment is judged by the key even in a block too old to name: its nonce keeps a
-    // refund from passing for it.
+    // A block replaced or too old to name says nothing of the payment: the chain is asked for its
+    // effect on the key instead.
     expect(mocks.paymentOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "s-1" }),
       { number: 7, hash: "0xpaid" },
       expect.any(Function),
-      { unknownStands: false },
     );
     // The payment's effect: past its nonce, the balance down by the figure.
     const shows = mocks.paymentOutcome.mock.calls[0]![2] as (key: object) => boolean;

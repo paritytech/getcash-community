@@ -2,7 +2,7 @@
 // The "Copied" confirmation, in the one place every screen draws it.
 //
 // Driven by the shared copy signal rather than a prop: a screen can hold several independent
-// copy controls (the refund guide has three), and threading each one's flag up to a single pill
+// copy controls (the recovery guide has three), and threading each one's flag up to a single pill
 // means every new control has to remember to join in. Watching the signal, any successful copy
 // anywhere raises it, and a screen opts in simply by rendering this.
 import { onUnmounted, ref, watch } from "vue";

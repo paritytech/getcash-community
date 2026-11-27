@@ -2,18 +2,18 @@
 // lapses.
 
 import { computed, watch } from "vue";
-import { chainflipDepositPending } from "../funding/chainflip-handoff";
+import { cryptoDepositPending } from "../funding/crypto-handoff";
 import { useFlowStore } from "../stores/flow";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 
-export function useChainflipHandoff(emit: (event: "handoff") => void) {
+export function useCryptoHandoff(emit: (event: "handoff") => void) {
   const session = useSessionStore();
   const requests = useRequestsStore();
   const flow = useFlowStore();
 
   const depositPending = computed(() =>
-    chainflipDepositPending({
+    cryptoDepositPending({
       fundsSeen: requests.fundsSeen,
       awaitingDeposit: requests.awaitingDeposit,
     }),

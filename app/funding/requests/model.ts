@@ -2,13 +2,11 @@
 // that move it, and the constants the store and the reducer share.
 
 import type {
-  ChainflipProgressFacts,
   FailureKind,
   FailureStep,
   MeldAssetId,
   PaymentPhase,
   PaymentState,
-  RefundProgress,
   SwapProgress,
   SwapStatusResult,
 } from "@getsome/core";
@@ -20,7 +18,6 @@ import {
   type RecoveryToken,
   type Stable,
 } from "@getsome/funding";
-import type { LaneId } from "@getsome/offramp";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
@@ -144,7 +141,7 @@ export type RequestStatus =
   | { kind: "cancelled"; at: number };
 
 export interface RailState {
-  provider: "chainflip" | "meld" | "manual";
+  provider: "meld" | "manual";
   status: SwapProgress | "failed";
   stage: "waiting" | "received" | "processing" | "delivered" | "failed";
   delayed?: boolean;
@@ -159,8 +156,6 @@ export interface RequestFailure {
   step: FailureStep;
   message: string;
   recoverable: boolean;
-  refunded?: boolean;
-  refund?: RefundProgress;
   /** The rail's own code for the ending, when it named one. */
   code?: string;
 }
@@ -234,17 +229,6 @@ export type ObservedFact =
   | "final-on-burner"
   | "cash-on-people"
   | "host-claiming";
-
-/** Chainflip's progress as the record keeps it: no count or time moves back, and a fact a later
- *  read leaves out stays. Chainflip's clock is a witness, not a fact. */
-export interface ChainflipFacts extends Omit<ChainflipProgressFacts, "lastStatechainUpdateAt"> {
-  /** When Chainflip scheduled the egress to Asset Hub. */
-  egressScheduledAt?: number;
-  /** When the current confirmation count was first observed. */
-  confirmationsAt?: number;
-  /** When the current count of executed chunks was first observed. */
-  chunksAt?: number;
-}
 
 /** The deposit in a best block on Asset Hub, as the worker follows it until it is final. */
 export interface DepositInBlock {
@@ -397,7 +381,6 @@ export interface TopUpRecord {
   claimed?: string;
   cancelledAt?: number;
   failureReason?: string;
-  refunded?: boolean;
   tradeN?: number;
   sourceId?: string;
   // Additive fields.
@@ -415,7 +398,6 @@ export interface TopUpRecord {
    *  hand-off never persisted is still recovered on it rather than re-decided. A record from
    *  before tiers were recorded has none and is a pool one. */
   conversion?: ConversionRoute;
-  refundAddress?: string;
   /** Direct deposits only: what landed on the request's account when it is not what was asked,
    *  less of the picked token or some of another. The request stays on its deposit while this is
    *  set, and the buyer chooses to continue with what arrived or to take it back. */
@@ -425,8 +407,6 @@ export interface TopUpRecord {
   creditedAt?: number;
   /** When the record first observed each fact the timeline measures time from. */
   observedAt?: Partial<Record<ObservedFact, number>>;
-  /** A Chainflip swap's progress, from core's status reads. */
-  chainflip?: ChainflipFacts;
   /** The worker's facts past the deposit, each kept from its first report but for what a fork
    *  takes back: the deposit's block and the conversion. Only `finalized` and `best` of the
    *  deposit move on. The timeline reads only that the deposit's block is there; its numbers are
@@ -471,8 +451,6 @@ export interface TopUpRecord {
         }
       | { known: false; at: number };
     provider?: { status: string; at: number };
-    /** Chainflip's own clock at its latest status read. */
-    chainflip?: { lastStatechainUpdateAt: number };
     chain?: {
       best?: { burnerNative: string; block?: number; at: number };
       finalized?: { burnerNative: string; block?: number; at: number };
@@ -539,7 +517,7 @@ export type WithdrawalStatus =
 
 /** The leg a withdrawal left when it failed; `withdrawalRankOf` reads the rank back from it. */
 export type WithdrawalFailureStep = "payment" | "convert" | "send";
-/** The last four are the provider's endings on the rail leg, as the deposit side names them. */
+/** `deposit-rejected` is the provider's ending on the rail leg, as the deposit side names it. */
 export type WithdrawalFailureKind =
   | "payment-failed"
   | "rejected"
@@ -549,13 +527,6 @@ export type WithdrawalFailureKind =
   | "expired"
   | "unknown"
   | "deposit-rejected"
-  | "egress-failed"
-  | "fallback-egress"
-  | "refunded"
-  /** The provider closed the channel before the key paid it; nothing moved. */
-  | "channel-expired"
-  /** The provider's record of the channel did not match the withdrawal; nothing moved. */
-  | "channel-mismatch"
   /** The price moved past what a sale promised its provider; the CASH is still on the key. */
   | "unfundable"
   /** Whether the provider was paid cannot be told from the chain; nothing more is sent. */
@@ -639,10 +610,6 @@ export interface WithdrawalHandoffPayload {
   /** A fiat sale only: the adapter the worker reads the sale from, or `offline` for a build that
    *  ran the stand-in sale and has no adapter. */
   meld?: { baseUrl?: string; productId?: string; auth?: "dev" | "personhood"; offline?: boolean };
-  /** A fiat sale through an offramp lane only: the Chainflip channel the key pays, swapping its
-   *  USDT for the lane's asset and paying it to the provider's deposit address (`channel`). Opened
-   *  by the page once that address is known. */
-  swap?: WithdrawalChannel;
 }
 
 /** The sale's fields as the hand-off carries them, spread from the route decided at quote time. */
@@ -669,10 +636,8 @@ export interface WithdrawalChannel {
   /** What the quote said would land, in the destination asset's base units: a fiat sale's in
    *  cents of its fiat. */
   expectedEgress: string;
-  /** The exact planck the key pays, for a provider that holds it to its quote. Absent: the key
-   *  pays everything it holds. */
+  /** The exact base units the key pays, which the provider holds it to. */
   amount?: string;
-  minPrice?: number;
 }
 
 /**
@@ -689,11 +654,9 @@ export interface MeldSale {
   paymentMethodType: string;
   /** Where the seller does KYC and names the payout account. */
   widgetUrl: string;
-  /** The exact amount the provider is paid, base units of the sold asset: PAS, USDT for a direct
-   *  sale of it, or the lane's asset for a sale through an offramp lane. */
+  /** The exact amount the provider is paid, base units of the sold asset: PAS, or USDT for a
+   *  sale of it. */
   cryptoAmount: string;
-  /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
-  lane?: LaneId;
   /** A direct sale under a code other than Meld's code for DOT: its code for the USDT the PSM
    *  redeemed, which the key pays and `cryptoAmount` is in. The code as the adapter named the asset
    *  when the sale opened, kept for the wire; what the sale sells is `asset`. */
@@ -749,13 +712,13 @@ export interface WithdrawJobView {
    *  seen: what a direct withdrawal's user got. Null until then. */
   received?: string | null;
   txs?: {
-    call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
+    call: "swap" | "withdraw" | "redeem" | "pool-exit" | "pay";
     txHash: string;
     block?: number;
     /** The chain took it: false for one included and refused. */
     ok: boolean;
   }[];
-  /** The provider's latest word on the swap, once the worker has paid it. */
+  /** The provider's latest word on the sale, once the worker has paid it. */
   rail?: SwapStatusResult;
   /** A fiat sale only: what the sale left on the key once the provider was paid, planck, and its
    *  way home as CASH. */
@@ -776,10 +739,10 @@ export interface WithdrawalResidue {
   stuck?: boolean;
 }
 
-/** `direct` for a destination on Asset Hub, which the funds reach with the XCM itself; the rest
- *  carry the PAS on from the key's own Asset Hub account. */
-export type WithdrawalRailProvider = "direct" | "chainflip" | "meld";
-export const WITHDRAWAL_RAILS: readonly WithdrawalRailProvider[] = ["direct", "chainflip", "meld"];
+/** `direct` for a destination on Asset Hub, which the funds reach with the XCM itself; `meld` for
+ *  a sale, which carries what landed on from the key's own Asset Hub account. */
+export type WithdrawalRailProvider = "direct" | "meld";
+export const WITHDRAWAL_RAILS: readonly WithdrawalRailProvider[] = ["direct", "meld"];
 export const isWithdrawalRail = (value: unknown): value is WithdrawalRailProvider =>
   (WITHDRAWAL_RAILS as readonly unknown[]).includes(value);
 
@@ -866,7 +829,7 @@ export type Observation =
   | {
       source: "provider";
       at: number;
-      provider: "meld" | "chainflip";
+      provider: "meld";
       result: SwapStatusResult;
       delayed?: boolean;
     }
@@ -929,11 +892,7 @@ export type Observation =
   | { source: "user"; at: number; event: "recovery-token-picked"; token: RecoveryToken }
   /** The pool can no longer fund what a sale promised its provider, checked before the purse was
    *  asked; the sale ends with nothing taken. */
-  | { source: "user"; at: number; event: "sale-unfundable" }
-  /** The page opened a fresh provider channel for a retry; the hand-off carries it next. */
-  | { source: "user"; at: number; event: "channel-opened"; channel: WithdrawalChannel }
-  /** The page opened a lane sale's Chainflip channel to the provider's deposit address. */
-  | { source: "user"; at: number; event: "swap-opened"; channel: WithdrawalChannel };
+  | { source: "user"; at: number; event: "sale-unfundable" };
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;
@@ -974,10 +933,9 @@ export function directDepositGate(record: Pick<TopUpRecord, "deposit" | "handoff
 export const routeOf = (sourceId: string): RequestRecord["route"] =>
   isMeldSourceId(sourceId) ? meldMethodFor(sourceId) : "crypto";
 
-/** The rail a source runs on: Meld for a fiat source, the manual deposit for a direct Asset Hub
- *  source, Chainflip for every other coin. */
+/** The rail a source runs on: Meld for a fiat source, the manual deposit for every other. */
 export const railProviderOf = (sourceId: string): RailState["provider"] =>
-  isMeldSourceId(sourceId) ? "meld" : isDirectSourceId(sourceId) ? "manual" : "chainflip";
+  isMeldSourceId(sourceId) ? "meld" : "manual";
 
 let clock: () => number = Date.now;
 

@@ -7,6 +7,7 @@ import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
+  SALE_PAY_WINDOW_MS,
   type Observation,
   type WithdrawJobView,
   type WithdrawalRecord,
@@ -89,12 +90,42 @@ const job = (overrides: Partial<WithdrawJobView> = {}): WithdrawJobView => ({
 /** A provider reading, as the worker relays it. */
 const reading = (status: SwapStatusResult["status"], extra: Partial<SwapStatusResult> = {}) =>
   ({ status, ...extra }) as SwapStatusResult;
-/** A withdrawal to a Chainflip destination whose prompt returned. */
-const railed = () =>
-  record({
+/** A bank sale through Meld whose prompt returned: the provider's channel is known, for the exact
+ *  figure the key pays it. */
+const railed = (): WithdrawalRecord => {
+  const destination = { chain: "Bank transfer", asset: "EUR", address: "" };
+  return record({
+    ref: requestRefOf("wd:meld-bank", 4),
+    route: "bank",
+    destination,
     payment: { attempt: 0, requestedAt: at(0), id: "pay-1" },
-    rail: { provider: "chainflip", stage: "waiting", updatedAt: STARTED },
+    handoff: {
+      ...record().handoff,
+      destination,
+      rail: "meld",
+      channel: {
+        id: "funding-sell-1",
+        address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
+        openedAt: at(0),
+        expiresAt: at(0) + SALE_PAY_WINDOW_MS,
+        expectedEgress: "9012",
+        amount: "234521000000",
+      },
+      meld: { baseUrl: "https://adapter.test", productId: "getcash.dev" },
+    },
+    rail: { provider: "meld", stage: "waiting", updatedAt: STARTED },
+    sale: {
+      fundingRequestId: "funding-sell-1",
+      serviceProvider: "TRANSAK",
+      country: "DE",
+      fiat: "EUR",
+      paymentMethodType: "SEPA",
+      widgetUrl: "https://kyc.test",
+      cryptoAmount: "234521000000",
+      quotedPayout: "90.12",
+    },
   });
+};
 const worker = (time: number, view: WithdrawJobView | null): Observation => ({
   source: "worker",
   at: time,
@@ -261,7 +292,7 @@ describe("withdrawal: the worker", () => {
     expect(stale.status).toEqual(arriving.status);
   });
 
-  it("completes a direct withdrawal on done, and hands a railed one to the rail on landing", () => {
+  it("completes a direct withdrawal on done, and hands a sale to its provider's rail on landing", () => {
     const seen = at(1);
     const direct = run(
       prompted(),
@@ -280,13 +311,14 @@ describe("withdrawal: the worker", () => {
     expect(landed.witnesses.worker).toMatchObject({ known: true, received: "9749856" });
     expect(direct.witnesses.worker).not.toHaveProperty("received");
 
-    // The PAS is on the key's Asset Hub account; the worker opens the provider's channel next.
+    // What the sale landed is on the key's Asset Hub account; the worker pays the provider's
+    // channel next.
     const sending = run(
       railed(),
       worker(at(3), job({ phase: "handoff", landed: true, fundsSeenAt: seen })),
     );
     expect(sending.status).toEqual({ kind: "sending", at: at(3) });
-    expect(sending.rail).toEqual({ provider: "chainflip", stage: "waiting", updatedAt: at(3) });
+    expect(sending.rail).toEqual({ provider: "meld", stage: "waiting", updatedAt: at(3) });
   });
 
   it("follows the provider's word on the rail leg to sent", () => {
@@ -304,7 +336,7 @@ describe("withdrawal: the worker", () => {
         worker(at(3), { ...landed, rail: reading("swapping") }),
       ).rail.stageAt,
     ).toEqual({ received: at(2), processing: at(3) });
-    // Sending on is stamped apart from the swap the processing stage folds it in with, once.
+    // Sending on is stamped apart from the processing stage it is folded into, once.
     expect(
       run(
         swapping,
@@ -334,16 +366,16 @@ describe("withdrawal: the worker", () => {
     expect(done.status).toEqual({ kind: "sent", at: at(6) });
   });
 
-  it("fails the rail leg on the provider's verdict, retryable only after a refund", () => {
+  it("fails the rail leg for good on the provider's verdict", () => {
     const seen = at(1);
     const following = run(
       railed(),
       worker(
         at(3),
-        job({ phase: "follow", landed: true, fundsSeenAt: seen, rail: reading("swapping") }),
+        job({ phase: "follow", landed: true, fundsSeenAt: seen, rail: reading("receiving") }),
       ),
     );
-    const refunded = run(
+    const ended = run(
       following,
       worker(
         at(4),
@@ -357,18 +389,14 @@ describe("withdrawal: the worker", () => {
       ),
     );
     // The failure keeps the leg's opening and the stages the rail saw, which its stamp loses.
-    expect(refunded.status).toEqual({ kind: "failed", at: at(4), recoverable: true, legAt: at(3) });
-    expect(refunded.failure).toMatchObject({ kind: "refunded", step: "send" });
-    expect(refunded.rail).toMatchObject({ stage: "failed", stageAt: { processing: at(3) } });
+    expect(ended.status).toEqual({ kind: "failed", at: at(4), recoverable: false, legAt: at(3) });
+    expect(ended.failure).toMatchObject({ kind: "unknown", step: "send" });
+    expect(ended.rail).toMatchObject({ stage: "failed", stageAt: { received: at(3) } });
+    // The provider was paid on the sale's one order: there is nothing to try again.
+    expect(run(ended, { source: "user", at: at(5), event: "retry" })).toBe(ended);
 
-    // A retry starts the rail leg over with a fresh channel, and nothing of the old job.
-    const again = run(refunded, { source: "user", at: at(5), event: "retry" });
-    expect(again.status).toEqual({ kind: "sending", at: at(5) });
-    expect(again.rail).toEqual({ provider: "chainflip", stage: "waiting", updatedAt: at(5) });
-    expect(again.failure).toBeUndefined();
-    expect(again.witnesses.worker).toEqual({ known: false, at: at(5) });
-
-    const stuck = run(
+    // A failure the provider names ends the leg whatever its status says, with its reason.
+    const refused = run(
       following,
       worker(
         at(4),
@@ -377,81 +405,17 @@ describe("withdrawal: the worker", () => {
           failure: "rail-failed",
           landed: true,
           fundsSeenAt: seen,
-          rail: reading("sending", { swapEgressFailure: { reason: { message: "egress broke" } } }),
+          rail: reading("receiving", { depositFailure: { reason: { message: "payout refused" } } }),
         }),
       ),
     );
-    expect(stuck.status).toEqual({ kind: "failed", at: at(4), recoverable: false, legAt: at(3) });
-    expect(stuck.failure).toMatchObject({
-      kind: "egress-failed",
+    expect(refused.status).toEqual({ kind: "failed", at: at(4), recoverable: false, legAt: at(3) });
+    expect(refused.failure).toMatchObject({
+      kind: "deposit-rejected",
       step: "send",
-      message: "egress broke",
+      message: "payout refused",
     });
-    expect(run(stuck, { source: "user", at: at(5), event: "retry" })).toBe(stuck);
-  });
-
-  it("fails a withdrawal whose channel closed before it was paid, retryably", () => {
-    const seen = at(1);
-    const stale = run(
-      railed(),
-      worker(
-        at(3),
-        job({
-          phase: "failed",
-          failure: "channel-expired",
-          landed: true,
-          fundsSeenAt: seen,
-          lastError: "the provider's channel ch-1 expired",
-        }),
-      ),
-    );
-    expect(stale.status).toEqual({ kind: "failed", at: at(3), recoverable: true, legAt: at(3) });
-    expect(stale.failure).toMatchObject({
-      kind: "channel-expired",
-      step: "send",
-      message: "the provider's channel ch-1 expired",
-    });
-
-    // The retry path is the rail leg's: a fresh channel, for what still sits on the key.
-    const again = run(stale, { source: "user", at: at(4), event: "retry" });
-    expect(again.status).toEqual({ kind: "sending", at: at(4) });
-    expect(again.rail).toEqual({ provider: "chainflip", stage: "waiting", updatedAt: at(4) });
-  });
-
-  it("fails the rail leg plainly when the build has no provider for it", () => {
-    const seen = at(1);
-    const none = run(
-      railed(),
-      worker(
-        at(3),
-        job({
-          phase: "failed",
-          failure: "no-rail",
-          landed: true,
-          fundsSeenAt: seen,
-          lastError: "no chainflip provider in this build",
-        }),
-      ),
-    );
-    expect(none.status).toEqual({ kind: "failed", at: at(3), recoverable: false, legAt: at(3) });
-    expect(none.failure).toMatchObject({
-      kind: "unknown",
-      step: "send",
-      message: "no chainflip provider in this build",
-    });
-  });
-
-  it("carries a fresh channel on the hand-off when the page opens one for a retry", () => {
-    const channel = {
-      id: "77",
-      address: "5FreshChannel",
-      openedAt: at(5),
-      expiresAt: at(60 * 24),
-      expectedEgress: "123456",
-    };
-    const opened = run(railed(), { source: "user", at: at(5), event: "channel-opened", channel });
-    expect(opened.handoff.channel).toEqual(channel);
-    expect(opened.status).toEqual(railed().status); // the channel alone moves nothing else
+    expect(run(refused, { source: "user", at: at(5), event: "retry" })).toBe(refused);
   });
 
   it("fails recoverably on a rejection or a timeout", () => {

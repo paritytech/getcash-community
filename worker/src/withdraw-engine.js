@@ -20,7 +20,6 @@ import {
   exactPaymentFloor,
   freshExactPayState,
   freshRailLegState,
-  freshSweepState,
   freshWithdrawTickState,
   PaymentUnresolvedError,
   RailFailedError,
@@ -28,7 +27,6 @@ import {
   readAssetHubAccount,
   readDestinationBalance,
   readKeyOnPeople,
-  readUnswept,
   RedeemTooSmallError,
   residueReturnFloor,
   withdrawTickOnce,
@@ -42,7 +40,6 @@ import {
   exactPaymentOut,
   PAY_TIMEOUT_MS,
   paymentOutcome,
-  payRail,
   payRailExact,
   railFor,
 } from "./providers.js";
@@ -150,12 +147,12 @@ const saveJobs = () => store.save();
  *                                            // arrived: the landing was seen and those blocks
  *                                            // stand; received: what the destination got then,
  *                                            // as a decimal string
- *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
- *                                            // exact: the Meld payment's nonce, in flight or
+ *   leg: { handoff, paid, exact, reading },  // the rail leg, for a sale;
+ *                                            // exact: the payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at;
- *                                            // sweep.seen, exact.seen: the best block the
- *                                            // payment was seen in, until it is final; no
- *                                            // hash for an exact payment's lost answer
+ *                                            // exact.seen: the best block the payment was
+ *                                            // seen in, until it is final; no hash for a
+ *                                            // lost answer
  *   saleNotFound?, saleNotFoundSince?,       // Meld only: the adapter's 404s in a row, and since
  *   residue?: { amount?, returning, whole?, sessionId?, route?, terms?, rearms?, stuck? },
  *                                            // Meld only: what the sale left on the key once
@@ -215,14 +212,6 @@ function newRecord(input, nowMs) {
   if (input.rail === "meld" && channelOf(input.channel).amount === undefined) {
     throw new Error("startWithdraw: a Meld sale needs the exact amount its provider expects");
   }
-  if (input.rail === "meld" && input.swap !== undefined) {
-    if (!isChannel(input.swap) || channelOf(input.swap).amount === undefined) {
-      throw new Error("startWithdraw: a swap sale needs its channel and the USDT it must land");
-    }
-    if (input.tier !== "psm" || input.external !== "USDT") {
-      throw new Error("startWithdraw: a swap sale redeems its CASH for USDT");
-    }
-  }
   if (input.rail === "meld" && meldOf(input.meld) === null) {
     throw new Error("startWithdraw: a Meld sale needs the adapter it is read from");
   }
@@ -241,9 +230,9 @@ function newRecord(input, nowMs) {
   // route missing its fee rate, is refused here rather than guessed at.
   if (typeof input.tier !== "string") throw new Error("startWithdraw: the sale tier is required");
   const sale = recordedRoute(input);
-  // A direct sale pays its provider in what its sale lands: PAS from the pool, or the USDT the PSM
-  // redeemed. A key landed with anything else would have nothing to pay with.
-  if (input.rail === "meld" && input.swap === undefined) {
+  // A sale pays its provider in what it lands: PAS from the pool, or the USDT the PSM redeemed. A
+  // key landed with anything else would have nothing to pay with.
+  if (input.rail === "meld") {
     const pas = sale.tier === "pool" && sale.external === undefined;
     const usdt = sale.tier === "psm" && sale.external === "USDT";
     if (!pas && !usdt) {
@@ -275,7 +264,6 @@ function newRecord(input, nowMs) {
     // Kept as handed over, so a surface that lost its record can rebuild the hand-off whole.
     ...(isChannel(input.channel) ? { channel: channelOf(input.channel) } : {}),
     ...(input.rail === "meld" ? { meld: meldOf(input.meld) } : {}),
-    ...(swapOf(input) === null ? {} : { swap: channelOf(swapOf(input)) }),
     phase: "starting",
     landed: false,
     done: false,
@@ -288,8 +276,8 @@ function newRecord(input, nowMs) {
   };
 }
 
-/** The rails a hand-off may name; `direct` ends with the message, the rest add the rail leg. */
-const RAILS = ["direct", "chainflip", "meld"];
+/** The rails a hand-off may name; `direct` ends with the message, `meld` adds the rail leg. */
+const RAILS = ["direct", "meld"];
 
 /** A channel as the page hands it over: the provider's id and the Asset Hub account to pay. */
 const isChannel = (channel) =>
@@ -313,9 +301,6 @@ function channelOf(channel) {
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
     ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
-    ...(Number.isFinite(channel.minPrice) && channel.minPrice > 0
-      ? { minPrice: channel.minPrice }
-      : {}),
   };
 }
 
@@ -333,25 +318,20 @@ function meldOf(meld) {
 }
 
 /** A fresh rail leg, seeded with the hand-off's channel when it carries one. The expiry rides
- *  along: the leg refuses to pay a channel the provider has closed. An exact payment starts at the
+ *  along: the leg refuses to pay a channel the provider has closed. A sale's payment starts at the
  *  key's first nonce on Asset Hub. */
 function legFor(input, nowMs) {
   const leg = freshRailLegState();
-  // A swap sale's key pays the Chainflip channel, which pays the provider's deposit address.
-  const pays = swapOf(input) ?? input.channel;
-  if (isChannel(pays)) {
-    const { id, address, openedAt, expiresAt } = channelOf(pays);
+  if (isChannel(input.channel)) {
+    const { id, address, openedAt, expiresAt } = channelOf(input.channel);
     leg.handoff = { id, address, openedAt: openedAt || nowMs, expiresAt };
   }
-  if (input.rail === "meld" && swapOf(input) === null) leg.exact = freshExactPayState();
+  if (input.rail === "meld") leg.exact = freshExactPayState();
   return leg;
 }
 
-/** A Meld sale's Chainflip channel, when it sells through an offramp lane; null otherwise. */
-const swapOf = (job) => (job.rail === "meld" && isChannel(job.swap) ? job.swap : null);
-
 /** Moves the deadline of a sale's unpaid channel out to the one `channel` carries for the same id,
- *  when that is later. A Chainflip channel's expiry is the provider's, and never moves. */
+ *  when that is later. */
 function extendDeadline(record, channel) {
   const handoff = record.leg?.handoff;
   if (record.rail !== "meld" || !isChannel(channel) || handoff == null) return;
@@ -412,30 +392,12 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
-    // A swap sale that failed before any CASH reached its key is revived by a re-sent hand-off
-    // with a fresh Chainflip channel, even when its key would go home whole: nothing has moved
-    // that the new channel could cross. A payment that could not be confirmed still waits for a
-    // person.
-    const freshSwap = freshSwapFor(existing, input);
-    const held = freshSwap === null ? unrevivable(existing) : existing.failure === "unresolved";
-    if (existing.phase === "failed" && !held) rearm(existing, Date.now());
-    if (freshSwap !== null) {
-      existing.swap = freshSwap;
-      existing.leg = legFor(input, Date.now());
-    }
+    // A payment that could not be confirmed still waits for a person, and a sale whose key goes
+    // home whole never pays its provider again.
+    if (existing.phase === "failed" && !unrevivable(existing)) rearm(existing, Date.now());
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
-    // A fresh channel, after a swap that refunded, starts the rail leg over: unpaid, unread. Not
-    // for a sale, which has one order and whose leg holds the payment's nonce.
-    if (
-      existing.rail !== "meld" &&
-      isChannel(input.channel) &&
-      input.channel.id !== existing.leg?.handoff?.id
-    ) {
-      existing.channel = channelOf(input.channel);
-      existing.leg = legFor(input, Date.now());
-    }
     // The same channel with a later deadline: a sale's purse asked again gives the key its time to
     // pay the provider again. Only while the provider is unpaid, and never shortened.
     extendDeadline(existing, input.channel);
@@ -455,21 +417,6 @@ export async function startWithdraw(params) {
   all[record.sessionId] = record;
   await saveJobs();
   return describeWithdraw(record);
-}
-
-/** The Chainflip channel a re-sent hand-off brings for a swap sale, when it is a new one and the
- *  old one was never paid nor could have been: no sweep tried, no CASH seen, nothing gone home.
- *  Null otherwise, so a channel that may hold the key's USDT is never left behind. */
-function freshSwapFor(existing, input) {
-  if (swapOf(existing) === null || swapOf(input) === null) return null;
-  const swap = channelOf(input.swap);
-  if (swap.amount === undefined || swap.id === existing.leg?.handoff?.id) return null;
-  const untouched =
-    existing.leg?.paid !== true &&
-    (existing.leg?.sweep?.attempts ?? 0) === 0 &&
-    existing.state?.fundsSeenAt == null &&
-    existing.residue === undefined;
-  return untouched ? swap : null;
 }
 
 /**
@@ -502,9 +449,8 @@ export async function switchWithdrawToPool(params) {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock and the payment window restart. A
- * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message; a
- * Chainflip job whose provider failed starts the rail leg over with the fresh channel the hand-off
- * brings. Not a sale whose key goes home whole, nor one whose payment could not be confirmed.
+ * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message. Not
+ * a sale whose key goes home whole, nor one whose payment could not be confirmed.
  */
 function rearm(record, nowMs) {
   const { failure } = record;
@@ -512,12 +458,10 @@ function rearm(record, nowMs) {
   delete record.failure;
   delete record.lastError;
   delete record.failedAt;
-  delete record.refundSeenAt;
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
     record.state.rejections = 0;
-    if (record.leg?.sweep) record.leg.sweep.rejections = 0;
     // The nonce stays where the refusals left it: nothing went out at the ones they spent.
     if (record.leg?.exact) record.leg.exact.rejections = 0;
   }
@@ -584,8 +528,8 @@ function describeWithdraw(record) {
 
 /**
  * Test networks only: takes the provider's word as delivered for a job on the rail leg, so the
- * walk can be finished where the provider cannot be reached. On a test network the channel is
- * real but the swap never runs, since the provider watches another chain.
+ * walk can be finished where the provider cannot be reached. On a test network the provider never
+ * pays out.
  */
 export async function skipWithdrawRail(params) {
   if (!NETWORK.testnet) {
@@ -629,7 +573,7 @@ const onTheClock = (record) =>
   record.state.waitingSince == null &&
   // A sale stops the clock once its PAS has landed: paying its provider is held to the sale's own
   // deadline and to the payment's mortality, not to worker time.
-  !(record.rail === "meld" ? record.landed : record.landed && record.leg?.paid);
+  !(record.rail === "meld" && record.landed);
 
 /** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
 function accountWorkedTime(record, nowMs) {
@@ -658,49 +602,35 @@ function judgeBounds(record, nowMs, read) {
   }
 }
 
-/** The best block the key's payment to the provider was seen in, or for an exact payment whose
- *  answer was lost the best head it was read paid at, while the finalized chain has not settled
- *  it; null once it has, and for a sweep whose answer was lost. */
+/** The best block the key's payment to the provider was seen in, or for a payment whose answer
+ *  was lost the best head it was read paid at, while the finalized chain has not settled it; null
+ *  once it has. */
 const paymentSeen = (record) =>
-  record.leg?.paid === true ? (record.leg.exact?.seen ?? record.leg.sweep?.seen ?? null) : null;
+  record.leg?.paid === true ? (record.leg.exact?.seen ?? null) : null;
 
 /**
  * The payment's effect on the key, read at one head: the exact figure is out once the key is past
- * the payment's nonce with its balance down by at least the figure; the sweep once one was sent
- * and the key holds none of the sale's token a sweep can move (`readUnswept`).
+ * the payment's nonce with its balance down by at least the figure.
  */
 function paymentShows(record) {
-  const { exact, sweep } = record.leg;
-  if (exact?.seen != null) {
-    const amount = asBig(record.channel?.amount, 0n);
-    return (key) => key.nonce > exact.nonce && asBig(exact.balanceBefore, 0n) - key.free >= amount;
-  }
-  return (unswept) => (sweep?.attempts ?? 0) > 0 && unswept === 0n;
+  const { exact } = record.leg;
+  const amount = asBig(record.channel?.amount, 0n);
+  return (key) => key.nonce > exact.nonce && asBig(exact.balanceBefore, 0n) - key.free >= amount;
 }
 
 /**
  * Settles a payment seen in a best block once Asset Hub's finalized chain is past that block
  * (`paymentOutcome`): final, and the block is let go; gone, and the leg is unpaid again, so the
  * key pays again, the exact figure at its same nonce. A payment that landed in another block than
- * the one it was seen in stands, and so does a sweep in a block too old for the chain to name,
- * which a swap's refund to the key could otherwise pass off as never sent.
+ * the one it was seen in stands.
  */
 async function settlePayment(record) {
   const seen = paymentSeen(record);
   if (seen === null) return;
-  const { exact, sweep } = record.leg;
-  const bySweep = exact?.seen == null;
-  const outcome = await paymentOutcome(record, seen, paymentShows(record), {
-    unknownStands: bySweep,
-    ...(bySweep ? { readKey: readUnswept } : {}),
-  });
+  const { exact } = record.leg;
+  const outcome = await paymentOutcome(record, seen, paymentShows(record));
   if (outcome === "pending") return;
-  record.leg = {
-    ...record.leg,
-    ...(exact?.seen == null ? {} : { exact: { ...exact, seen: null } }),
-    ...(sweep?.seen == null ? {} : { sweep: { ...sweep, seen: null } }),
-    paid: outcome === "final",
-  };
+  record.leg = { ...record.leg, exact: { ...exact, seen: null }, paid: outcome === "final" };
 }
 
 /**
@@ -717,18 +647,15 @@ async function tickRailLeg(record) {
   }
   // A payment in a block the chain replaced is taken back before the provider is read.
   await settlePayment(record);
-  // A Meld sale pays the exact figure its provider quoted, never everything the key holds. A swap
-  // sale pays everything into its Chainflip channel, whose fill-or-kill floor covers the figure.
-  const exactAmount =
-    record.rail === "meld" && swapOf(record) === null ? asBig(record.channel?.amount, 0n) : null;
-  if (exactAmount !== null && exactAmount <= 0n) {
+  // A sale pays the exact figure its provider quoted, never everything the key holds.
+  const exactAmount = asBig(record.channel?.amount, 0n);
+  if (exactAmount <= 0n) {
     fail(record, "channel-mismatch", "the sale carries no amount to pay its provider");
     return;
   }
   const state = {
     handoff: handoffOf(record),
     paid: record.leg?.paid === true,
-    sweep: record.leg?.sweep ?? freshSweepState(),
     reading: record.leg?.reading ?? null,
   };
   const exact = record.leg?.exact ?? freshExactPayState();
@@ -737,8 +664,7 @@ async function tickRailLeg(record) {
       // A deadline a re-sent hand-off moved out while this tick ran is kept.
       handoff: laterDeadline(state.handoff, record.leg?.handoff),
       paid: state.paid,
-      sweep: state.sweep,
-      ...(exactAmount === null ? {} : { exact }),
+      exact,
       reading: state.reading,
     };
   };
@@ -752,35 +678,12 @@ async function tickRailLeg(record) {
     outcome = await railTickOnce(
       {
         rail,
-        pay: (handoff, sweep) =>
-          exactAmount === null
-            ? payRail(record, handoff, sweep, hooks)
-            : payRailExact(record, handoff, exactAmount, exact, hooks),
+        pay: (handoff) => payRailExact(record, handoff, exactAmount, exact, hooks),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        // The Chainflip channel of a swap sale must pay out to the provider's deposit address.
-        destinationAddress:
-          swapOf(record) === null ? record.destination?.address : record.channel?.address,
-        ...(record.rail === "chainflip" || swapOf(record) !== null
-          ? { refundAddress: record.keyAddress }
-          : {}),
-        ...(record.rail === "chainflip"
-          ? { payoutAsset: { chain: record.destination.chain, asset: record.destination.asset } }
-          : {}),
-        ...(exactAmount === null
-          ? swapOf(record) === null
-            ? {}
-            : {
-                // As for the exact payment: a sweep whose answer was lost is read off the chain
-                // before Meld, whose order may have closed once the swap paid it.
-                landed: () => swapSweptOut(record, state.sweep),
-              }
-          : {
-              payout: "off-chain",
-              amount: exactAmount,
-              // A payment whose answer was lost is read off the chain before the adapter, whose
-              // record of an order that got its funds may already read as closed.
-              landed: () => exactPaymentOut(record, exactAmount, exact),
-            }),
+        amount: exactAmount,
+        // A payment whose answer was lost is read off the chain before the adapter, whose record
+        // of an order that got its funds may already read as closed.
+        landed: () => exactPaymentOut(record, exactAmount, exact),
         // Outlasts every bound inside the hand that pays, so it never fires mid transfer.
         payTimeoutMs: PAY_TIMEOUT_MS,
         now: Date.now,
@@ -799,14 +702,14 @@ async function tickRailLeg(record) {
     // provider's refusal does not say nothing was sent. The job holds until the chain settles it:
     // the attempt lands and the sale is paid, or it outlives its mortality unlanded and the
     // refusal stands (see `exactPaymentLanded`).
-    if (refused && exactAmount !== null && exact.inFlight) {
+    if (refused && exact.inFlight) {
       record.lastError = brief(
         `the provider refused the sale while a payment to it may still land: ${error.message}`,
       );
       return;
     }
-    // Nothing moved: the native is still on the key. A fresh Chainflip channel can carry it; a
-    // sale's key goes home whole (see `returnDue`).
+    // Nothing moved: what the sale landed is still on the key, and goes home whole (see
+    // `returnDue`).
     if (error instanceof ChannelExpiredError) {
       fail(record, "channel-expired", error.message);
       return;
@@ -848,9 +751,7 @@ function returnDue(record, nowMs = Date.now()) {
   if (record.leg?.paid === true) {
     // A payment in a block the chain may yet replace is not out for good: nothing goes home until
     // that block is final.
-    if (paymentSeen(record) !== null) return null;
-    // A swap sale's key is empty once paid, until the swap ends: a refund comes back to it.
-    return swapOf(record) !== null && isLive(record) ? null : "residue";
+    return paymentSeen(record) !== null ? null : "residue";
   }
   if (record.phase !== "failed" || KEPT_ON_FAILURE.has(record.failure)) return null;
   if (record.leg?.exact?.inFlight === true || submitMayLand(record, nowMs)) return null;
@@ -976,17 +877,6 @@ async function sendHome(record, kind) {
       kind === "residue" ? "residue read" : "key read on asset hub",
     );
     if (kind === "residue") {
-      // A swap that failed after the key paid refunds its USDT to the key: the key is read again
-      // until Chainflip says the refund will not come, however long its egress takes.
-      if (swapOf(record) !== null && held === 0n && record.phase === "failed") {
-        const refund = await swapRefund(record);
-        if (refund === "pending") throw new Error("waiting for the swap's refund to reach the key");
-        if (refund === "failed") {
-          // Chainflip could not send it back: a person must, so the key is not read again.
-          record.residue = { amount: "0", returning: false, stuck: true };
-          return;
-        }
-      }
       // The way home is sized from the finalized head, where a payment a best block holds has not
       // left the key yet. It starts once both heads agree on what the key holds.
       const settled = await bounded(
@@ -1135,58 +1025,6 @@ function pursePayMayLand(record, nowMs = Date.now()) {
 async function startWayHome(record) {
   const started = await startFunding(wayHomeParams(record));
   if (started?.error) throw new Error(started.reason ?? started.error);
-}
-
-/** How long after Chainflip witnessed a refund the key is read for it, should the key's read lag
- *  the chain Chainflip watched. */
-const REFUND_SETTLE_MS = 600_000;
-
-/** A swap sale's sweep went out: one was tried, and the key holds none of the sale's token. The
- *  sweep's own rule, since it moves everything and reaps the key behind it. */
-async function swapSweptOut(record, sweep) {
-  if ((sweep?.attempts ?? 0) === 0) return false;
-  const client = await connectChain(record.assetHubGenesis, "asset hub");
-  try {
-    const held = await bounded(
-      readUnswept(
-        client.getTypedApi(paseo_next_v2),
-        record.keyPublicKeyHex,
-        depositTokenOf(recordedRoute(record)),
-      ),
-      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-      "key read on asset hub",
-    );
-    return held === 0n;
-  } finally {
-    client.destroy();
-  }
-}
-
-/**
- * Where a failed swap sale's refund stands, by Chainflip's own word, read afresh: "none" when the
- * swap delivered to the provider, or the refund was witnessed long enough ago to be on the key;
- * "failed" when its egress failed; "pending" until one of those, with no clock of its own, since a
- * refund held up by an egress incident still lands. A read that fails throws, and the next pass
- * asks again.
- */
-async function swapRefund(record, nowMs = Date.now()) {
-  if (record.leg?.reading?.swapDelivered === true) return "none";
-  const rail = railFor(record.rail, record);
-  if (rail === null) return "none";
-  const reading = await bounded(
-    rail.status(record.leg.handoff.id),
-    DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-    "swap refund read",
-  );
-  record.leg = { ...record.leg, reading };
-  if (reading.swapDelivered === true) return "none";
-  const refund = reading.refundEgress;
-  if (refund?.failure !== undefined) return "failed";
-  if (refund?.witnessedAt !== undefined) {
-    record.refundSeenAt ??= nowMs;
-    return nowMs - record.refundSeenAt < REFUND_SETTLE_MS ? "pending" : "none";
-  }
-  return "pending";
 }
 
 /** The funding job that carries a sale's key home: a job on the key through the route its way
@@ -1397,23 +1235,20 @@ async function tickRecord(record, nowMs) {
           sale,
           slippagePct: record.slippagePct,
           transfer,
-          // A Meld sale promised its provider an exact figure out of what lands: the sale must
-          // cover it, its fee and what the key keeps to stay alive, or nothing leaves People. A
-          // sale through a swap promised what its channel was quoted on, the key's fee included.
-          ...(swapOf(record) !== null
-            ? { minLanding: async () => asBig(record.swap.amount, 0n) }
-            : record.rail === "meld"
-              ? {
-                  minLanding: () =>
-                    exactPaymentFloor(
-                      assetHubApi,
-                      key.address,
-                      record.channel.address,
-                      asBig(record.channel.amount, 0n),
-                      landingToken,
-                    ),
-                }
-              : {}),
+          // A sale promised its provider an exact figure out of what lands: the sale must cover
+          // it, its fee and what the key keeps to stay alive, or nothing leaves People.
+          ...(record.rail === "meld"
+            ? {
+                minLanding: () =>
+                  exactPaymentFloor(
+                    assetHubApi,
+                    key.address,
+                    record.channel.address,
+                    asBig(record.channel.amount, 0n),
+                    landingToken,
+                  ),
+              }
+            : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
           // One anchor on People per tick serves every submit there; the exit on Asset Hub takes

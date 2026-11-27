@@ -34,9 +34,9 @@ const topUps = [
     startedAt: 200,
     progress,
     details: {
-      network: { label: "Bitcoin", icon: "/icons/bitcoin.svg" },
-      token: { label: "BTC", icon: "/icons/bitcoin.svg" },
-      depositAddress: "bc1q-saved-deposit",
+      network: { label: "Polkadot", icon: "/icons/polkadot.svg" },
+      token: { label: "DOT", icon: "/icons/polkadot.svg" },
+      depositAddress: "5SavedDeposit",
     },
     state: { kind: "settled", at: 700, creditedAmount: "20.25" },
   },
@@ -56,7 +56,7 @@ describe("funding top-up projections", () => {
 
     expect(sections.inProgress.map(({ id }) => id)).toEqual(["crypto:2", "bank:1"]);
     expect(sections.past.map(({ id }) => id)).toEqual(["crypto:4", "card:3"]);
-    expect(sections.past[1]?.details?.depositAddress).toBe("bc1q-saved-deposit");
+    expect(sections.past[1]?.details?.depositAddress).toBe("5SavedDeposit");
   });
 
   it("carries each top-up's timeline to the row the list and history draw", () => {
@@ -74,15 +74,6 @@ describe("funding top-up projections", () => {
     for (const row of [...sections.inProgress, ...sections.past]) {
       expect(row.timeline, row.id).toBe(timeline);
     }
-  });
-
-  it("says a refunded crypto top-up was returned, not that it failed", () => {
-    const refunded = { ...topUps[3]!, state: { ...topUps[3]!.state, refunded: true } };
-    const sections = projectFundingTopUps([refunded], fundingSelectorConfig);
-    expect(sections.past[0]?.state).toMatchObject({ kind: "failed", status: "Refunded" });
-    expect(projectFundingTopUps([topUps[3]!], fundingSelectorConfig).past[0]?.state).toMatchObject({
-      status: "Payment failed",
-    });
   });
 
   it("says an expired top-up expired, not that a payment failed", () => {

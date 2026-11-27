@@ -11,7 +11,7 @@
 // fee's margin behind so the account, and with it the key's nonce, survive the burn.
 
 import { AccountId } from "polkadot-api";
-import { TOKENS } from "@getsome/core";
+import { TOKENS, type TokenSpec } from "@getsome/core";
 import {
   asLocation,
   describeDispatchError,
@@ -26,7 +26,6 @@ import {
 import { type AssetHubApi, quoted } from "./fees";
 import { ASSET_HUB_CASH_TX_OPTIONS, AT_BEST } from "./paseo";
 import { psmRedeemOut } from "./program";
-import { buildSweep } from "./sweep";
 
 const CASH = asLocation(TOKENS.CASH.location);
 const NATIVE = asLocation(TOKENS.PAS.location);
@@ -109,6 +108,15 @@ export interface RedeemBatchArgs {
   deliverTo?: string;
 }
 
+/** The whole balance in `token` to `to`, the key reaped behind it. */
+function transferAll(api: AssetHubApi, to: string, token: TokenSpec) {
+  const dest = { type: "Id" as const, value: to };
+  if (token.assetHubId === undefined) {
+    return api.tx.Balances.transfer_all({ dest, keep_alive: false });
+  }
+  return api.tx.Assets.transfer_all({ id: token.assetHubId, dest, keep_alive: false });
+}
+
 /** `Psm.redeem` of `cashIn` for the stable at the frozen rate, wrapped in a `Utility.batch_all`
  *  with `Assets.transfer_all` of the stable to `deliverTo` when one is named. */
 export function buildRedeemBatch(api: AssetHubApi, args: RedeemBatchArgs) {
@@ -119,7 +127,7 @@ export function buildRedeemBatch(api: AssetHubApi, args: RedeemBatchArgs) {
     max_fee: args.route.feeRate,
   });
   if (args.deliverTo === undefined) return redeem;
-  const transfer = buildSweep(api, args.deliverTo, STABLE_TOKENS[args.route.external]);
+  const transfer = transferAll(api, args.deliverTo, STABLE_TOKENS[args.route.external]);
   return api.tx.Utility.batch_all({ calls: [redeem.decodedCall, transfer.decodedCall] });
 }
 

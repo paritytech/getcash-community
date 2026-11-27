@@ -6,30 +6,26 @@ import { laneCandidates, sellableCorridor } from "../app/composables/useMeldSell
 import type { MeldAssetId } from "@getsome/core";
 import type { SupportedCorridor, SupportedMethod } from "../lib/supported";
 
-const ORDER: MeldAssetId[] = ["dot@assethub", "usdc@arbitrum", "usdc@solana"];
+const ORDER: MeldAssetId[] = ["dot@assethub", "usdt@assethub"];
 /** A lane as an adapter that names no asset sends it: matched by the asset table's reading of its code. */
 const lane = (code: string, chain: string) => ({ code, chain });
 
 describe("laneCandidates", () => {
   it("tries the lanes the adapter found, in this build's order", () => {
-    const found = [lane("USDC_SOLANA", "solana"), lane("DOT", "assethub")];
-    expect(laneCandidates(found, ORDER)).toEqual(["DOT", "USDC_SOLANA"]);
+    const found = [lane("USDT_DOT", "assethub"), lane("DOT", "assethub")];
+    expect(laneCandidates(found, ORDER)).toEqual(["DOT", "USDT_DOT"]);
   });
 
   it("drops a lane this build does not offer", () => {
-    const found = [lane("USDC_ARBITRUM", "arbitrum"), lane("USDT_SOLANA", "solana")];
-    expect(laneCandidates(found, ORDER)).toEqual(["USDC_ARBITRUM"]);
+    const found = [lane("USDC_DOT", "assethub"), lane("USDC_ARBITRUM", "arbitrum")];
+    expect(laneCandidates(found, ["usdc@assethub", "dot@assethub"])).toEqual(["USDC_DOT"]);
     expect(laneCandidates(found, ["dot@assethub"])).toEqual([]);
   });
 
-  it("tries the direct sale of USDT first, then DOT's, before any swap", () => {
-    const order: MeldAssetId[] = ["usdt@assethub", "dot@assethub", "usdc@arbitrum"];
-    const found = [
-      lane("USDC_ARBITRUM", "arbitrum"),
-      lane("DOT", "assethub"),
-      lane("USDT_DOT", "assethub"),
-    ];
-    expect(laneCandidates(found, order)).toEqual(["USDT_DOT", "DOT", "USDC_ARBITRUM"]);
+  it("tries the direct sale of USDT first, then DOT's", () => {
+    const order: MeldAssetId[] = ["usdt@assethub", "dot@assethub"];
+    const found = [lane("DOT", "assethub"), lane("USDT_DOT", "assethub")];
+    expect(laneCandidates(found, order)).toEqual(["USDT_DOT", "DOT"]);
   });
 
   it("matches a lane by the asset the adapter names, under whatever code it sends", () => {
@@ -61,29 +57,25 @@ const corridor = (...methods: SupportedMethod[]): SupportedCorridor => ({
   methods,
 });
 const DIRECT: MeldAssetId[] = ["usdt@assethub", "dot@assethub"];
-const WITH_SWAPS: MeldAssetId[] = [...DIRECT, "usdc@arbitrum", "usdc@solana"];
 
 describe("sellableCorridor", () => {
-  it.each([
-    ["the order names no swap", DIRECT],
-    ["the order names the swap lanes", WITH_SWAPS],
-  ])("drops a method only a swap lane routes when %s", (_when, order) => {
+  it("drops a method only a lane on another chain routes", () => {
     const routed = corridor(
       method("card", [lane("USDC_ARBITRUM", "arbitrum"), lane("USDC_SOLANA", "solana")]),
       method("bank", [lane("DOT", "assethub")]),
     );
-    const sellable = sellableCorridor(routed, order);
+    const sellable = sellableCorridor(routed, DIRECT);
     expect(sellable.methods.map((m) => m.category)).toEqual(["bank"]);
   });
 
   it("drops a lane the order names but no sale sells", () => {
     const routed = corridor(method("card", [lane("USDT_TRON", "tron")]));
-    expect(sellableCorridor(routed, WITH_SWAPS).methods).toEqual([]);
+    expect(sellableCorridor(routed, DIRECT).methods).toEqual([]);
     const usdc = corridor(method("card", [lane("USDC_DOT", "assethub")]));
     expect(sellableCorridor(usdc, ["usdc@assethub"]).methods).toEqual([]);
   });
 
-  it("keeps the direct lanes of a method that also swaps, with their own limits", () => {
+  it("keeps the direct lanes of a method that another chain's lane also routes, with their own limits", () => {
     const routed = corridor(
       method(
         "card",
@@ -140,11 +132,7 @@ describe("the build's lane order", () => {
       "USDT_ASSETHUB,DOT_STATEMINT,dot@assethub",
       "usdt_assethub, dot_statemint",
     ],
-    [
-      "a swap lane or an asset no sale sells",
-      "usdc@arbitrum,dot@assethub,usdc@assethub",
-      "usdc@arbitrum, usdc@assethub",
-    ],
+    ["an asset no sale sells", "dot@assethub,usdc@assethub", "usdc@assethub"],
   ])("drops, with a warning, an entry that is %s", async (_what, lanes, named) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.stubEnv("VITE_OFFRAMP_LANES", lanes);

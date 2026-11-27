@@ -34,7 +34,6 @@ import {
   burnerFinal,
   burnerSighted,
   burnerSightingRetracted,
-  chainflipObserved,
   statusObserved,
   workerObserved,
 } from "../facts";
@@ -52,7 +51,6 @@ type ProviderResult = Extract<Observation, { source: "provider"; result: unknown
 type ClearedField =
   | "cancelledAt"
   | "failureReason"
-  | "refunded"
   | "failure"
   | "depositMismatch"
   | "creditedAt"
@@ -161,7 +159,7 @@ function moneySeen(
   }
   if (rankOf(record) !== 0) return record;
   const seen: TopUpRecord = {
-    ...without(record, ["cancelledAt", "failureReason", "refunded", "failure"]),
+    ...without(record, ["cancelledAt", "failureReason", "failure"]),
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
   };
@@ -310,7 +308,7 @@ function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): T
       };
     }
     case "swapping": {
-      let seen = chainflipObserved(next, state, at);
+      let seen = next;
       // Core's view of the rail counts only while no provider poll has reported.
       if (seen.witnesses.provider === undefined) {
         const rail = mergeRail(
@@ -334,21 +332,8 @@ function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): T
       // from when it left, and ends the request itself.
       const windowClosed = state.failure.kind === "stale" || state.failure.kind === "expired";
       if (windowClosed && depositGone(record)) return next;
-      const refundLike =
-        state.failure.kind === "refunded" || state.failure.kind === "refund-failed";
-      const refunded = refundLike ? true : next.refunded;
-      const failure: RequestFailure = {
-        ...state.failure,
-        step: stepLeft(rankOf(record)),
-        ...(refunded === undefined ? {} : { refunded }),
-        ...(state.refund === undefined ? {} : { refund: state.refund }),
-      };
-      const detailed: TopUpRecord = {
-        ...next,
-        failure,
-        failureReason: failure.message,
-        ...(refunded === undefined ? {} : { refunded }),
-      };
+      const failure: RequestFailure = { ...state.failure, step: stepLeft(rankOf(record)) };
+      const detailed: TopUpRecord = { ...next, failure, failureReason: failure.message };
       // A non-recoverable failure past deposit-seen only updates the detail: the money leg is
       // the worker's to fail.
       if (atSideExit(record) || (rankOf(record) > 1 && !state.failure.recoverable)) {
@@ -511,8 +496,7 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
 
 function applyProviderResult(record: TopUpRecord, observation: ProviderResult): TopUpRecord {
   const { at, result } = observation;
-  // The record's own rail keeps its provider; a poll never rewrites it (a manual-rail record
-  // stays manual under a Chainflip-shaped failure report).
+  // The record's own rail keeps its provider; a poll never rewrites it.
   const rail = mergeRail(
     record.rail,
     railFromSwapStatus(record.rail.provider, result, at, observation.delayed),
@@ -543,15 +527,11 @@ function applyProviderResult(record: TopUpRecord, observation: ProviderResult): 
     (rankOf(next) === 0 || seenOnlyByProvider) &&
     !atSideExit(next)
   ) {
-    // A refund-like failure marks the record refunded, as core's own failure does.
-    const refundLike = rail.failure.kind === "refunded" || rail.failure.kind === "refund-failed";
-    const refunded = refundLike ? true : next.refunded;
-    return failed(refunded === undefined ? next : { ...next, refunded }, at, {
+    return failed(next, at, {
       kind: rail.failure.kind,
       step: "deposit",
       message: rail.failure.message,
       recoverable: false,
-      ...(refunded === undefined ? {} : { refunded }),
     });
   }
   return next;
@@ -770,8 +750,6 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
       if (recovery.depositToken === observation.token) return record;
       return { ...record, recovery: { ...recovery, depositToken: observation.token } };
     }
-    case "channel-opened":
-    case "swap-opened":
     case "sale-unfundable":
       return record;
   }

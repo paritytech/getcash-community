@@ -1,25 +1,8 @@
 // The reactive state vocabulary. One discriminated union on `phase`; fields exist only where
 // meaningful.
 
-import type { ChainflipProgressFacts } from "./ports";
-
 /** Wire and storage ids for the source catalog. */
 export type SourceId =
-  | "btc"
-  | "eth"
-  | "usdc-eth"
-  | "usdt-eth"
-  | "flip-ethereum"
-  | "eth-arbitrum"
-  | "usdc-arbitrum"
-  | "usdt-arbitrum"
-  | "bnb-bsc"
-  | "usdt-bsc"
-  | "sol-solana"
-  | "usdc-solana"
-  | "usdt-solana"
-  | "trx-tron"
-  | "usdt-tron"
   /** Direct deposits onto the ephemeral on Asset Hub, one id per token: DOT, dotUSD, USDT and
    *  USDC. The id keys the token's trade counter and burner labels. Served by @getsome/funding. */
   | "dot-assethub"
@@ -43,7 +26,7 @@ export type PaymentPhase =
   | "done"
   | "failed";
 
-/** Chainflip swap sub-status, mapped from the SDK. */
+/** A rail's progress sub-status, as each rail maps its own. */
 export type SwapProgress = "waiting" | "receiving" | "swapping" | "sending" | "sent" | "complete";
 
 /**
@@ -86,14 +69,9 @@ export interface Quote {
 export type FailureKind =
   | "quote"
   | "deposit-rejected"
-  | "egress-failed"
-  | "fallback-egress"
   | "mint"
   /** Handoff only: settle resolved ok but the credit did not (fully) arrive. Non-recoverable. */
   | "under-credit"
-  /** The swap could not fill and Chainflip is returning the deposit to the refund address. */
-  | "refunded"
-  | "refund-failed"
   | "expired"
   /** The deposit reached the top-up's account, then left the best chain and did not come back. */
   | "deposit-lost"
@@ -110,16 +88,8 @@ export interface PaymentFailure {
   readonly message: string;
   /** true only for kind === 'mint', the only kind retry() re-executes. */
   readonly recoverable: boolean;
-  /** The rail's own code for the ending (Chainflip's `BelowMinimumDeposit`, ...), when it named
-   *  one. */
+  /** The rail's own code for the ending (Meld's `declined`, ...), when it named one. */
   readonly code?: string;
-}
-
-/** The refund Chainflip streams back after a failed swap, as far as the status poll has seen. */
-export interface RefundProgress {
-  readonly amount?: string;
-  readonly txRef?: string;
-  readonly witnessedAt?: number;
 }
 
 /** Host-idiomatic reactive subscription handle. */
@@ -139,12 +109,8 @@ export type PaymentState =
       quote: Quote | null;
       deposit: DepositInfo;
       swap: SwapProgress;
-      /** Chainflip's progress facts, as its last status read gave them. */
-      progress?: ChainflipProgressFacts;
-      /** When Chainflip scheduled the egress to Asset Hub. */
-      egressScheduledAt?: number;
     }
   | { phase: "funded"; sourceId: SourceId; deposit: DepositInfo | null; mint: MintProgress }
   | { phase: "working"; sourceId: SourceId; deposit: DepositInfo | null; mint: MintProgress }
   | { phase: "done"; sourceId: SourceId; result: Receipt }
-  | { phase: "failed"; sourceId: SourceId; failure: PaymentFailure; refund?: RefundProgress };
+  | { phase: "failed"; sourceId: SourceId; failure: PaymentFailure };

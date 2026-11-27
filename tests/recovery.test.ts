@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { directRecoveryNotes, recoveryNotes, refundStatusTail } from "../app/utils/recovery";
+import { directRecoveryNotes } from "../app/utils/recovery";
 
 describe("directRecoveryNotes", () => {
   it("names the key a raw seed, and has no gas step for DOT, which pays its own fee", () => {
@@ -13,75 +13,5 @@ describe("directRecoveryNotes", () => {
       "Moving USDT on Polkadot needs a small fee. Pay it in USDT if your wallet offers that, or send a little DOT to this address first.",
     );
     expect(notes.transferNote).toBe("Transfer your USDT to any Polkadot address you control");
-  });
-});
-
-describe("recoveryNotes", () => {
-  it("names the secret the way the chain's wallets do", () => {
-    expect(recoveryNotes("Bitcoin", "BTC", "wif").secretLabel).toBe("Private key (WIF)");
-    expect(recoveryNotes("Ethereum", "ETH", "hex").secretLabel).toBe("Private key");
-    expect(recoveryNotes("Tron", "TRX", "hex").secretLabel).toBe("Private key");
-    expect(recoveryNotes("Solana", "SOL", "base58").secretLabel).toBe("Secret key");
-  });
-
-  it("labels an unrevealed secret a private key", () => {
-    expect(recoveryNotes("Tron", "USDT").secretLabel).toBe("Private key");
-  });
-
-  it("has no gas step for a refund in the chain's own coin", () => {
-    expect(recoveryNotes("Bitcoin", "BTC").gasNote).toBeNull();
-    expect(recoveryNotes("Arbitrum", "ETH").gasNote).toBeNull();
-    expect(recoveryNotes("Bsc", "BNB").gasNote).toBeNull();
-    expect(recoveryNotes("Solana", "SOL").gasNote).toBeNull();
-  });
-
-  it("tells a token refund which coin it needs for fees, with Tron's design-given amount", () => {
-    expect(recoveryNotes("Tron", "USDT").gasNote).toBe(
-      "USDT on Tron can't move without TRX. Send a small amount to this address first, " +
-        "around 15 TRX is enough. If you don't have TRX, you can buy it on any exchange.",
-    );
-    expect(recoveryNotes("Solana", "USDC").gasNote).toContain("can't move without SOL");
-    expect(recoveryNotes("Solana", "USDC").gasNote).not.toContain("is enough");
-    expect(recoveryNotes("Arbitrum", "USDC").gasNote).toContain("can't move without ETH");
-  });
-
-  it("walks the key into a wallet on the refund's chain", () => {
-    const notes = recoveryNotes("Tron", "USDT");
-    expect(notes.importNote).toBe("Import this key into any wallet that supports Tron.");
-    expect(notes.transferNote).toBe("Transfer your USDT to any Tron address you control");
-  });
-
-  it("names BNB Chain as the screens do, never as Chainflip's Bsc", () => {
-    const notes = recoveryNotes("Bsc", "USDT");
-    expect(notes.gasNote).toBe(
-      "USDT on BNB Chain can't move without BNB. Send a small amount to this address first. " +
-        "If you don't have BNB, you can buy it on any exchange.",
-    );
-    expect(notes.importNote).toBe("Import this key into any wallet that supports BNB Chain.");
-    expect(notes.transferNote).toBe("Transfer your USDT to any BNB Chain address you control");
-  });
-});
-
-describe("refundStatusTail", () => {
-  it("hands the transaction back whole, for the screen to link and copy", () => {
-    // Not shortened into the sentence: the screen elides it for display but needs the full
-    // reference for the explorer URL and the clipboard.
-    const txRef = "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7";
-    expect(refundStatusTail({ txRef })).toEqual({
-      text: "is on its way back, transaction",
-      txRef,
-    });
-  });
-
-  it("prefers the landing over the transaction once witnessed", () => {
-    expect(refundStatusTail({ txRef: "x".repeat(40), witnessedAt: 1 })).toEqual({
-      text: "is back at your recovery address.",
-    });
-  });
-
-  it("promises the return before anything has been seen", () => {
-    const promised = { text: "is being returned to your recovery address." };
-    expect(refundStatusTail(undefined)).toEqual(promised);
-    expect(refundStatusTail({})).toEqual(promised);
   });
 });

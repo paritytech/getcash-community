@@ -7,7 +7,7 @@
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import type { TokenSpec } from "@getsome/core";
-import { deriveKeypair, walletSeedHex } from "@getsome/ephemeral";
+import { deriveKeypair } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
   chooseRoute,
@@ -95,22 +95,6 @@ export async function withdrawKeyFor(sourceId: string, n: number): Promise<Withd
   );
   const keypair = deriveKeypair(seed);
   return { address: keypair.address, publicKeyHex: toHex(keypair.publicKey) };
-}
-
-export interface WithdrawRefundKey {
-  /** The key on Asset Hub, where a provider's refund lands. */
-  address: string;
-  /** The raw seed a wallet imports for the same account, hex. */
-  secret: string;
-}
-
-/** The withdrawal key re-derived from its record's entropy label, with the wallet-importable
- *  seed. Read on tap, never on load; throws outside a host, where there is no entropy root. */
-export async function revealWithdrawKey(label: string): Promise<WithdrawRefundKey> {
-  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
-  const seed = await entropy.deriveSeed(new TextEncoder().encode(label));
-  const keypair = deriveKeypair(seed);
-  return { address: keypair.address, secret: walletSeedHex(seed) };
 }
 
 /** The key's CASH on People at the best block. */
@@ -542,8 +526,8 @@ export function cancelWithdrawJob(worker: WorkerLike, sessionId: string): Promis
   return worker.call("cancelWithdraw", { sessionId });
 }
 
-/** Dev builds only: tells the worker to take a withdrawal's swap as delivered. On a test network
- *  the provider's channel is real but cannot be paid, so the walk ends here by hand. */
+/** Dev builds only: tells the worker to take a withdrawal's sale as delivered. On a test network
+ *  the provider never pays out, so the walk ends here by hand. */
 export function skipWithdrawRail(worker: WorkerLike, sessionId: string): Promise<unknown> {
   return worker.call("skipWithdrawRail", { sessionId });
 }

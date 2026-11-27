@@ -1,22 +1,11 @@
 // The icon set in public/icons. A network's icon doubles as its native token's.
 
 const NETWORK_ICONS: Record<string, string> = {
-  Bitcoin: "/icons/bitcoin.svg",
-  Ethereum: "/icons/ethereum.svg",
-  Arbitrum: "/icons/arbitrum.svg",
-  Bsc: "/icons/bnb.svg",
-  Solana: "/icons/solana.svg",
-  Tron: "/icons/tron.svg",
   Polkadot: "/icons/polkadot.svg",
   AssetHub: "/icons/polkadot.svg",
 };
 
 const TOKEN_ICONS: Record<string, string> = {
-  BTC: NETWORK_ICONS.Bitcoin!,
-  ETH: NETWORK_ICONS.Ethereum!,
-  BNB: NETWORK_ICONS.Bsc!,
-  SOL: NETWORK_ICONS.Solana!,
-  TRX: NETWORK_ICONS.Tron!,
   DOT: NETWORK_ICONS.Polkadot!,
   dotUSD: "/icons/dotusd.svg",
   USDC: "/icons/usdc.svg",

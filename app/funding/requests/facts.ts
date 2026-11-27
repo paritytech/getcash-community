@@ -2,9 +2,8 @@
 // and a later read never erases one or moves it back, except what a fork took: the deposit's
 // block and the conversion. The deposit's block is not taken while the app holds its sighting back.
 
-import type { PaymentState, SwapProgress } from "@getsome/core";
+import type { SwapProgress } from "@getsome/core";
 import type {
-  ChainflipFacts,
   ConvertedTx,
   DepositInBlock,
   ObservedFact,
@@ -51,73 +50,6 @@ export function burnerSightingRetracted(record: TopUpRecord): TopUpRecord {
   delete kept["on-burner"];
   delete kept["final-on-burner"];
   return { ...record, observedAt: kept };
-}
-
-/** `current` when `next` holds the same value in each of its fields, else `next`. */
-function keptIfSame<T extends object>(current: T | undefined, next: T): T {
-  if (current === undefined) return next;
-  const fields = Object.keys(next) as (keyof T)[];
-  return fields.every((field) => next[field] === current[field]) ? current : next;
-}
-
-type Estimates = ChainflipFacts["estimatedDurationsSeconds"];
-
-/** Each stage's estimate from the latest read that gave one. */
-function estimatesKept(current: Estimates, read: Estimates): Estimates {
-  if (current === undefined || read === undefined) return read ?? current;
-  return keptIfSame(current, {
-    deposit: read.deposit ?? current.deposit,
-    swap: read.swap ?? current.swap,
-    egress: read.egress ?? current.egress,
-  });
-}
-
-type ChainflipRead = Pick<
-  Extract<PaymentState, { phase: "swapping" }>,
-  "progress" | "egressScheduledAt"
->;
-
-/** Folds one Chainflip status read into the facts kept so far, and Chainflip's clock into the
- *  witnesses. A DCA swap's chunks follow the read with the most executed. A read that changes
- *  nothing returns `record`. */
-export function chainflipObserved(
-  record: TopUpRecord,
-  { progress, egressScheduledAt }: ChainflipRead,
-  at: number,
-): TopUpRecord {
-  if (progress === undefined && egressScheduledAt === undefined) return record;
-  const { lastStatechainUpdateAt, ...read } = progress ?? {};
-  const current = record.chainflip;
-  const depositConfirmations = latestOf(current?.depositConfirmations, read.depositConfirmations);
-  const chunks =
-    read.chunks !== undefined &&
-    (current?.chunks === undefined || read.chunks.executed >= current.chunks.executed)
-      ? keptIfSame(current?.chunks, read.chunks)
-      : current?.chunks;
-  const chainflip = keptIfSame(current, {
-    depositConfirmations,
-    requiredConfirmations: read.requiredConfirmations ?? current?.requiredConfirmations,
-    boostedAt: current?.boostedAt ?? read.boostedAt,
-    swapScheduledAt: latestOf(current?.swapScheduledAt, read.swapScheduledAt),
-    chunks,
-    swapRescheduledAt: latestOf(current?.swapRescheduledAt, read.swapRescheduledAt),
-    estimatedDurationsSeconds: estimatesKept(
-      current?.estimatedDurationsSeconds,
-      read.estimatedDurationsSeconds,
-    ),
-    egressScheduledAt: latestOf(current?.egressScheduledAt, egressScheduledAt),
-    confirmationsAt:
-      depositConfirmations === current?.depositConfirmations ? current?.confirmationsAt : at,
-    chunksAt: chunks?.executed === current?.chunks?.executed ? current?.chunksAt : at,
-  });
-  const next = chainflip === current ? record : { ...record, chainflip };
-  const witnessed = record.witnesses.chainflip?.lastStatechainUpdateAt;
-  const clock = latestOf(witnessed, lastStatechainUpdateAt);
-  if (clock === undefined || clock === witnessed) return next;
-  return {
-    ...next,
-    witnesses: { ...next.witnesses, chainflip: { lastStatechainUpdateAt: clock } },
-  };
 }
 
 function depositFollowed(record: TopUpRecord, seen: DepositInBlock): TopUpRecord {

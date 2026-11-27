@@ -3,9 +3,9 @@
 // the foreground, shows where to send, and hands off once funds are seen.
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { isDemoBuild } from "../../../utils/demo";
-import { useChainflipHandoff } from "../../../composables/useChainflipHandoff";
+import { useCryptoHandoff } from "../../../composables/useCryptoHandoff";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
-import { chainflipRequestRef } from "../../../funding/chainflip-top-ups";
+import { cryptoRequestRef } from "../../../funding/crypto-top-ups";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useFlowStore } from "../../../stores/flow";
@@ -28,7 +28,7 @@ const waiting = computed(
 let active = true;
 
 useVisibilityReconcile();
-const { handedOff } = useChainflipHandoff(emit);
+const { handedOff } = useCryptoHandoff(emit);
 
 /** A cancel that went through leaves for the list; a declined one returns to the deposit. */
 async function cancelTopUp() {
@@ -48,7 +48,7 @@ function onDepositSkip() {
 }
 
 onMounted(async () => {
-  const ref = chainflipRequestRef(props.topUp.id);
+  const ref = cryptoRequestRef(props.topUp.id);
   let opened = false;
   try {
     opened = ref === null ? false : await session.openRequest(ref);

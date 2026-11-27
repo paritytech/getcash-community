@@ -84,7 +84,7 @@ describe("createMeldRail", () => {
     });
     expect(sentQuote).toEqual(["USDT_DOT"]);
 
-    await rail.requestDepositAddress({ quote, destAddress: BURNER, refundAddress: "" });
+    await rail.requestDepositAddress({ quote, destAddress: BURNER });
     expect(sentSession?.destinationCurrencyCode).toBe("USDT_DOT");
   });
 
@@ -116,7 +116,6 @@ describe("createMeldRail", () => {
     const channel = await rail.requestDepositAddress({
       quote,
       destAddress: BURNER,
-      refundAddress: "",
     });
 
     expect(channel.depositChannelId).toBe("funding-1");
@@ -157,17 +156,11 @@ describe("createMeldRail", () => {
     const channel = await rail.requestDepositAddress({
       quote,
       destAddress: BURNER,
-      refundAddress: "",
     });
 
     expect(sentMethod).toBe("SEPA");
     expect(channel.depositChannelId).toBe("funding-1");
     expect(channel.deposit.payUrl).toBe("https://pay.meld/x");
     expect(rail.payUrl("funding-1")).toBe("https://pay.meld/x");
-  });
-
-  it("reports available liquidity (route availability is enforced at quote time)", async () => {
-    const rail = createMeldRail({ client: fakeClient(), country: "US" });
-    expect((await rail.probeLiquidity("dot-assethub")).status).toBe("available");
   });
 });

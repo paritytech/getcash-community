@@ -15,18 +15,18 @@ import type { FundingTopUp, FundingTopUpProgress } from "../app/funding/top-ups"
 
 // vitest has no Vue plugin, and this test never renders the status screens the packages bundle.
 vi.mock("../app/components/funding/routes/MeldFundingStatusRoute.vue", () => ({ default: {} }));
-vi.mock("../app/components/funding/routes/ChainflipFundingStatusRoute.vue", () => ({
+vi.mock("../app/components/funding/routes/CryptoFundingStatusRoute.vue", () => ({
   default: {},
 }));
 
 const progress: FundingTopUpProgress = { value: 0, tone: "waiting", delayed: false };
 
 describe("getcash funding packages", () => {
-  it("maps crypto explicitly to the Chainflip package", () => {
+  it("maps crypto explicitly to the direct deposit package", () => {
     const resolution = resolveFundingRoute(getcashRoutePackages, "crypto");
     expect(resolution.kind).toBe("available");
     if (resolution.kind === "available") {
-      expect(resolution.package.packageId).toBe("@getsome/chainflip");
+      expect(resolution.package.packageId).toBe("@getsome/funding");
     }
   });
 
@@ -64,7 +64,7 @@ describe("getcash funding packages", () => {
     const cryptoLoad = vi.fn(async () => component);
     const packages = {
       bank: { packageId: "bank-package", load: bankLoad },
-      crypto: { packageId: "@getsome/chainflip", load: cryptoLoad },
+      crypto: { packageId: "@getsome/funding", load: cryptoLoad },
     } satisfies FundingRoutePackages;
     const selection = Object.freeze({ amount: "42.5", route: "crypto" }) satisfies FundingSelection;
 
@@ -73,7 +73,7 @@ describe("getcash funding packages", () => {
     expect(result).toMatchObject({
       kind: "loaded",
       selection: { amount: "42.5", route: "crypto" },
-      packageId: "@getsome/chainflip",
+      packageId: "@getsome/funding",
     });
     expect(result.selection).toBe(selection);
     expect(bankLoad).not.toHaveBeenCalled();
@@ -83,7 +83,7 @@ describe("getcash funding packages", () => {
   it("does not load another package when a route is unavailable", async () => {
     const cryptoLoad = vi.fn(async () => ({}) as Component);
     const packages = {
-      crypto: { packageId: "@getsome/chainflip", load: cryptoLoad },
+      crypto: { packageId: "@getsome/funding", load: cryptoLoad },
     } satisfies FundingRoutePackages;
     const selection = Object.freeze({ amount: "20", route: "card" }) satisfies FundingSelection;
 
@@ -114,7 +114,7 @@ describe("getcash funding packages", () => {
     const loadStatus = vi.fn(async () => component);
     const packages = {
       crypto: {
-        packageId: "@getsome/chainflip",
+        packageId: "@getsome/funding",
         load: vi.fn(async () => component),
         topUps: {
           useAdapter: vi.fn(),
@@ -136,7 +136,7 @@ describe("getcash funding packages", () => {
     expect(result).toMatchObject({
       kind: "loaded",
       topUp,
-      packageId: "@getsome/chainflip",
+      packageId: "@getsome/funding",
       component,
     });
     expect(loadStatus).toHaveBeenCalledOnce();
@@ -179,7 +179,7 @@ describe("getcash funding packages", () => {
 describe("availableFundingRoutes", () => {
   it("keeps only the routes with a package, in the configured order", () => {
     const packages: FundingRoutePackages = {
-      crypto: { packageId: "@getsome/chainflip", load: () => Promise.resolve({} as Component) },
+      crypto: { packageId: "@getsome/funding", load: () => Promise.resolve({} as Component) },
     };
     expect(availableFundingRoutes(packages, ["card", "bank", "crypto"])).toEqual(["crypto"]);
     expect(availableFundingRoutes({}, ["card", "bank", "crypto"])).toEqual([]);

@@ -35,7 +35,6 @@ import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
 import RecoverFeeScreen from "../screens/RecoverFeeScreen.vue";
 import RecoverTokenScreen from "../screens/RecoverTokenScreen.vue";
 import RecoverTrappedScreen from "../screens/RecoverTrappedScreen.vue";
-import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
@@ -87,17 +86,6 @@ const { quote, cashAmount } = useJourneyQuote(
 watch(quote, (q) => {
   if (!q) showingFees.value = false;
 });
-/** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
-const showingRefund = ref(false);
-// A live state that is no longer failed has no refund to walk through. A journey opened from
-// history has no live state at all, and its guide is driven by the record instead, so the guard
-// only applies while a request is actually on screen.
-watch(
-  () => requests.phase,
-  (phase) => {
-    if (phase !== null && phase !== "failed") showingRefund.value = false;
-  },
-);
 /** The recovery guide over an ended Polkadot top-up, whose funds, if any, are on its own
  *  account. */
 const showingRecovery = ref(false);
@@ -173,7 +161,6 @@ useScreen(() => {
   if (readOnly && props.topUp && !showingFees.value) return "top-up.settled";
   if (waiting.value || unavailable.value) return null;
   if (flow.confirmingCancel) return "top-up.cancel";
-  if (showingRefund.value) return "top-up.refund";
   if (showingRecovery.value) return "top-up.recover-deposit";
   if (recoveryScreen.value === "fee" && recoveryFeeHuman.value !== null)
     return "top-up.recover-fee";
@@ -265,7 +252,6 @@ watch(
     const clear =
       recoveryScreen.value === null &&
       !showingFees.value &&
-      !showingRefund.value &&
       !showingRecovery.value &&
       !flow.confirmingCancel;
     if (wallet && !unused && depositToken.value !== null && clear) {
@@ -326,8 +312,7 @@ if (isDemoBuild()) {
   watch(
     () => flow.previewDrillIn,
     (want) => {
-      if (want === "refund") showingRefund.value = true;
-      else if (want === "recovery-fee") recoveryScreen.value = "fee";
+      if (want === "recovery-fee") recoveryScreen.value = "fee";
       else if (want === "recovery-token") recoveryScreen.value = "token";
       else if (want === "recovery-deposit") recoveryScreen.value = "deposit";
     },
@@ -379,7 +364,6 @@ const shellTitle = computed(() => {
 function goBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
   else if (flow.recoveringDeposit) flow.recoveringDeposit = false;
-  else if (showingRefund.value) showingRefund.value = false;
   else if (showingRecovery.value) showingRecovery.value = false;
   else if (recoveryScreen.value !== null) recoveryScreen.value = null;
   else if (showingFees.value) showingFees.value = false;
@@ -453,7 +437,6 @@ onUnmounted(() => {
       @confirm="cancelTopUp"
       @keep="flow.confirmingCancel = false"
     />
-    <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
     <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
     <RecoverFeeScreen
       v-else-if="recoveryScreen === 'fee' && recoveryFeeHuman !== null"
@@ -492,7 +475,6 @@ onUnmounted(() => {
         :top-up="topUp ?? null"
         :purse="purseWord"
         @fees="showingFees = true"
-        @refund="showingRefund = true"
         @recover="showingRecovery = true"
         @recover-from-balance="recoveryScreen = 'fee'"
         @recover-deposit="openRecoveryDeposit"

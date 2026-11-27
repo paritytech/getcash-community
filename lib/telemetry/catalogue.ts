@@ -106,7 +106,6 @@ export const SCREENS = [
   "top-up.cancel",
   "top-up.journey",
   "top-up.settled",
-  "top-up.refund",
   "top-up.recover-deposit",
   // a top-up whose CASH is in People's trap: the fee's confirmation, the token, the deposit
   "top-up.recover-fee",
@@ -122,7 +121,6 @@ export const SCREENS = [
   "withdraw.kyc",
   "withdraw.cancel",
   "withdraw.journey",
-  "withdraw.return-funds",
   "fees",
   "region",
 ] as const;

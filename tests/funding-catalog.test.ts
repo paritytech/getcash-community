@@ -1,5 +1,5 @@
-// The on-ramp catalog: the direct Polkadot network alone, the Chainflip catalog unchanged for the
-// withdraw side, and the two source id maps agreeing.
+// The on-ramp catalog: the direct Polkadot network alone, and its source id map agreeing both
+// ways.
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,6 @@ import {
   FUNDING_CHAINS,
   isDirectSourceId,
   POLKADOT_CHAIN,
-  SOURCE_CHAINS,
   sourceIdFor,
   sourcePairFor,
 } from "~~/lib/config";
@@ -29,29 +28,8 @@ describe("the funding catalog", () => {
     });
   });
 
-  it("keeps the Chainflip catalog as it was, which the withdraw side reads", () => {
-    expect(SOURCE_CHAINS.map((chain) => chain.chain)).toEqual([
-      "Bitcoin",
-      "Ethereum",
-      "Solana",
-      "Tron",
-      "Bsc",
-      "Arbitrum",
-    ]);
-    expect(SOURCE_CHAINS.some((chain) => (chain.chain as string) === "Polkadot")).toBe(false);
-    // Each network's own coin.
-    expect(SOURCE_CHAINS.map((chain) => chain.native)).toEqual([
-      "BTC",
-      "ETH",
-      "SOL",
-      "TRX",
-      "BNB",
-      "ETH",
-    ]);
-  });
-
   it("has an icon file of its own for every network and token", () => {
-    const icons = [...FUNDING_CHAINS, ...SOURCE_CHAINS].flatMap((chain) => [
+    const icons = FUNDING_CHAINS.flatMap((chain) => [
       networkIcon(chain.chain),
       ...chain.assets.map(tokenIcon),
     ]);
@@ -62,22 +40,17 @@ describe("the funding catalog", () => {
     }
   });
 
-  it("maps a pair to its source in either catalog, and back", () => {
+  it("maps a pair to its source, and back", () => {
     expect(sourceIdFor("Polkadot", "DOT")).toBe("dot-assethub");
     expect(sourceIdFor("Polkadot", "dotUSD")).toBe("dotusd-assethub");
     expect(sourceIdFor("Polkadot", "USDT")).toBe("usdt-assethub");
     expect(sourceIdFor("Polkadot", "USDC")).toBe("usdc-assethub");
-    expect(sourceIdFor("Ethereum", "USDC")).toBe("usdc-eth");
-    expect(sourceIdFor("Arbitrum", "USDC")).toBe("usdc-arbitrum");
-    expect(sourceIdFor("Bsc", "BNB")).toBe("bnb-bsc");
-    expect(sourceIdFor("Bsc", "USDT")).toBe("usdt-bsc");
-    expect(sourceIdFor("Bsc", "USDC")).toBeUndefined();
+    expect(sourceIdFor("Ethereum", "USDC")).toBeUndefined();
     expect(sourceIdFor("Polkadot", "BTC")).toBeUndefined();
     expect(sourcePairFor("usdc-assethub")).toEqual({ chain: "Polkadot", asset: "USDC" });
     expect(sourcePairFor("dotusd-assethub")).toEqual({ chain: "Polkadot", asset: "dotUSD" });
     expect(sourcePairFor("dot-assethub")).toEqual({ chain: "Polkadot", asset: "DOT" });
-    expect(sourcePairFor("usdt-tron")).toEqual({ chain: "Tron", asset: "USDT" });
-    expect(sourcePairFor("usdt-bsc")).toEqual({ chain: "Bsc", asset: "USDT" });
+    expect(sourcePairFor("usdt-tron")).toBeUndefined();
     expect(sourcePairFor("meld-card")).toBeUndefined();
   });
 
@@ -100,14 +73,13 @@ describe("the funding catalog", () => {
   it("runs every direct source on the crypto route over the manual rail", () => {
     expect(isCryptoSourceId(undefined)).toBe(true);
     expect(isCryptoSourceId("usdt-assethub")).toBe(true);
-    expect(isCryptoSourceId("btc")).toBe(true);
+    expect(isCryptoSourceId("btc")).toBe(false);
     expect(isCryptoSourceId("meld-card")).toBe(false);
     expect(isCryptoSourceId("nope")).toBe(false);
     for (const sourceId of DIRECT_SOURCE_IDS) {
       expect(railProviderOf(sourceId)).toBe("manual");
       expect(routeOf(sourceId)).toBe("crypto");
     }
-    expect(railProviderOf("btc")).toBe("chainflip");
     expect(railProviderOf("meld-card")).toBe("meld");
   });
 });

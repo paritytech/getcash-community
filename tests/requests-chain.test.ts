@@ -211,10 +211,10 @@ const tombstone = (tradeN: number, expiresAt: number, startedAt?: number): Reque
   });
 
 const AWAITING_REF = refOf(awaitingDepositCryptoRecord);
-/** A Chainflip pick, paid into the burner by the provider: its burner is read for the free
- *  balance alone, where a Polkadot deposit is read in every direct token. */
-const btcRecord: ActiveFlowRecord = { ...awaitingDepositCryptoRecord, sourceId: "btc" };
-const BTC_REF = refOf(btcRecord);
+/** A card top-up, paid into the burner by the provider: its burner is read for the free balance
+ *  alone, where a Polkadot deposit is read in every direct token. */
+const cardRecord: ActiveFlowRecord = { ...awaitingDepositCryptoRecord, sourceId: "meld-card" };
+const CARD_REF = refOf(cardRecord);
 const AWAITING_JOB = fixtureWorkerJobs["dot-assethub:3"]!;
 const AWAITING_HANDOFF = handoffOf(AWAITING_JOB);
 
@@ -581,14 +581,14 @@ describe("requests store: the chain step", () => {
 
   it("the deposit watch reports best and finalized reads, and ends once the deposit is final", async () => {
     const requests = useRequestsStore();
-    await requests.create(BTC_REF, {
-      ...migrated(btcRecord),
+    await requests.create(CARD_REF, {
+      ...migrated(cardRecord),
       handoff: AWAITING_HANDOFF,
     });
-    requests.setForeground(BTC_REF);
+    requests.setForeground(CARD_REF);
     await nextTick();
     await settled();
-    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
+    expect(watchers()).toEqual([{ key: "meld-card:3", unsubscribed: false }]);
     const watcher = chain.watchers[0]!;
     const read = async (free: bigint, finality: "best" | "finalized") => {
       watcher.onValue(free, finality);
@@ -598,7 +598,7 @@ describe("requests store: the chain step", () => {
 
     // An empty burner: the record only witnessed the reading, and the watch goes on.
     await read(0n, "best");
-    expect(requests.get(BTC_REF)).toMatchObject({
+    expect(requests.get(CARD_REF)).toMatchObject({
       rev: 0,
       status: { kind: "awaiting-deposit" },
       witnesses: { chain: { best: { burnerNative: "0", at: FIXTURE_NOW } } },
@@ -609,7 +609,7 @@ describe("requests store: the chain step", () => {
     await read(5_000_000_000n, "best");
     await read(5_000_000_000n, "best");
     await read(0n, "finalized");
-    expect(requests.get(BTC_REF)).toMatchObject({
+    expect(requests.get(CARD_REF)).toMatchObject({
       rev: 1,
       status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
       observedAt: { "on-burner": FIXTURE_NOW },
@@ -624,7 +624,7 @@ describe("requests store: the chain step", () => {
 
     // The coins are final: the sighting is firmed up and the watch ends.
     await read(5_000_000_000n, "finalized");
-    expect(requests.get(BTC_REF)).toMatchObject({
+    expect(requests.get(CARD_REF)).toMatchObject({
       rev: 2,
       status: { kind: "deposit-seen", assurance: "finalized" },
       observedAt: { "on-burner": FIXTURE_NOW, "final-on-burner": FIXTURE_NOW },
@@ -633,11 +633,11 @@ describe("requests store: the chain step", () => {
 
     // A late emission after the stop changes nothing, and nothing re-subscribes.
     await read(7_000_000_000n, "best");
-    expect(requests.get(BTC_REF)).toMatchObject({
+    expect(requests.get(CARD_REF)).toMatchObject({
       rev: 2,
       witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
     });
-    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: true }]);
+    expect(watchers()).toEqual([{ key: "meld-card:3", unsubscribed: true }]);
     expect(chain.probes).toEqual([]);
     // A hand-off from before tiers were recorded is a pool one: the burner is read in the native.
     expect(watcher.tier).toBe("pool");
@@ -645,71 +645,76 @@ describe("requests store: the chain step", () => {
 
   it("the deposit watch follows a deposit the provider saw, and ends with the request", async () => {
     const requests = useRequestsStore();
-    await requests.create(BTC_REF, {
-      ...migrated(btcRecord),
+    await requests.create(CARD_REF, {
+      ...migrated(cardRecord),
       handoff: AWAITING_HANDOFF,
       status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "core" },
     });
-    requests.setForeground(BTC_REF);
+    requests.setForeground(CARD_REF);
     await nextTick();
     await settled();
     const watcher = chain.watchers[0]!;
 
     watcher.onValue(5_000_000_000n, "best");
     await settled();
-    expect(requests.get(BTC_REF)).toMatchObject({
+    expect(requests.get(CARD_REF)).toMatchObject({
       status: { kind: "deposit-seen", via: "core" },
       observedAt: { "on-burner": FIXTURE_NOW },
     });
     expect(watcher.unsubscribed).toBe(false);
 
-    await requests.observe(BTC_REF, {
+    await requests.observe(CARD_REF, {
       source: "core",
       at: FIXTURE_NOW,
       state: {
         phase: "failed",
-        sourceId: "btc",
-        failure: { kind: "refunded", step: "deposit", message: "refunded", recoverable: false },
+        sourceId: "meld-card",
+        failure: {
+          kind: "deposit-rejected",
+          step: "deposit",
+          message: "declined",
+          recoverable: false,
+        },
       },
     });
     await nextTick();
-    expect(requests.get(BTC_REF)?.status.kind).toBe("failed");
+    expect(requests.get(CARD_REF)?.status.kind).toBe("failed");
     expect(watcher.unsubscribed).toBe(true);
   });
 
   it("the deposit watch reads the burner in the tier the record froze at quote time", async () => {
     const requests = useRequestsStore();
-    await requests.create(BTC_REF, {
-      ...migrated(btcRecord),
+    await requests.create(CARD_REF, {
+      ...migrated(cardRecord),
       handoff: { ...AWAITING_HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 },
     });
-    requests.setForeground(BTC_REF);
+    requests.setForeground(CARD_REF);
     await nextTick();
     await settled();
     expect(chain.watchers.map(({ key, tier }) => ({ key, tier }))).toEqual([
-      { key: "btc:3", tier: "psm" },
+      { key: "meld-card:3", tier: "psm" },
     ]);
   });
 
   it("the deposit watch pauses while hidden and stops when the request leaves the screen", async () => {
     const requests = useRequestsStore();
-    await requests.create(BTC_REF, {
-      ...migrated(btcRecord),
+    await requests.create(CARD_REF, {
+      ...migrated(cardRecord),
       handoff: AWAITING_HANDOFF,
     });
-    requests.setForeground(BTC_REF);
+    requests.setForeground(CARD_REF);
     await nextTick();
     await settled();
-    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
+    expect(watchers()).toEqual([{ key: "meld-card:3", unsubscribed: false }]);
 
     // Hidden: the subscription is let go. Visible again: a new one.
     requests.pausePolls();
-    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: true }]);
+    expect(watchers()).toEqual([{ key: "meld-card:3", unsubscribed: true }]);
     requests.resumePolls();
     await settled();
     expect(watchers()).toEqual([
-      { key: "btc:3", unsubscribed: true },
-      { key: "btc:3", unsubscribed: false },
+      { key: "meld-card:3", unsubscribed: true },
+      { key: "meld-card:3", unsubscribed: false },
     ]);
 
     // The request leaves the screen: the subscription ends and no other takes its place.
@@ -717,14 +722,14 @@ describe("requests store: the chain step", () => {
     await nextTick();
     await settled();
     expect(watchers()).toEqual([
-      { key: "btc:3", unsubscribed: true },
-      { key: "btc:3", unsubscribed: true },
+      { key: "meld-card:3", unsubscribed: true },
+      { key: "meld-card:3", unsubscribed: true },
     ]);
     expect(console.warn).not.toHaveBeenCalled();
 
     // Back on screen, the chain client fails the subscription: one warning, and the watch is let
     // go until it is tried again.
-    requests.setForeground(BTC_REF);
+    requests.setForeground(CARD_REF);
     await nextTick();
     await settled();
     expect(chain.watchers).toHaveLength(3);
@@ -732,11 +737,11 @@ describe("requests store: the chain step", () => {
     expect(chain.watchers[2]!.unsubscribed).toBe(true);
     expect(console.warn).toHaveBeenCalledTimes(1);
     expect(console.warn).toHaveBeenCalledWith(
-      "[requests] deposit watch for btc#3 failed: asset hub unreachable",
+      "[requests] deposit watch for meld-card#3 failed: asset hub unreachable",
     );
     await settled();
     expect(chain.watchers).toHaveLength(3);
-    expect(requests.get(BTC_REF)).toMatchObject({
+    expect(requests.get(CARD_REF)).toMatchObject({
       rev: 0,
       status: { kind: "awaiting-deposit" },
     });
@@ -746,14 +751,14 @@ describe("requests store: the chain step", () => {
     let now = FIXTURE_NOW;
     setRequestsClock(() => now);
     const requests = useRequestsStore();
-    await requests.create(BTC_REF, {
-      ...migrated(btcRecord),
+    await requests.create(CARD_REF, {
+      ...migrated(cardRecord),
       handoff: AWAITING_HANDOFF,
     });
-    requests.setForeground(BTC_REF);
+    requests.setForeground(CARD_REF);
     await nextTick();
     await settled();
-    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
+    expect(watchers()).toEqual([{ key: "meld-card:3", unsubscribed: false }]);
     const doc = fakeDocument();
     const detach = requests.attachLifecycle({ document: doc, window: fakeWindow() });
 
@@ -766,8 +771,8 @@ describe("requests store: the chain step", () => {
     await until(() => !requests.reconcilingNow);
 
     expect(watchers()).toEqual([
-      { key: "btc:3", unsubscribed: true },
-      { key: "btc:3", unsubscribed: false },
+      { key: "meld-card:3", unsubscribed: true },
+      { key: "meld-card:3", unsubscribed: false },
     ]);
     expect(evictChains).toHaveBeenCalledTimes(1);
     expect(log).toEqual(["subscribe", "evict", "subscribe"]);
@@ -775,15 +780,15 @@ describe("requests store: the chain step", () => {
   });
 
   describe("a deposit watch that failed", () => {
-    const BTC4_REF = requestRefOf("btc", 4);
+    const CARD4_REF = requestRefOf("meld-card", 4);
     const turn = () => new Promise((resolve) => realSetTimeout(resolve, 0));
 
-    /** The BTC request on screen with its watch live, the timers fake from here on. */
+    /** The card request on screen with its watch live, the timers fake from here on. */
     async function watched() {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
       const requests = useRequestsStore();
-      await requests.create(BTC_REF, { ...migrated(btcRecord), handoff: AWAITING_HANDOFF });
-      requests.setForeground(BTC_REF);
+      await requests.create(CARD_REF, { ...migrated(cardRecord), handoff: AWAITING_HANDOFF });
+      requests.setForeground(CARD_REF);
       await nextTick();
       await until(() => chain.watchers.length === 1);
       return requests;
@@ -804,8 +809,8 @@ describe("requests store: the chain step", () => {
       expect(chain.watchers).toHaveLength(1);
       await wait(1);
       expect(watchers()).toEqual([
-        { key: "btc:3", unsubscribed: true },
-        { key: "btc:3", unsubscribed: false },
+        { key: "meld-card:3", unsubscribed: true },
+        { key: "meld-card:3", unsubscribed: false },
       ]);
       expect(log).toEqual(["subscribe", "subscribe"]);
     });
@@ -814,22 +819,22 @@ describe("requests store: the chain step", () => {
       chain.subscribeError = new Error("asset hub unreachable");
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
       const requests = useRequestsStore();
-      await requests.create(BTC_REF, { ...migrated(btcRecord), handoff: AWAITING_HANDOFF });
-      requests.setForeground(BTC_REF);
+      await requests.create(CARD_REF, { ...migrated(cardRecord), handoff: AWAITING_HANDOFF });
+      requests.setForeground(CARD_REF);
       await nextTick();
       await until(() => vi.mocked(console.warn).mock.calls.length === 1);
       expect(chain.watchers).toHaveLength(0);
       chain.subscribeError = null;
       await wait(DEPOSIT_WATCH_RETRY_MS);
-      expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
+      expect(watchers()).toEqual([{ key: "meld-card:3", unsubscribed: false }]);
     });
 
     it("leaves the shared client alone when the subscribe keeps failing before the client", async () => {
       chain.subscribeError = new Error("host entropy refused");
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
       const requests = useRequestsStore();
-      await requests.create(BTC_REF, { ...migrated(btcRecord), handoff: AWAITING_HANDOFF });
-      requests.setForeground(BTC_REF);
+      await requests.create(CARD_REF, { ...migrated(cardRecord), handoff: AWAITING_HANDOFF });
+      requests.setForeground(CARD_REF);
       await nextTick();
       await until(() => vi.mocked(console.warn).mock.calls.length === 1);
       for (const ms of [2_000, 4_000, 8_000]) await wait(ms);
@@ -875,24 +880,33 @@ describe("requests store: the chain step", () => {
 
     it("starts another request on screen from its own count", async () => {
       const requests = await watched();
-      await requests.create(BTC4_REF, {
-        ...migrated({ ...btcRecord, tradeN: 4 }),
+      await requests.create(CARD4_REF, {
+        ...migrated({ ...cardRecord, tradeN: 4 }),
         handoff: AWAITING_HANDOFF,
       });
       // Two failures on the first: its next try, due in 4 s, would dial a fresh client.
       fail();
       await wait(DEPOSIT_WATCH_RETRY_MS);
       fail();
-      requests.setForeground(BTC4_REF);
+      requests.setForeground(CARD4_REF);
       await nextTick();
       await until(() => chain.watchers.length === 3);
       await wait(60_000);
-      expect(chain.watchers.map(({ key }) => key)).toEqual(["btc:3", "btc:3", "btc:4"]);
+      expect(chain.watchers.map(({ key }) => key)).toEqual([
+        "meld-card:3",
+        "meld-card:3",
+        "meld-card:4",
+      ]);
       expect(log).not.toContain("evict asset-hub");
       // Its own first failure waits 2 s and keeps the client.
       fail();
       await wait(DEPOSIT_WATCH_RETRY_MS);
-      expect(chain.watchers.map(({ key }) => key)).toEqual(["btc:3", "btc:3", "btc:4", "btc:4"]);
+      expect(chain.watchers.map(({ key }) => key)).toEqual([
+        "meld-card:3",
+        "meld-card:3",
+        "meld-card:4",
+        "meld-card:4",
+      ]);
       expect(log).not.toContain("evict asset-hub");
     });
 
@@ -914,7 +928,7 @@ describe("requests store: the chain step", () => {
       setActivePinia(createPinia());
       chain.watchers.length = 0;
       const final = await twice();
-      await final.observe(BTC_REF, {
+      await final.observe(CARD_REF, {
         source: "chain",
         at: FIXTURE_NOW,
         burnerNative: "5000000000",
@@ -939,8 +953,8 @@ describe("requests store: the chain step", () => {
 
     it("drops a try another request came on screen during, before it dials a fresh client", async () => {
       const requests = await watched();
-      await requests.create(BTC4_REF, {
-        ...migrated({ ...btcRecord, tradeN: 4 }),
+      await requests.create(CARD4_REF, {
+        ...migrated({ ...cardRecord, tradeN: 4 }),
         handoff: AWAITING_HANDOFF,
       });
       fail();
@@ -948,12 +962,16 @@ describe("requests store: the chain step", () => {
       fail();
       // The try comes due and starts loading the client module; the other request opens meanwhile.
       vi.advanceTimersByTime(2 * DEPOSIT_WATCH_RETRY_MS);
-      requests.setForeground(BTC4_REF);
+      requests.setForeground(CARD4_REF);
       await nextTick();
       await until(() => chain.watchers.length === 3);
       await wait(0);
       expect(log).toEqual(["subscribe", "subscribe", "subscribe"]);
-      expect(chain.watchers.map(({ key }) => key)).toEqual(["btc:3", "btc:3", "btc:4"]);
+      expect(chain.watchers.map(({ key }) => key)).toEqual([
+        "meld-card:3",
+        "meld-card:3",
+        "meld-card:4",
+      ]);
     });
 
     it("leaves no try pending while the page is hidden", async () => {

@@ -1,9 +1,8 @@
-// The rail leg: both providers' normalised statuses onto the generic stage, and the monotonic
-// merge. The statuses come from the real adapters over fake backends.
+// The rail leg: a provider's normalised status onto the generic stage, and the monotonic merge.
+// Meld's statuses come from the real adapter over a fake backend.
 
 import { describe, expect, it } from "vitest";
-import { getSwapStatus } from "@getsome/chainflip";
-import type { FailureKind, SwapStatusResult } from "@getsome/core";
+import { RAIL_FAILED_MESSAGE, type FailureKind, type SwapStatusResult } from "@getsome/core";
 import { getMeldStatus } from "@getsome/meld";
 import type { RailState } from "../app/funding/requests/model";
 import { mergeRail, railFromSwapStatus } from "../app/funding/requests/rail";
@@ -18,10 +17,6 @@ interface Expected {
   delayed?: boolean;
 }
 
-/** A Chainflip status as the SDK's v2 status endpoint reports it. */
-const chainflip = (raw: Record<string, unknown>) =>
-  getSwapStatus({ getStatusV2: async () => raw }, "123-Bitcoin-45");
-
 /** A Meld status as the adapter reports it. */
 const meld = (status: string) =>
   getMeldStatus(
@@ -35,30 +30,26 @@ const meld = (status: string) =>
   );
 
 describe("rail mapping", () => {
-  it("maps every Chainflip and Meld status to the design's stage", async () => {
-    const chainflipCases: [Record<string, unknown>, Expected][] = [
-      [{ state: "WAITING" }, { status: "waiting", stage: "waiting" }],
-      [{ state: "SOMETHING_NEW" }, { status: "waiting", stage: "waiting" }],
-      [{ state: "RECEIVING" }, { status: "receiving", stage: "received" }],
-      [{ state: "SWAPPING" }, { status: "swapping", stage: "processing" }],
-      [{ state: "SENDING" }, { status: "sending", stage: "processing" }],
-      [{ state: "SENT" }, { status: "sent", stage: "processing" }],
-      [{ state: "COMPLETED" }, { status: "complete", stage: "delivered" }],
+  it("maps every status a rail reports, and every Meld status, to the design's stage", async () => {
+    const railCases: [SwapStatusResult, Expected][] = [
+      [{ status: "waiting" }, { status: "waiting", stage: "waiting" }],
+      [{ status: "receiving" }, { status: "receiving", stage: "received" }],
+      [{ status: "swapping" }, { status: "swapping", stage: "processing" }],
+      [{ status: "sending" }, { status: "sending", stage: "processing" }],
+      [{ status: "sent" }, { status: "sent", stage: "processing" }],
+      [{ status: "complete" }, { status: "complete", stage: "delivered" }],
+      // A failure the rail does not name.
       [
-        { state: "FAILED" },
+        { status: "failed" },
         {
           status: "failed",
           stage: "failed",
-          failure: {
-            kind: "refunded",
-            message:
-              "The deposit didn't go through. It is being returned to your recovery address.",
-          },
+          failure: { kind: "unknown", message: RAIL_FAILED_MESSAGE },
         },
       ],
-      // Implicit failures: the SDK's top-level state stays on the happy path.
+      // A failure the rail names ends the leg whatever its top-level status says.
       [
-        { state: "RECEIVING", deposit: { failure: { reason: { message: "Below minimum" } } } },
+        { status: "receiving", depositFailure: { reason: { message: "Below minimum" } } },
         {
           status: "receiving",
           stage: "failed",
@@ -66,40 +57,17 @@ describe("rail mapping", () => {
         },
       ],
       [
-        { state: "SWAPPING", deposit: { failure: { mode: "DEPOSIT_TOO_SMALL" } } },
+        { status: "swapping", depositFailure: {} },
         {
           status: "swapping",
           stage: "failed",
-          failure: {
-            kind: "deposit-rejected",
-            message: "Deposit rejected by Chainflip; funds not recoverable",
-          },
-        },
-      ],
-      [
-        { state: "SENDING", swapEgress: { failure: { reason: { message: "Egress stalled" } } } },
-        {
-          status: "sending",
-          stage: "failed",
-          failure: { kind: "egress-failed", message: "Egress stalled" },
-        },
-      ],
-      [
-        { state: "COMPLETED", fallbackEgress: { amount: "1" } },
-        {
-          status: "complete",
-          stage: "failed",
-          failure: {
-            kind: "fallback-egress",
-            message: "Chainflip exchanged your funds but couldn't send them.",
-          },
+          failure: { kind: "deposit-rejected", message: RAIL_FAILED_MESSAGE },
         },
       ],
     ];
-    for (const [raw, want] of chainflipCases) {
-      const result = await chainflip(raw);
-      expect(railFromSwapStatus("chainflip", result, AT), JSON.stringify(raw)).toEqual({
-        provider: "chainflip",
+    for (const [result, want] of railCases) {
+      expect(railFromSwapStatus("manual", result, AT), JSON.stringify(result)).toEqual({
+        provider: "manual",
         updatedAt: AT,
         ...want,
       });

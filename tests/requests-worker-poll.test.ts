@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { projectCryptoTopUps } from "../app/funding/crypto-top-ups";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   JOB_POLL_CLAIMING_MS,
@@ -365,7 +365,6 @@ describe("requests store: the worker poll", () => {
       confirmedAt: FIXTURE_NOW,
     });
     expect(record).not.toHaveProperty("deposit");
-    expect(record).not.toHaveProperty("refundAddress");
     expect(record).not.toHaveProperty("sourceAmount");
 
     // Written to the host and listed in the index, like a record the surface wrote itself.
@@ -388,7 +387,7 @@ describe("requests store: the worker poll", () => {
     ]);
 
     // The list renders it with generic labels: the source id's own chain and coin, no quote.
-    const row = projectChainflipTopUps(requests.openRecords, FIXTURE_NOW).find(
+    const row = projectCryptoTopUps(requests.openRecords, FIXTURE_NOW).find(
       (topUp) => topUp.id === "crypto:dot-assethub#9",
     );
     expect(row).toMatchObject({

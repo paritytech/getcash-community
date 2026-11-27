@@ -2,9 +2,8 @@
 // last, so that a top-up shown on two screens never moves back on either.
 
 import { requestRefKey } from "../../utils/request-index";
-import { isDirectDeposit, type TopUpRecord } from "../requests/model";
+import type { TopUpRecord } from "../requests/model";
 import { isMeldSourceId, meldMethodFor, type MeldMethod } from "../source-ids";
-import { chainflipRoute } from "./chainflip";
 import { directRoute } from "./direct";
 import { meldBankRoute, meldCardRoute } from "./meld";
 import type { TimelineRoute } from "./route";
@@ -23,12 +22,10 @@ const MELD_ROUTES: Readonly<Record<MeldMethod, TimelineRoute>> = {
   bank: meldBankRoute,
 };
 
-/** The route of a top-up: Meld card or bank by its source, a direct deposit by the network paid
- *  from, or else a Chainflip swap, which runs under the Asset Hub source it arrives as. */
-export function timelineRouteOf(record: Pick<TopUpRecord, "chain" | "ref">): TimelineRoute {
+/** The route of a top-up: Meld card or bank by its source, else a direct deposit. */
+export function timelineRouteOf(record: Pick<TopUpRecord, "ref">): TimelineRoute {
   const { sourceId } = record.ref;
-  if (isMeldSourceId(sourceId)) return MELD_ROUTES[meldMethodFor(sourceId)];
-  return isDirectDeposit(record) ? directRoute : chainflipRoute;
+  return isMeldSourceId(sourceId) ? MELD_ROUTES[meldMethodFor(sourceId)] : directRoute;
 }
 
 /** A top-up's timeline at `now`; absent until it opens, unless the top-up ended before. */

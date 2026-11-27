@@ -118,10 +118,6 @@ export function rowStateOf(record: TopUpRecord, label: string, now: number): Fun
     case "failed":
     case "expired": {
       const reason = record.failure?.message ?? record.failureReason;
-      // A refund's own figures, for a journey reopened from history: without them it can say only
-      // that a refund happened, not how much came back or where to look for it.
-      const refunded = record.refunded === true;
-      const refund = record.failure?.refund;
       // The status is the rail's own word on an expiry; the failure's kind covers a record whose
       // status stayed `failed` because the expiry came back from core rather than the deadline.
       const expired = status.kind === "expired" || expiredFailure(record.failure?.kind);
@@ -132,9 +128,6 @@ export function rowStateOf(record: TopUpRecord, label: string, now: number): Fun
         ...(expired ? { expired: true } : {}),
         ...(credited === undefined ? {} : { creditedAmount: credited }),
         ...(reason === undefined ? {} : { reason }),
-        ...(refunded ? { refunded: true } : {}),
-        ...(refunded && refund?.amount ? { refundAmount: refund.amount } : {}),
-        ...(refunded && refund?.txRef ? { refundTxRef: refund.txRef } : {}),
       };
     }
     case "cancelled":

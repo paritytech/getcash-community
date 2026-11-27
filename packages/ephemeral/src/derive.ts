@@ -9,10 +9,7 @@ import { getPolkadotSigner } from "polkadot-api/signer";
 import { AccountId, type PolkadotSigner } from "polkadot-api";
 import type { EphemeralSigner, HandoffKey } from "@getsome/core";
 
-/**
- * Polkadot and Asset Hub SS58 prefix. Chainflip rejects the generic prefix 42 for Asset Hub
- * destinations.
- */
+/** Polkadot and Asset Hub SS58 prefix. */
 export const ASSET_HUB_SS58_PREFIX = 0;
 
 export interface EphemeralKeypair {

@@ -641,7 +641,6 @@ type WithdrawJob = {
     expiresAt?: unknown;
     expectedEgress?: unknown;
     amount?: unknown;
-    minPrice?: unknown;
   };
   meld?: { baseUrl?: unknown; productId?: unknown; offline?: unknown };
   createdAt?: number;
@@ -750,7 +749,7 @@ const railExpiryOf = (job: WorkerJob): number | null =>
   isNumber(job.depositExpiresAt) && job.depositExpiresAt > 0 ? job.depositExpiresAt : null;
 
 /** Today's `lastQuoteParams` for a source id: the rail and method of a Meld source, the chain and
- *  coin of a swap or direct source, the id itself otherwise. */
+ *  coin of a direct source, the id itself otherwise. */
 function displaySourceOf(sourceId: string): { chain: string; asset: string } {
   const route = routeOf(sourceId);
   if (route !== "crypto") return { chain: "Meld", asset: route === "bank" ? "Bank" : "Card" };
@@ -884,7 +883,6 @@ function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
     expiresAt: c.expiresAt,
     expectedEgress: c.expectedEgress,
     ...(isString(c.amount) && /^\d+$/.test(c.amount) ? { amount: c.amount } : {}),
-    ...(isNumber(c.minPrice) && c.minPrice > 0 ? { minPrice: c.minPrice } : {}),
   };
 }
 

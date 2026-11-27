@@ -2,13 +2,13 @@
 // figure from the key on Asset Hub and nothing else. What the sale landed above it stays on the
 // key.
 //
-// NEVER TWICE. The key keeps funds after this payment, so an empty key cannot say it went out the
-// way it does for the sweep. The nonce says it instead. The key signs nothing on Asset Hub before
-// this payment (the sale reaches it by XCM, which spends no nonce), so every attempt is signed at
-// one nonce, marked in flight before the broadcast, and a second copy is stale. A key past that
-// nonce was paid from: the payment stands when the balance fell by at least the amount. A key
-// past it that did not fall that far, or past it with nothing in flight, is not decided here. The
-// run stops for a human rather than risk paying twice.
+// NEVER TWICE. The key keeps funds after this payment, so its balance alone cannot say the payment
+// went out. The nonce says it instead. The key signs nothing on Asset Hub before this payment (the
+// sale reaches it by XCM, which spends no nonce), so every attempt is signed at one nonce, marked
+// in flight before the broadcast, and a second copy is stale. A key past that nonce was paid from:
+// the payment stands when the balance fell by at least the amount. A key past it that did not fall
+// that far, or past it with nothing in flight, is not decided here. The run stops for a human
+// rather than risk paying twice.
 //
 // A transfer the chain refused at dispatch spent its nonce and moved nothing, so the next attempt
 // takes the next one. A dry run before every broadcast keeps that rare.

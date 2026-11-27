@@ -1,15 +1,10 @@
-// The rows under the withdrawal's timeline, as the design has them per route and ending: what
-// lands and where for crypto; the payout, when it arrives, and on failure who took it and the
+// The rows under the withdrawal's timeline, as the design has them per route and ending: where
+// it lands for crypto; the payout, when it arrives, and on failure who took it and the
 // reference to quote them for a sale.
 
-import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { depositTokenOf, recordedRoute } from "@getsome/funding";
 import type { DetailRow } from "../../components/ui/DetailRows.vue";
-import {
-  isWithdrawalSideExit,
-  WITHDRAW_SOURCE_PREFIX,
-  type WithdrawalRecord,
-} from "../../funding/requests/model";
+import { isWithdrawalSideExit, type WithdrawalRecord } from "../../funding/requests/model";
 import { asName } from "../../funding/top-up-projection";
 import { shortRef } from "../../utils/journey";
 import { fmtFiat } from "../../utils/money";
@@ -21,34 +16,17 @@ export interface JourneyRowsContext {
   readonly feesAvailable: boolean;
 }
 
-/** What the quote said would land, formatted in the destination asset: an estimate, so `≈`.
- *  Nothing for the direct rail, which stores no channel and no promised figure. */
-export function expectedEgressText(record: WithdrawalRecord): string | null {
-  const egress = record.handoff.channel?.expectedEgress;
-  if (egress === undefined) return null;
-  const id = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length);
-  const config = SOURCE_CONFIG_BY_ID.get(id as never);
-  if (config === undefined) return null;
-  try {
-    return `≈ ${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${record.destination.asset}`;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * What the withdrawal delivers, as its success screen shows it in place of what left the
  * balance: the fees come out on the way, so the two differ. A direct withdrawal shows what the
- * worker saw arrive on the destination, in its asset. A provider pays out its own figure, so the
- * quote's stands in for it, `≈`: the swap's expected egress, or a sale's payout. Null where none
- * is known.
+ * worker saw arrive on the destination, in its asset. A sale's provider pays out its own figure,
+ * so the quote's payout stands in for it, `≈`. Null where none is known.
  */
 export function receivedText(record: WithdrawalRecord): string | null {
   if (record.route !== "crypto") {
     const { sale } = record;
     return sale === undefined ? null : `≈ ${fmtFiat(sale.quotedPayout, sale.fiat)}`;
   }
-  if (record.rail.provider !== "direct") return expectedEgressText(record);
   const worker = record.witnesses.worker;
   const received = worker?.known === true ? worker.received : undefined;
   if (received === undefined) return null;
@@ -65,19 +43,17 @@ const ARRIVES: Readonly<Record<"card" | "bank", DetailRow>> = {
   },
 };
 
-function cryptoRows(record: WithdrawalRecord, { feesAvailable }: JourneyRowsContext): DetailRow[] {
+function cryptoRows(record: WithdrawalRecord): DetailRow[] {
   // The design's crypto endings carry the band and the way on, no rows.
   if (isWithdrawalSideExit(record)) return [];
-  const rows: DetailRow[] = [];
-  const egress = expectedEgressText(record);
-  if (egress !== null) rows.push({ label: "You'll receive", value: egress, fees: feesAvailable });
-  rows.push({
-    label: "To this address",
-    sublabel: `on ${chainLabel(record.destination.chain)} Network`,
-    value: shortDestinationAddress(record.destination.address),
-    title: record.destination.address,
-  });
-  return rows;
+  return [
+    {
+      label: "To this address",
+      sublabel: `on ${chainLabel(record.destination.chain)} Network`,
+      value: shortDestinationAddress(record.destination.address),
+      title: record.destination.address,
+    },
+  ];
 }
 
 function saleRows(
@@ -109,7 +85,5 @@ export function withdrawalJourneyRows(
   record: WithdrawalRecord,
   context: JourneyRowsContext,
 ): DetailRow[] {
-  return record.route === "crypto"
-    ? cryptoRows(record, context)
-    : saleRows(record, record.route, context);
+  return record.route === "crypto" ? cryptoRows(record) : saleRows(record, record.route, context);
 }

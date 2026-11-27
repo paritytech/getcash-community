@@ -12,7 +12,6 @@ vi.mock("../lib/host-payments", () => ({
   requestPayment: vi.fn(),
   subscribePaymentStatus: vi.fn(),
 }));
-vi.mock("../lib/chainflip-backend", () => ({ NETWORK: "mainnet" }));
 
 // The fee estimate asks the chains how CASH moves and reads People's pool; here the move is a
 // teleport and the fees are the 0.45 CASH the figures below assume. The sale the chain picks for

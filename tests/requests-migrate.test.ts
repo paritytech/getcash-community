@@ -182,6 +182,27 @@ describe("request record migration", () => {
     expect(reloaded?.status).toEqual(credited.status);
   });
 
+  it("takes a stored withdrawal only on a rail this build runs", () => {
+    const ref = requestRefOf("wd:usdc-assethub", 3);
+    const stored = (provider: string) => ({
+      schema: 2,
+      kind: "withdrawal",
+      amountHuman: "25",
+      startedAt: FIXTURE_NOW,
+      status: { kind: "sending", at: FIXTURE_NOW },
+      payment: { attempt: 0 },
+      key: {},
+      handoff: {},
+      destination: {},
+      deadline: {},
+      rail: { provider, stage: "processing", updatedAt: FIXTURE_NOW },
+    });
+    expect(migrateRecord(stored("direct"), ref, FIXTURE_NOW)).not.toBeNull();
+    expect(migrateRecord(stored("meld"), ref, FIXTURE_NOW)).not.toBeNull();
+    // A withdrawal from a rail no longer in the app stays in storage, unread.
+    expect(migrateRecord(stored("chainflip"), ref, FIXTURE_NOW)).toBeNull();
+  });
+
   it("rejects a record without a parseable amount", () => {
     const ref = refOf(awaitingDepositCryptoRecord);
     for (const amountHuman of ["abc", "0", "", "1.2345678"]) {

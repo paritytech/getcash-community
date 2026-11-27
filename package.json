@@ -22,14 +22,11 @@
     "build:worker": "esbuild worker/src/index.js --bundle --format=esm --platform=browser --outfile=worker/index.js --log-level=warning && mkdir -p public/worker && cp worker/index.js public/worker/index.js"
   },
   "dependencies": {
-    "@chainflip/sdk": "2.3.1",
-    "@getsome/chainflip": "workspace:*",
     "@getsome/core": "workspace:*",
     "@getsome/ephemeral": "workspace:*",
     "@getsome/funding": "workspace:*",
     "@getsome/host": "workspace:*",
     "@getsome/meld": "workspace:*",
-    "@getsome/offramp": "workspace:*",
     "@getsome/people": "workspace:*",
     "@getsome/testing": "workspace:*",
     "@getsome/withdraw": "workspace:*",

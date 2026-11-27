@@ -5,7 +5,7 @@ import type { FundingRoutePackages } from "../app/funding/packages";
 
 // vitest has no Vue plugin, and this test never renders the screens the registry module bundles.
 vi.mock("../app/components/funding/routes/MeldFundingStatusRoute.vue", () => ({ default: {} }));
-vi.mock("../app/components/funding/routes/ChainflipFundingStatusRoute.vue", () => ({
+vi.mock("../app/components/funding/routes/CryptoFundingStatusRoute.vue", () => ({
   default: {},
 }));
 

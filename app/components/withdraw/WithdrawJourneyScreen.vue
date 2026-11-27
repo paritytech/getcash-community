@@ -42,7 +42,6 @@ const emit = defineEmits<{
   retry: [];
   pool: [];
   close: [];
-  "return-funds": [];
   fees: [];
 }>();
 const requests = useRequestsStore();
@@ -108,7 +107,7 @@ const residueNote = computed(() => {
     : `The ${amount} left over is on its way back to your balance.`;
 });
 
-/** The way on from an ending: the refund guide, a retry, or nothing more than closing. */
+/** The way on from an ending: a retry, or nothing more than closing. */
 const action = computed(() => timeline.value.failure?.action ?? null);
 /** The design's word on a sale that ended for good: the seller starts another from the quote. */
 const closeLabel = computed(() =>
@@ -205,10 +204,7 @@ const canCancel = computed(
         <CashText :text="residueNote" />
       </p>
 
-      <PillButton v-if="action === 'return-funds'" class="mt-auto" @click="emit('return-funds')">
-        Return funds
-      </PillButton>
-      <div v-else-if="action === 'try-again'" class="mt-auto flex flex-col gap-3">
+      <div v-if="action === 'try-again'" class="mt-auto flex flex-col gap-3">
         <PillButton :disabled="busy" @click="emit('retry')">Try again</PillButton>
         <PillButton
           v-if="canSwitchToPool"

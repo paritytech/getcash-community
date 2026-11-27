@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import { DIRECT_RESEND_AFTER_MS } from "../app/funding/requests/views";
-import type { ChainflipFacts, RequestFailure, TopUpRecord } from "../app/funding/requests/model";
-import { chainflipRoute } from "../app/funding/timeline/chainflip";
+import type { RequestFailure, TopUpRecord } from "../app/funding/requests/model";
 import { directRoute } from "../app/funding/timeline/direct";
 import {
   CLOSE,
@@ -69,11 +68,13 @@ function cardRecord(): TopUpRecord {
 type Paid = Pick<TopUpRecord, "chain" | "asset">;
 const POLKADOT_DOT: Paid = { chain: "Polkadot", asset: "DOT" };
 
-/** A crypto top-up as the session stores it: under the source of the network it is paid from,
- *  Bitcoin unless `paid` names another network and token. */
-function cryptoRecord(paid: Paid = { chain: "Bitcoin", asset: "BTC" }): TopUpRecord {
-  const ref = requestRefOf(paid.chain === "Polkadot" ? "dot-assethub" : "btc", 3);
-  const record = migrateRecord(awaitingDepositCryptoRecord, ref, FIXTURE_NOW);
+/** A crypto top-up as the session stores it: a direct deposit of DOT on Polkadot. */
+function cryptoRecord(paid: Paid = POLKADOT_DOT): TopUpRecord {
+  const record = migrateRecord(
+    awaitingDepositCryptoRecord,
+    requestRefOf("dot-assethub", 3),
+    FIXTURE_NOW,
+  );
   if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
   return { ...record, ...paid };
 }
@@ -505,7 +506,6 @@ describe("top-up timeline, Sent on the provider routes", () => {
   const EARLIER = SENT - 10 * SECOND;
   const NOW = SENT + 12 * SECOND;
   const providerRoutes = [
-    ["Chainflip", chainflipRoute, cryptoRecord(), "sent"],
     ["Meld card", meldCardRoute, cardRecord(), "complete"],
     ["Meld bank", meldBankRoute, cardRecord(), "complete"],
   ] as const;
@@ -538,275 +538,6 @@ describe("top-up timeline, Sent on the provider routes", () => {
         ? { message: normal("We've spotted your deposit"), awaiting: undefined }
         : { message: normal("Your money is arriving"), awaiting: true },
     );
-  });
-});
-
-describe("top-up timeline, Chainflip route", () => {
-  const at = (seconds: number) => FIXTURE_NOW + seconds * SECOND;
-  const estimates = { deposit: 600, swap: 12, egress: 96 };
-  const counted = { requiredConfirmations: 3, estimatedDurationsSeconds: estimates };
-  /** Phase 1's weights: three confirmations of 200 s and a swap of 12 s. */
-  const confirmation = 200 * SECOND;
-  const swap = 12 * SECOND;
-  const total = 3 * confirmation + swap;
-  const swapping = { receiving: at(0), swapping: at(600) };
-
-  /** A swap paid as `paid` observed at `observedAt`, read by core 3 s before `now`. Chainflip's
-   *  clock goes to the witnesses. */
-  function swapRecord(
-    now: number,
-    observedAt: TopUpRecord["observedAt"],
-    { lastStatechainUpdateAt, ...chainflip }: ChainflipFacts & { lastStatechainUpdateAt?: number },
-    paid?: Paid,
-  ): TopUpRecord {
-    return {
-      ...cryptoRecord(paid),
-      observedAt,
-      chainflip,
-      witnesses: {
-        core: { phase: "swapping", at: at(now) - 3 * SECOND },
-        ...(lastStatechainUpdateAt === undefined ? {} : { chainflip: { lastStatechainUpdateAt } }),
-      },
-    };
-  }
-
-  it.each([
-    [
-      "the second confirmation in progress",
-      swapRecord(
-        250,
-        { receiving: at(0) },
-        { ...counted, depositConfirmations: 1, confirmationsAt: at(200) },
-      ),
-      250,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (confirmation + confirmation * timeFill(50 * SECOND, confirmation)) / total,
-      },
-      { message: normal("Confirming your BTC deposit"), detail: "Confirmation 2 of 3" },
-    ],
-    [
-      "a recent confirmation after the deposit's estimate",
-      swapRecord(
-        601,
-        { receiving: at(0) },
-        { ...counted, depositConfirmations: 2, confirmationsAt: at(500) },
-      ),
-      601,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (2 * confirmation + confirmation * timeFill(101 * SECOND, confirmation)) / total,
-      },
-      { message: normal("Confirming your BTC deposit"), detail: "Confirmation 3 of 3" },
-    ],
-    [
-      "confirmations an hour past their estimate, named from the source",
-      swapRecord(
-        3_600,
-        { receiving: at(0) },
-        {
-          ...counted,
-          depositConfirmations: 2,
-          confirmationsAt: at(300),
-          lastStatechainUpdateAt: at(3_600),
-        },
-        { chain: "Solana", asset: "SOL" },
-      ),
-      3_600,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation) / total,
-      },
-      { message: normal("Confirming your SOL deposit"), detail: "Confirmation 3 of 3" },
-    ],
-    [
-      "confirmations without a count",
-      swapRecord(60, { receiving: at(0) }, { estimatedDurationsSeconds: estimates }),
-      60,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation * timeFill(60 * SECOND, 3 * confirmation)) / total,
-      },
-      { message: normal("Confirming your BTC deposit") },
-    ],
-    [
-      "a boosted deposit",
-      swapRecord(
-        36,
-        { receiving: at(0) },
-        { ...counted, depositConfirmations: 0, boostedAt: at(30) },
-      ),
-      36,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation + swap * timeFill(6 * SECOND, swap)) / total,
-      },
-      { message: normal("Exchanging your BTC") },
-    ],
-    [
-      "a regular swap",
-      swapRecord(605, swapping, { ...counted, swapScheduledAt: at(602) }),
-      605,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation + swap * timeFill(3 * SECOND, swap)) / total,
-      },
-      { message: normal("Exchanging your BTC"), detail: "Less than a minute" },
-    ],
-    [
-      "a regular swap past its estimate on our clock alone",
-      swapRecord(615, swapping, { ...counted, swapScheduledAt: at(602) }),
-      615,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation + swap * timeFill(13 * SECOND, swap)) / total,
-      },
-      { message: normal("Exchanging your BTC") },
-    ],
-    [
-      "a regular swap twice its estimate past its schedule on Chainflip's clock",
-      swapRecord(615, swapping, {
-        ...counted,
-        swapScheduledAt: at(602),
-        lastStatechainUpdateAt: at(626),
-      }),
-      615,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation + swap * timeFill(13 * SECOND, swap)) / total,
-      },
-      { message: normal("Exchanging your BTC") },
-    ],
-    [
-      "a regular swap over twice its estimate past its schedule on Chainflip's clock",
-      swapRecord(615, swapping, {
-        ...counted,
-        swapScheduledAt: at(602),
-        lastStatechainUpdateAt: at(626) + 1,
-      }),
-      615,
-      {
-        marks: "●○○○○○○",
-        state: "delayed",
-        line: (3 * confirmation + swap * timeFill(13 * SECOND, swap)) / total,
-      },
-      { message: normal("Exchanging your BTC") },
-    ],
-    [
-      "the second part of a DCA swap",
-      swapRecord(611, swapping, {
-        ...counted,
-        chunks: { executed: 1, remaining: 3 },
-        chunksAt: at(610),
-      }),
-      611,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation + swap / 4 + (swap / 4) * timeFill(SECOND, swap / 4)) / total,
-      },
-      { message: normal("Exchanging your BTC in a few steps"), detail: "Swap 2 of 4" },
-    ],
-    [
-      "a rescheduled swap",
-      swapRecord(605, swapping, {
-        ...counted,
-        swapScheduledAt: at(602),
-        swapRescheduledAt: at(603),
-      }),
-      605,
-      {
-        marks: "●○○○○○○",
-        state: "delayed",
-        line: (3 * confirmation + swap * timeFill(3 * SECOND, swap)) / total,
-      },
-      {
-        message: delay("Waiting for a stable price to exchange your BTC"),
-      },
-    ],
-    [
-      "a DCA swap whose chunk executed after a reschedule",
-      swapRecord(611, swapping, {
-        ...counted,
-        chunks: { executed: 1, remaining: 3 },
-        chunksAt: at(610),
-        swapRescheduledAt: at(605),
-      }),
-      611,
-      {
-        marks: "●○○○○○○",
-        state: "active",
-        line: (3 * confirmation + swap / 4 + (swap / 4) * timeFill(SECOND, swap / 4)) / total,
-      },
-      { message: normal("Exchanging your BTC in a few steps"), detail: "Swap 2 of 4" },
-    ],
-    [
-      "the send to Asset Hub",
-      swapRecord(
-        630,
-        { ...swapping, sending: at(620) },
-        { ...counted, egressScheduledAt: at(625) },
-      ),
-      630,
-      { marks: "●●○○○○○", state: "active", line: timeFill(5 * SECOND, 96 * SECOND) },
-      { message: normal("Your money is on its way"), detail: "About 2 min" },
-    ],
-    [
-      "a send an hour past its estimate on our clock alone",
-      swapRecord(
-        4_225,
-        { ...swapping, sending: at(620) },
-        { ...counted, egressScheduledAt: at(625), lastStatechainUpdateAt: at(700) },
-      ),
-      4_225,
-      { marks: "●●○○○○○", state: "active", line: 1 },
-      { message: normal("Your money is on its way") },
-    ],
-    [
-      "a send over twice its estimate past its schedule on Chainflip's clock",
-      swapRecord(
-        722,
-        { ...swapping, sending: at(620) },
-        { ...counted, egressScheduledAt: at(625), lastStatechainUpdateAt: at(817) + 1 },
-      ),
-      722,
-      { marks: "●●○○○○○", state: "delayed", line: timeFill(97 * SECOND, 96 * SECOND) },
-      { message: delay("Your BTC is exchanged and the network is processing the transfer") },
-    ],
-    [
-      "a completed swap whose funds are not seen",
-      swapRecord(742, { ...swapping, complete: at(730) }, counted),
-      742,
-      { marks: "●●●○○○○", state: "active", line: timeFill(12 * SECOND, SEEN_T) },
-      { message: normal("Your money is arriving") },
-    ],
-  ] satisfies [
-    string,
-    TopUpRecord,
-    number,
-    { marks: string; state: TimelineView["state"]; line: number },
-    { message: TimelineMessage; detail?: string },
-  ][])("shows %s", (_, topUp, seconds, expected, text) => {
-    const now = at(seconds);
-    const { view, message, detail } = openedTimeline(topUp, chainflipRoute, {
-      now,
-      watchingSince: now,
-    });
-
-    expect({ marks: marks(view), state: view.state }).toEqual({
-      marks: expected.marks,
-      state: expected.state,
-    });
-    if (view.state !== "done") expectCurrentLine(view, expected.line);
-    expect({ message, detail }).toEqual(text);
   });
 });
 
@@ -958,12 +689,6 @@ describe("top-up timeline, Meld routes", () => {
 
 describe("top-up timeline, reconnect line", () => {
   const LONG_AGO = SENT - 60 * MINUTE;
-  const confirming = (readAt: number): TopUpRecord => ({
-    ...cryptoRecord(),
-    observedAt: { receiving: LONG_AGO },
-    chainflip: { requiredConfirmations: 3, depositConfirmations: 1 },
-    witnesses: { core: { phase: "swapping", at: readAt } },
-  });
   const settling = (readAt: number): TopUpRecord => ({
     ...cardRecord(),
     observedAt: { receiving: LONG_AGO, sending: LONG_AGO },
@@ -973,14 +698,6 @@ describe("top-up timeline, reconnect line", () => {
   const TICK = SENT + 10 * SECOND;
 
   it.each([
-    [
-      "a Chainflip read failing for over a minute",
-      confirming(SENT),
-      chainflipRoute,
-      SENT + RECONNECT_AFTER_MS + 1,
-      LONG_AGO,
-      "Trying to reconnect",
-    ],
     [
       "a Meld poll failing for over a minute",
       settling(SENT),
@@ -1005,14 +722,6 @@ describe("top-up timeline, reconnect line", () => {
       LONG_AGO,
       undefined,
     ],
-    [
-      "old reads just after the app started watching",
-      confirming(LONG_AGO),
-      chainflipRoute,
-      SENT + 30 * SECOND,
-      SENT,
-      "Confirmation 2 of 3",
-    ],
   ] satisfies [string, TopUpRecord, TimelineRoute, number, number, string | undefined][])(
     "shows for %s",
     (_, topUp, route, now, watchingSince, detail) => {
@@ -1030,7 +739,6 @@ describe("top-up timeline, route by record", () => {
       meldBankRoute,
     ],
     ["a direct deposit on Polkadot", cryptoRecord(POLKADOT_DOT), directRoute],
-    ["a swap from Bitcoin", cryptoRecord(), chainflipRoute],
     [
       "a deposit with no source id",
       { ...cryptoRecord(POLKADOT_DOT), ref: { tradeN: 3 } },
@@ -1130,16 +838,10 @@ describe("top-up timeline, failures", () => {
   const card = (): TopUpRecord => ({ ...cardRecord(), meldServiceProvider: "TRANSAK" });
   const bank = (): TopUpRecord => ({ ...card(), ref: requestRefOf("meld-bank", 2), asset: "Bank" });
   const unpaid = (topUp: TopUpRecord): TopUpRecord => ({ ...topUp, meldSubmittedAt: undefined });
-  const swap = (): TopUpRecord => ({ ...cryptoRecord(), observedAt: { receiving: SENT } });
 
   const failureOf = (topUp: TopUpRecord) => createTopUpTimelines()(topUp, NOW)?.failure;
 
   it.each([
-    [
-      "Chainflip",
-      swap(),
-      "Your money didn't arrive. Chainflip sent it, but the network dropped the transfer and it hasn't come back.",
-    ],
     [
       "a card",
       card(),
@@ -1231,74 +933,6 @@ describe("top-up timeline, failures", () => {
     ],
   ];
 
-  const chainflip = (reason?: string): FailureDetails => ({ provider: "Chainflip", reason });
-  const getBtcBack: FailureAction = { kind: "get-back", source: "BTC", from: "refund-key" };
-  const chainflipRows: Row[] = [
-    [
-      "a deposit below the minimum",
-      failed(swap(), { code: "BelowMinimumDeposit", message: "Below minimum" }),
-      "Your BTC was below the minimum, so Chainflip couldn't exchange it. Chainflip doesn't return deposits below the minimum.",
-      CLOSE,
-      chainflip("Below minimum"),
-    ],
-    [
-      "a deposit too small for the fees",
-      failed(swap(), { code: "NotEnoughToPayFees", message: "Not enough to pay fees" }),
-      "Your BTC was too small to pay the network fees, so Chainflip couldn't exchange it.",
-      CLOSE,
-      chainflip("Not enough to pay fees"),
-    ],
-    [
-      "a deposit rejected for another reason",
-      failed(swap(), { code: "TransactionRejected", message: "The deposit was rejected" }),
-      "Chainflip couldn't accept your BTC: The deposit was rejected",
-      CLOSE,
-      chainflip("The deposit was rejected"),
-    ],
-    [
-      "a deposit rejected without Chainflip's reason",
-      failed(swap()),
-      "Chainflip couldn't accept your BTC.",
-      CLOSE,
-      chainflip(),
-    ],
-    [
-      "a refund on its way",
-      failed(swap(), { kind: "refunded", refund: { amount: "43000" } }),
-      "The exchange didn't go through. Your BTC is being returned, and you can move it to your own wallet.",
-      getBtcBack,
-      chainflip(),
-    ],
-    [
-      "a refund Chainflip witnessed",
-      failed(swap(), { kind: "refunded", refund: { amount: "43000", witnessedAt: SENT } }),
-      "The exchange didn't go through. 0.00043 BTC was returned, minus fees. You can move it to your own wallet.",
-      getBtcBack,
-      chainflip(),
-    ],
-    [
-      "a refund that failed",
-      failed(swap(), { kind: "refund-failed" }),
-      "The exchange didn't go through, and Chainflip couldn't return your BTC.",
-      CLOSE,
-      chainflip(),
-    ],
-    [
-      "a send to Asset Hub that failed",
-      failed(swap(), { kind: "egress-failed", code: "EgressFailed", message: "Egress failed" }),
-      "Chainflip exchanged your BTC but couldn't send it: Egress failed",
-      CLOSE,
-      chainflip("Egress failed"),
-    ],
-    [
-      "a send routed to the fallback",
-      failed(swap(), { kind: "fallback-egress" }),
-      "Chainflip exchanged your BTC but couldn't send it.",
-      CLOSE,
-      chainflip(),
-    ],
-  ];
-
   const direct = (): TopUpRecord => ({
     ...cryptoRecord(POLKADOT_DOT),
     observedAt: { "on-burner": SENT },
@@ -1384,7 +1018,7 @@ describe("top-up timeline, failures", () => {
     ],
   ];
 
-  it.each([...cardRows, ...bankRows, ...chainflipRows, ...directRows])(
+  it.each([...cardRows, ...bankRows, ...directRows])(
     "words %s",
     (_, topUp, text, action, details) => {
       expect(failureOf(topUp)).toEqual({ text, action, details });
@@ -1416,7 +1050,10 @@ describe("top-up timeline, failures", () => {
     [
       "the deposit window closed with no deposit",
       expired(cryptoRecord()),
-      { text: CRYPTO_EXPIRED_TEXT, action: CLOSE },
+      {
+        text: CRYPTO_EXPIRED_TEXT,
+        action: { kind: "get-back", source: "DOT", from: "deposit-account" },
+      },
     ],
   ] satisfies [string, TopUpRecord, PartFailure][])(
     "fails Started when %s",
@@ -1531,14 +1168,6 @@ describe("top-up timeline, detail line", () => {
       witnesses: provider(now - 2 * SECOND),
     };
   }
-  function confirming(now: number, chainflip: ChainflipFacts, readAt = now - SECOND): TopUpRecord {
-    return {
-      ...cryptoRecord(),
-      observedAt: { receiving: SENT },
-      chainflip,
-      witnesses: { core: { phase: "swapping", at: readAt } },
-    };
-  }
 
   it.each([
     ["nothing under the card's review", checking(SENT + MINUTE), meldCardRoute, SENT + MINUTE],
@@ -1551,24 +1180,6 @@ describe("top-up timeline, detail line", () => {
       },
       meldCardRoute,
       SENT + 2 * MINUTE,
-    ],
-    [
-      "nothing while Chainflip gives no count",
-      confirming(SENT + MINUTE, {}),
-      chainflipRoute,
-      SENT + MINUTE,
-    ],
-    [
-      "nothing while Chainflip waits for a stable price",
-      {
-        ...confirming(SENT + 3 * MINUTE, {
-          swapScheduledAt: SENT + MINUTE,
-          swapRescheduledAt: SENT + 2 * MINUTE,
-        }),
-        observedAt: { receiving: SENT, swapping: SENT + MINUTE },
-      },
-      chainflipRoute,
-      SENT + 3 * MINUTE,
     ],
     [
       "nothing while the funds are arriving",
@@ -1619,25 +1230,5 @@ describe("top-up timeline, detail line", () => {
     const timeline = openedTimeline(spotted, sentRoute, at(SENT + 12 * SECOND));
     expect(timeline.message).toEqual(normal("We've spotted your deposit"));
     expect(timeline.detail).toBeUndefined();
-  });
-
-  it("shows a count from the first evaluation and holds it while it does not move", () => {
-    const timelineOf = createTopUpTimelines();
-    const t = SENT + MINUTE;
-    const counted = confirming(t, { requiredConfirmations: 3, depositConfirmations: 1 });
-    expect(timelineOf(counted, t)?.detail).toBe("Confirmation 2 of 3");
-    expect(timelineOf(counted, t + 30 * SECOND)?.detail).toBe("Confirmation 2 of 3");
-  });
-
-  it("gives way to the reconnect line", () => {
-    const now = SENT + MINUTE;
-    const stale = confirming(
-      now,
-      { requiredConfirmations: 3, depositConfirmations: 1 },
-      now - RECONNECT_AFTER_MS - 1,
-    );
-    expect(openedTimeline(stale, chainflipRoute, { now, watchingSince: SENT - HOUR }).detail).toBe(
-      "Trying to reconnect",
-    );
   });
 });

@@ -286,9 +286,7 @@ describe("a fiat sale from the page", () => {
         asset: "usdt@assethub",
         cryptoAmount: USDT_COMMITTED.toString(),
       });
-      expect(record.sale?.lane).toBeUndefined();
       expect(record.handoff).toMatchObject({ rail: "meld", ...REDEEM });
-      expect(record.handoff.swap).toBeUndefined();
     },
   );
 
@@ -662,26 +660,6 @@ describe("a fiat sale from the page", () => {
     expect(record.deadline.paymentExpiresAt).toBe(askedAt + PAYMENT_WINDOW_MS);
     const [, , payload] = handedOff.mock.calls[0]!;
     expect(payload).toMatchObject({ paymentExpiresAt: askedAt + PAYMENT_WINDOW_MS });
-  });
-
-  it("refuses to pay a sale stored with an offramp lane, asking nothing", async () => {
-    const outcome = await startSale();
-    if (!outcome.ok) throw new Error(outcome.reason);
-    const direct = await toDeposit(outcome.ref);
-    const requests = useRequestsStore();
-    const ref = requestRefOf("wd:meld-bank", 2);
-    await requests.create(ref, { ...direct, ref, sale: { ...direct.sale!, lane: "usdc-solana" } });
-    const read = vi.spyOn(meld, "getStatus");
-    expect(await useWithdrawalRequest().paySale(ref)).toEqual({
-      ok: false,
-      reason: "This sale is no longer available. Your CASH is still in your balance.",
-    });
-    expect(read).not.toHaveBeenCalled();
-    expect(fundable).not.toHaveBeenCalled();
-    expect(asked).not.toHaveBeenCalled();
-    expect(handedOff).not.toHaveBeenCalled();
-    expect(requests.get(ref)).toMatchObject({ status: { kind: "awaiting-payment" } });
-    expect((requests.get(ref) as WithdrawalRecord).handoff.swap).toBeUndefined();
   });
 
   describe("a fiat sale in a build that cannot run one", () => {

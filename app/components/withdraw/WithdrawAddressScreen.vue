@@ -1,8 +1,7 @@
 <script setup lang="ts">
 // The destination address: the network and token already chosen as pills, the address typed,
 // pasted or scanned from a QR code, checked against the destination's own rule. A scanned code
-// made for another network or token says so. Valid turns the disabled Next into Continue with a
-// warning.
+// made for another network says so. Valid turns the disabled Next into Continue with a warning.
 import { computed, ref } from "vue";
 import { CircleAlert, Clipboard, Scan } from "lucide-vue-next";
 import {
@@ -30,9 +29,9 @@ const field = ref<HTMLTextAreaElement | null>(null);
 /** Nothing is judged until something was typed; an address brought in is judged at once. */
 const touched = ref(address.value !== "");
 const trimmed = computed(() => address.value.trim());
-/** A scanned code made for another chain or token than the destination, with the address it
- *  gave: that address stays refused while the field holds it, in any case. */
-const scannedMismatch = ref<{ address: string; problem: "network" | "token" } | null>(null);
+/** A scanned code made for another chain than the destination's, with the address it gave: that
+ *  address stays refused while the field holds it, in any case. */
+const scannedMismatch = ref<{ address: string; problem: "network" } | null>(null);
 const scanProblem = computed(() =>
   scannedMismatch.value?.address.toLowerCase() === trimmed.value.toLowerCase()
     ? scannedMismatch.value.problem
@@ -46,7 +45,6 @@ const error = computed<string | null>(() => {
   if (!touched.value || trimmed.value === "") return null;
   if (!addressOk.value) return "Incorrect address";
   if (scanProblem.value === "network") return `This QR code is not for ${props.network.label}`;
-  if (scanProblem.value === "token") return `This QR code is not for ${props.destination.asset}`;
   return null;
 });
 
@@ -75,14 +73,13 @@ async function paste() {
 const scanning = ref(false);
 
 /** A code read by the camera fills the field as a paste does, the address taken out of a
- *  payment URI when the code is one. A code naming another chain or token is shown but not
- *  taken. */
+ *  payment URI when the code is one. A code written for another chain is shown but not taken. */
 function scanned(text: string) {
   scanning.value = false;
   const code = readScannedCode(text);
   address.value = code.address;
   touched.value = true;
-  const problem = scanMismatch(code, props.network.chain, props.destination.asset);
+  const problem = scanMismatch(code, props.network.chain);
   scannedMismatch.value = problem === null ? null : { address: code.address.trim(), problem };
 }
 </script>

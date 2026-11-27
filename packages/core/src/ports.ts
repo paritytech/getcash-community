@@ -33,7 +33,7 @@ export interface EntropyPort {
  * `PolkadotSigner` in `@getsome/ephemeral`.
  */
 export interface EphemeralSigner {
-  /** SS58 prefix 0 (Asset Hub); Chainflip destAddress-valid. */
+  /** SS58 prefix 0 (Asset Hub). */
   readonly address: string;
   readonly signer: unknown;
 }
@@ -86,13 +86,6 @@ export interface OpenChannelArgs {
   quote: Quote;
   /** Ephemeral SS58 (prefix 0). */
   destAddress: string;
-  /** Source-chain refund address. Required by rails with a refund leg. */
-  refundAddress?: string;
-  /** Fill-or-kill terms. Absent, the quote's recommended slippage (half a point at least) and a
-   *  10-minute retry apply. A
-   *  caller that commits to the swap's floor elsewhere (an offramp sale) must set them, so the
-   *  floor Chainflip enforces is the one it committed to. */
-  fillOrKill?: { slippageTolerancePercent: string; retryDurationMinutes: number };
 }
 
 export interface DepositChannel {
@@ -100,11 +93,9 @@ export interface DepositChannel {
   depositChannelId: string;
 }
 
-/** A Chainflip failure entry, surfaced with its human-readable reason. */
-export interface ChainflipFailureInfo {
-  mode?: string;
+/** A rail's failure entry, surfaced with its human-readable reason. */
+export interface RailFailureInfo {
   reason?: { code?: string; message?: string };
-  failedAt?: number;
   /**
    * The rail's classification of this failure. Set only when the rail knows better than the
    * default.
@@ -112,81 +103,46 @@ export interface ChainflipFailureInfo {
   kind?: FailureKind;
 }
 
-/** Refund/egress lifecycle: undefined -> scheduled -> txRef set -> witnessedAt set. */
+/** The rail's delivery to the destination, once it reports one. */
 export interface EgressInfo {
-  amount?: string;
-  scheduledAt?: number;
+  /** The delivery's transaction; deliver mode's receipt. */
   txRef?: string;
-  witnessedAt?: number;
-  failure?: unknown;
-}
-
-/** Chainflip's progress facts for a swap, each present once its status reports it. Times are in
- *  milliseconds since the epoch. */
-export interface ChainflipProgressFacts {
-  /** Source-chain confirmations of the deposit so far. */
-  depositConfirmations?: number;
-  /** Confirmations the source chain needs before Chainflip accepts a deposit. */
-  requiredConfirmations?: number;
-  /** When Chainflip boosted the deposit, accepting it before the confirmations. */
-  boostedAt?: number;
-  /** When the regular swap was scheduled. */
-  swapScheduledAt?: number;
-  /** A DCA swap's chunks. */
-  chunks?: { executed: number; remaining: number };
-  /** When Chainflip last moved the swap, or the current DCA chunk, to a later block. */
-  swapRescheduledAt?: number;
-  /** Chainflip's expected duration of each stage it gave. A completed swap carries only `swap`. */
-  estimatedDurationsSeconds?: { deposit?: number; swap?: number; egress?: number };
-  /** The time of the newest State Chain block Chainflip's API processed: Chainflip's own clock. */
-  lastStatechainUpdateAt?: number;
 }
 
 /**
- * Normalized swap status. `depositFailure`, `swapEgressFailure` and `fallbackEgress` are
- * implicit failure substates that do not flip the SDK's top-level status to failed.
+ * Normalized rail status. `depositFailure` is a failure substate that ends the flow whatever the
+ * top-level status says.
  */
 export interface SwapStatusResult {
   status: SwapProgress | "failed";
-  /** The successful swap egress lifecycle; deliver mode's receipt source. */
+  /** The delivery to the destination; deliver mode's receipt source. */
   egress?: EgressInfo;
-  depositFailure?: ChainflipFailureInfo;
-  swapEgressFailure?: ChainflipFailureInfo;
-  fallbackEgress?: EgressInfo;
-  refundEgress?: EgressInfo;
-  progress?: ChainflipProgressFacts;
+  depositFailure?: RailFailureInfo;
   raw?: unknown;
 }
 
-export type SourceAvailability =
-  | { status: "unknown" }
-  | { status: "checking" }
-  | { status: "available" }
-  | { status: "unavailable"; reason: string };
-
 export interface SourceDescriptor {
   readonly sourceId: SourceId;
-  /** Chainflip API identifiers, verbatim. */
+  /** The chain the source deposits on, and its asset there. */
   readonly chain: string;
   readonly asset: string;
   readonly displayName: string;
   readonly decimals: number;
 }
 
-export interface ChainflipRail {
+/** The contract a funding source meets: the Meld rail, and the manual rail for a direct deposit. */
+export interface FundingRail {
   /** Reverse-quotes a desired output to a display-ready input. */
   getQuote(req: ReverseQuoteInput): Promise<Quote>;
   requestDepositAddress(args: OpenChannelArgs): Promise<DepositChannel>;
   /** Mapped, normalized status. */
   getStatus(depositChannelId: string): Promise<SwapStatusResult>;
-  /** One gate quote (250 DOT); cached + in-flight-deduped per rail instance. */
-  probeLiquidity(sourceId: SourceId): Promise<SourceAvailability>;
   sources(): readonly SourceDescriptor[];
 }
 
 export interface PaymentDeps {
   chain: ChainPort;
-  chainflip: ChainflipRail;
+  rail: FundingRail;
   storage: StorageAdapter;
   entropy: EntropyPort;
 }

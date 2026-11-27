@@ -71,31 +71,6 @@ function record(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
   };
 }
 
-/** A Chainflip withdrawal to Ethereum, its channel open. */
-function chainflip(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
-  return record({
-    ref: requestRefOf("wd:usdc-eth", 3),
-    destination: {
-      chain: "Ethereum",
-      asset: "USDC",
-      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-    },
-    rail: { provider: "chainflip", stage: "waiting", updatedAt: STARTED },
-    handoff: {
-      ...record().handoff,
-      rail: "chainflip",
-      channel: {
-        id: "ch-1",
-        address: "1channel",
-        openedAt: STARTED,
-        expiresAt: STARTED + 30 * MINUTE,
-        expectedEgress: "24440000",
-      },
-    },
-    ...overrides,
-  });
-}
-
 /** A card sale through Meld, its deposit address known. */
 function sale(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
   return record({
@@ -179,13 +154,13 @@ describe("withdrawal timeline", () => {
     ],
     [
       "sending with the rail waiting",
-      chainflip({ status: { kind: "sending", at: at(3) } }),
+      sale({ status: { kind: "sending", at: at(3) } }),
       2,
       "●●●○○○○",
     ],
     [
-      "sending with the key's sweep filed",
-      chainflip({
+      "sending with the key's payment filed",
+      sale({
         status: { kind: "sending", at: at(3) },
         witnesses: {
           worker: {
@@ -195,7 +170,7 @@ describe("withdrawal timeline", () => {
             fundsSeenAt: at(1),
             lastTickAt: at(3),
             at: at(3),
-            txs: [{ call: "sweep", txHash: "0x1", ok: true }],
+            txs: [{ call: "pay", txHash: "0x1", ok: true }],
           },
         },
       }),
@@ -204,27 +179,27 @@ describe("withdrawal timeline", () => {
     ],
     [
       "sending with the rail receiving",
-      chainflip({
+      sale({
         status: { kind: "sending", at: at(3) },
-        rail: { provider: "chainflip", stage: "received", status: "receiving", updatedAt: at(4) },
+        rail: { provider: "meld", stage: "received", status: "receiving", updatedAt: at(4) },
       }),
       3,
       "●●●●○○○",
     ],
     [
       "sending with the rail sending on",
-      chainflip({
+      sale({
         status: { kind: "sending", at: at(3) },
-        rail: { provider: "chainflip", stage: "processing", status: "sending", updatedAt: at(5) },
+        rail: { provider: "meld", stage: "processing", status: "sending", updatedAt: at(5) },
       }),
       4,
       "●●●●●○○",
     ],
     [
       "sending with the rail's send out",
-      chainflip({
+      sale({
         status: { kind: "sending", at: at(3) },
-        rail: { provider: "chainflip", stage: "processing", status: "sent", updatedAt: at(5) },
+        rail: { provider: "meld", stage: "processing", status: "sent", updatedAt: at(5) },
       }),
       5,
       "●●●●●●○",
@@ -238,7 +213,7 @@ describe("withdrawal timeline", () => {
   });
 
   it("is done once sent, on any rail", () => {
-    for (const rec of [record, chainflip, sale]) {
+    for (const rec of [record, sale]) {
       const { view, message } = withdrawalTimeline(rec({ status: { kind: "sent", at: at(6) } }), {
         now: at(7),
       });
@@ -369,35 +344,36 @@ describe("withdrawal timeline", () => {
   });
 
   it("fills the current line from the status that opened the leg", () => {
-    const { view } = withdrawalTimeline(chainflip({ status: { kind: "sending", at: at(3) } }), {
-      now: at(3) + 60_000,
+    const { view } = withdrawalTimeline(sale({ status: { kind: "sending", at: at(3) } }), {
+      now: at(3) + 5 * MINUTE,
     });
+    // Five minutes into the five-minute hand-off.
     expect(view?.lines[2]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-3)), 10);
   });
 
   it("times the rail's later phases from the milestone that opened them, not from the leg", () => {
-    const sendingOn = chainflip({
+    const sendingOn = sale({
       status: { kind: "sending", at: at(3) },
-      rail: { provider: "chainflip", stage: "processing", status: "sending", updatedAt: at(9) },
+      rail: { provider: "meld", stage: "processing", status: "sending", updatedAt: at(9) },
     });
-    const { view } = withdrawalTimeline(sendingOn, { now: at(9) + 60_000 });
-    // A minute into a two-minute phase, not seven minutes into it.
+    const { view } = withdrawalTimeline(sendingOn, { now: at(39) });
+    // Half an hour into an hour-long phase, not thirty-six minutes into it.
     expect(view?.lines[4]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-1.5)), 10);
   });
 
-  it("times the sending line from when the rail began sending, not from the swap", () => {
-    const sendingOn = chainflip({
+  it("times the sending line from when the rail began sending, not from when it began processing", () => {
+    const sendingOn = sale({
       status: { kind: "sending", at: at(3) },
       rail: {
-        provider: "chainflip",
+        provider: "meld",
         stage: "processing",
         status: "sending",
         updatedAt: at(9),
         stageAt: { processing: at(6), sending: at(9) },
       },
     });
-    const { view } = withdrawalTimeline(sendingOn, { now: at(9) + 60_000 });
-    // A minute into the two-minute phase, not the four minutes since the swap began.
+    const { view } = withdrawalTimeline(sendingOn, { now: at(39) });
+    // Half an hour into the hour-long phase, not the thirty-three minutes since processing began.
     expect(view?.lines[4]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-1.5)), 10);
   });
 
@@ -423,10 +399,10 @@ describe("withdrawal timeline", () => {
       delay: true,
     });
     const rail = withdrawalTimeline(
-      chainflip({
+      sale({
         status: { kind: "sending", at: at(3) },
         rail: {
-          provider: "chainflip",
+          provider: "meld",
           stage: "received",
           status: "receiving",
           delayed: true,
@@ -451,9 +427,9 @@ describe("withdrawal timeline", () => {
   it("words a delay on the rail leg as the rail's, not the conversion's", () => {
     // The rail is slow to see the key's payment: the conversion itself is long done.
     const handing = withdrawalTimeline(
-      chainflip({
+      sale({
         status: { kind: "sending", at: at(3) },
-        rail: { provider: "chainflip", stage: "waiting", delayed: true, updatedAt: at(4) },
+        rail: { provider: "meld", stage: "waiting", delayed: true, updatedAt: at(4) },
       }),
       { now: at(5) },
     );
@@ -466,9 +442,9 @@ describe("withdrawal timeline", () => {
 
   it("times the hand-off from the rail leg's opening until the rail sees the payment", () => {
     // The worker filed the payment, and the rail has yet to report it: the line keeps moving.
-    const paid = chainflip({
+    const paid = sale({
       status: { kind: "sending", at: at(3) },
-      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(3) },
+      rail: { provider: "meld", stage: "waiting", updatedAt: at(3) },
       witnesses: {
         worker: {
           known: true,
@@ -481,17 +457,18 @@ describe("withdrawal timeline", () => {
         },
       },
     });
-    const { view } = withdrawalTimeline(paid, { now: at(3) + 3 * MINUTE });
+    const { view } = withdrawalTimeline(paid, { now: at(3) + 10 * MINUTE });
     expect(marks(view!)).toBe("●●●●○○○");
-    // Three minutes into the three-minute exchange phase, timed from the leg's opening.
+    // Ten minutes into the ten minutes the provider takes to prepare the payout, timed from the
+    // leg's opening.
     expect(view?.lines[3]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-3)), 10);
   });
 
-  it("does not take a sweep or pay the chain refused as the rail having the funds", () => {
+  it("does not take a payment the chain refused as the rail having the funds", () => {
     // The worker records the attempt with whether the chain took it.
-    const refused = chainflip({
+    const refused = sale({
       status: { kind: "sending", at: at(3) },
-      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(3) },
+      rail: { provider: "meld", stage: "waiting", updatedAt: at(3) },
       witnesses: {
         worker: {
           known: true,
@@ -500,51 +477,14 @@ describe("withdrawal timeline", () => {
           fundsSeenAt: at(1),
           lastTickAt: at(4),
           at: at(4),
-          txs: [{ call: "sweep", txHash: "0x1", ok: false }],
+          txs: [{ call: "pay", txHash: "0x1", ok: false }],
         },
       },
     });
     expect(marks(withdrawalTimeline(refused, { now: at(5) }).view!)).toBe("●●●○○○○");
   });
 
-  it("keeps a sweep the chain took as the rail having the funds through a failure after it", () => {
-    // The rail leg ran out of time before Chainflip reported: its error is the failure's reason,
-    // and the sweep that landed still says the provider has the funds.
-    const timedOut = failed(chainflip(), "timeout", "send", true, {
-      witnesses: {
-        worker: {
-          known: true,
-          phase: "failed",
-          done: false,
-          fundsSeenAt: at(1),
-          lastTickAt: at(5),
-          lastError: "conversion exceeded 1800000ms of worker time",
-          at: at(5),
-          failure: "timeout",
-          txs: [
-            { call: "swap", txHash: "0x1", ok: true },
-            { call: "withdraw", txHash: "0x2", ok: true },
-            { call: "sweep", txHash: "0x3", ok: true },
-          ],
-        },
-      },
-    });
-    expect(marks(withdrawalTimeline(timedOut, { now: at(6) }).view!)).toBe("●●●●✕○○");
-  });
-
   it.each([
-    [
-      "crypto",
-      chainflip,
-      [
-        "Converting your CASH",
-        "Moving your money to the exchange",
-        "Handing your money to the exchange",
-        "Exchanging your money for USDC",
-        "Sending your USDC",
-        "Your USDC is on its way to your wallet",
-      ],
-    ],
     [
       "card",
       sale,
@@ -584,23 +524,18 @@ describe("withdrawal timeline", () => {
             fundsSeenAt: at(1),
             lastTickAt: at(3),
             at: at(3),
-            txs: [{ call: make === chainflip ? "sweep" : "pay", txHash: "0x1", ok: true }],
+            txs: [{ call: "pay", txHash: "0x1", ok: true }],
           },
         },
       }),
       make({
         status: { kind: "sending", at: at(3) },
-        rail: {
-          provider: make === chainflip ? "chainflip" : "meld",
-          stage: "received",
-          status: "sending",
-          updatedAt: at(4),
-        },
+        rail: { provider: "meld", stage: "received", status: "sending", updatedAt: at(4) },
       }),
       make({
         status: { kind: "sending", at: at(3) },
         rail: {
-          provider: make === chainflip ? "chainflip" : "meld",
+          provider: "meld",
           stage: "processing",
           status: "sent",
           updatedAt: at(5),
@@ -633,10 +568,10 @@ describe("withdrawal timeline", () => {
     ["the conversion refused", failed(record(), "rejected", "convert", true), 1, "try-again"],
     ["the price moved after the payment", failed(sale(), "unfundable", "convert"), 1, "close"],
     [
-      "the channel expired unpaid",
-      failed(chainflip(), "channel-expired", "send", true),
+      "the sale closed before its provider was paid",
+      failed(sale(), "sale-closed", "send"),
       3,
-      "try-again",
+      "close",
     ],
     [
       "the provider refused the deposit",
@@ -650,19 +585,6 @@ describe("withdrawal timeline", () => {
       }),
       4,
       "close",
-    ],
-    [
-      "the swap refunded",
-      failed(chainflip(), "refunded", "send", true, {
-        rail: {
-          provider: "chainflip",
-          stage: "failed",
-          updatedAt: at(5),
-          failure: { kind: "refunded", message: "refunded" },
-        },
-      }),
-      4,
-      "return-funds",
     ],
     [
       // The sale rail reports every ending as unknown, once the provider was paid.
@@ -686,49 +608,41 @@ describe("withdrawal timeline", () => {
     expect(message).toBeUndefined();
   });
 
-  it("words a sale's rail endings for the card or bank, the rest as before", () => {
-    const declined = (route: "card" | "bank") =>
-      withdrawalTimeline(failed(sale({ route }), "egress-failed", "send"), { now: at(6) }).failure
-        ?.text;
-    expect(declined("card")).toBe("Your card didn't accept the payout.");
-    expect(declined("bank")).toBe("Your bank didn't accept the payout.");
+  it("words a sale's rail endings as the provider's, for the card or bank, the rest as before", () => {
+    const ended = (route: "card" | "bank", kind: "deposit-rejected" | "unknown") =>
+      withdrawalTimeline(failed(sale({ route }), kind, "send"), { now: at(6) }).failure?.text;
+    expect(ended("card", "deposit-rejected")).toBe("The provider couldn't complete your payout.");
+    expect(ended("bank", "unknown")).toBe("The provider couldn't complete your payout.");
     expect(
-      withdrawalTimeline(failed(sale(), "deposit-rejected", "send"), { now: at(6) }).failure?.text,
-    ).toBe("The provider couldn't complete your payout.");
-    expect(
-      withdrawalTimeline(failed(chainflip(), "egress-failed", "send"), { now: at(6) }).failure
-        ?.text,
-    ).toBe("The transfer to your address could not be completed.");
+      withdrawalTimeline(failed(sale(), "sale-closed", "send"), { now: at(6) }).failure?.text,
+    ).toBe(
+      "The sale could not be completed, so nothing was sent to the provider. Your funds are coming back to your balance.",
+    );
     expect(
       withdrawalTimeline(record({ status: { kind: "cancelled", at: at(1) } }), { now: at(6) })
         .failure?.text,
     ).toBe("This withdrawal was cancelled.");
   });
 
-  it("tries a refunded sale again rather than walking it into a wallet", () => {
-    const refunded = failed(sale(), "refunded", "send", true);
-    expect(withdrawalTimeline(refunded, { now: at(6) }).failure?.action).toBe("try-again");
-  });
-
   it("keeps the fill a rail failure stopped the line at, without the memo", () => {
-    // Chainflip saw the payment at minute 4, and failed the swap at minute 9.
-    const ended = chainflip({
-      status: { kind: "failed", at: at(9), recoverable: true, legAt: at(3) },
-      failure: failure("refunded", "send", true),
+    // The provider saw the payment at minute 4, and ended the sale at minute 9.
+    const ended = sale({
+      status: { kind: "failed", at: at(9), recoverable: false, legAt: at(3) },
+      failure: failure("unknown", "send"),
       rail: {
-        provider: "chainflip",
+        provider: "meld",
         stage: "failed",
         status: "failed",
         updatedAt: at(9),
-        failure: { kind: "refunded", message: "refunded" },
+        failure: { kind: "unknown", message: "The provider could not complete the payout." },
         stageAt: { received: at(4) },
       },
     });
     const { view } = withdrawalTimeline(ended, { now: at(10) });
     expect(marks(view!)).toBe("●●●●✕○○");
-    // Five minutes into the three-minute exchange phase when it stopped.
-    expect(view?.lines[3]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-5)), 10);
-    // A sale's rail stamps nothing before it fails: the line is timed from the leg's opening.
+    // Five minutes into the ten minutes the provider takes to prepare the payout, when it stopped.
+    expect(view?.lines[3]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-1.5)), 10);
+    // A rail that stamped nothing before it failed: the line is timed from the leg's opening.
     const unseen = failed(sale(), "unknown", "send", false, {
       status: { kind: "failed", at: at(9), recoverable: false, legAt: at(3) },
       rail: {
@@ -781,22 +695,9 @@ describe("withdrawal timeline", () => {
     expect(marks(withdrawalTimeline(retried(["swap"]), { now: at(7) }).view!)).toBe("●○○○○○○");
   });
 
-  it("starts the rail leg over on a retry, with nothing of the old job", () => {
-    // The old job's payment and failure are gone with the retry: the line is at the hand-off.
-    const retried = chainflip({
-      status: { kind: "sending", at: at(12) },
-      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(12) },
-      witnesses: { worker: { known: false, at: at(12) } },
-    });
-    const { view, message } = withdrawalTimeline(retried, { now: at(13) });
-    expect(marks(view!)).toBe("●●●○○○○");
-    expect(view?.state).toBe("active");
-    expect(message?.text).toBe("Handing your money to the exchange");
-  });
-
   it("never moves a line back once shown", () => {
     const timelineOf = createWithdrawalTimelines();
-    const moving = chainflip({ status: { kind: "sending", at: at(3) } });
+    const moving = sale({ status: { kind: "sending", at: at(3) } });
     const later = timelineOf(moving, at(3) + 5 * MINUTE).view!.lines[2]!;
     const earlier = timelineOf(moving, at(3) + MINUTE).view!.lines[2]!;
     expect(earlier).toBe(later);
@@ -823,23 +724,23 @@ describe("withdrawal timeline drawing", () => {
 
   it("keeps Received's label through the rail's own progress and a failure", () => {
     const rail = (status: "sending" | "sent") =>
-      chainflip({
+      sale({
         status: { kind: "sending", at: at(3) },
-        rail: { provider: "chainflip", stage: "processing", status, updatedAt: at(5) },
+        rail: { provider: "meld", stage: "processing", status, updatedAt: at(5) },
       });
     expect(drawing(rail("sending")).milestones[3]!.label).toBe("Received");
     expect(drawing(rail("sent")).milestones[3]!.label).toBe("Received");
-    const declined = failed(sale(), "egress-failed", "send", false, {
+    const declined = failed(sale(), "deposit-rejected", "send", false, {
       rail: {
         provider: "meld",
         stage: "failed",
         updatedAt: at(5),
-        failure: { kind: "egress-failed", message: "declined" },
+        failure: { kind: "deposit-rejected", message: "declined" },
       },
     });
     const { milestones } = drawing(declined);
     expect(milestones[3]!.label).toBe("Received");
-    expect(milestones[5]).toMatchObject({
+    expect(milestones[4]).toMatchObject({
       state: "failed",
       label: "Failed",
       size: "large",
@@ -848,7 +749,7 @@ describe("withdrawal timeline drawing", () => {
   });
 
   it("grows a small milestone that failed, its label centred under it", () => {
-    const refused = failed(chainflip(), "rejected", "convert", true);
+    const refused = failed(record(), "rejected", "convert", true);
     expect(drawing(refused).milestones[1]).toMatchObject({
       state: "failed",
       size: "large",
@@ -924,27 +825,7 @@ describe("what a withdrawal delivered", () => {
   });
 
   it("is the quote's figure, approximate, where a provider pays out its own", () => {
-    expect(receivedText(chainflip({ status: sent }))).toBe("≈ 24.44 USDC");
     expect(receivedText(sale({ status: sent }))).toBe("≈ €24.20");
-  });
-
-  it("reads the token off the destination's id", () => {
-    // USDT counts 18 decimals on Bsc.
-    const bnbChain = chainflip({
-      ref: requestRefOf("wd:usdt-bsc", 3),
-      status: sent,
-      destination: { ...chainflip().destination, chain: "Bsc", asset: "USDT" },
-      handoff: {
-        ...chainflip().handoff,
-        channel: { ...chainflip().handoff.channel!, expectedEgress: "24440000000000000000" },
-      },
-    });
-    expect(receivedText(bnbChain)).toBe("≈ 24.44 USDT");
-    expect(withdrawalJourneyRows(bnbChain, { feesAvailable: false })[0]).toEqual({
-      label: "You'll receive",
-      value: "≈ 24.44 USDT",
-      fees: false,
-    });
   });
 
   it("is unknown before the worker reported it, and the screen keeps what left the balance", () => {
@@ -954,29 +835,21 @@ describe("what a withdrawal delivered", () => {
 });
 
 describe("withdrawal journey rows", () => {
-  it("shows what lands and where for a crypto withdrawal, with fees while the route has them", () => {
-    const rows = withdrawalJourneyRows(chainflip({ status: { kind: "sending", at: at(3) } }), {
-      feesAvailable: true,
-    });
-    expect(rows).toEqual([
-      { label: "You'll receive", value: "≈ 24.44 USDC", fees: true },
-      {
-        label: "To this address",
-        sublabel: "on Ethereum Network",
-        value: "0x4B2…C02db",
-        title: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
-      },
-    ]);
-    expect(withdrawalJourneyRows(record(), { feesAvailable: false })).toEqual([
+  it("shows where a crypto withdrawal lands, and nothing once it ended", () => {
+    expect(
+      withdrawalJourneyRows(record({ status: { kind: "converting", at: at(1), step: "swap" } }), {
+        feesAvailable: true,
+      }),
+    ).toEqual([
       {
         label: "To this address",
         sublabel: "on Asset Hub Network",
-        value: expect.any(String),
+        value: "15oF4…r6Sp5",
         title: record().destination.address,
       },
     ]);
     expect(
-      withdrawalJourneyRows(failed(chainflip(), "refunded", "send", true), { feesAvailable: true }),
+      withdrawalJourneyRows(failed(record(), "rejected", "convert", true), { feesAvailable: true }),
     ).toEqual([]);
   });
 
@@ -1008,7 +881,7 @@ describe("withdrawal journey rows", () => {
       note: "Final CASH depends on the rate on arrival",
     });
     expect(
-      withdrawalJourneyRows(failed(sale(), "egress-failed", "send"), { feesAvailable: false }),
+      withdrawalJourneyRows(failed(sale(), "deposit-rejected", "send"), { feesAvailable: false }),
     ).toEqual([
       { label: "Amount", value: "€24.20", fees: false },
       { label: "Provider", value: "Transak" },
@@ -1093,13 +966,13 @@ describe("withdrawal timeline, band", () => {
       view: expect.anything(),
       message: normal("Converting your CASH"),
     });
-    const handing = chainflip({
+    const handing = sale({
       status: { kind: "sending", at: at(3) },
       witnesses: worker(at(4)),
     });
     expect(withdrawalTimeline(handing, { now: at(5) })).toEqual({
       view: expect.anything(),
-      message: normal("Handing your money to the exchange"),
+      message: normal("Handing your money to the payment provider"),
     });
   });
 
