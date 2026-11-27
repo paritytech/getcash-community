@@ -2143,6 +2143,7 @@ export const useSessionStore = defineStore("session", () => {
       quotedDeposit: _q,
       tier: _t,
       keepAliveNative: _k,
+      askRoundingNative: _r,
       ...rest
     } = handoff;
     return {

@@ -16,17 +16,17 @@ describe("recoveryChoices", () => {
     );
     expect(choices.map((c) => [c.token, c.name, c.amount])).toEqual([
       ["PAS", "DOT", "0.09"],
-      ["DOTUSD", "dotUSD", "0.6"],
+      ["DOTUSD", "dotUSD", "0.60"],
       ["USDC", "USDC", "0.65"],
       ["USDT", "USDT", "0.65"],
     ]);
   });
 
-  it("rounds the least to send up to four places, never down", () => {
+  it("rounds the least to send up to two places, never down", () => {
     const [usdt] = recoveryChoices(recovery({ USDT: "650001" }));
-    expect(usdt?.amount).toBe("0.6501");
+    expect(usdt?.amount).toBe("0.66");
     const [pas] = recoveryChoices(recovery({ PAS: "1" }));
-    expect(pas?.amount).toBe("0.0001");
+    expect(pas?.amount).toBe("0.01");
   });
 
   it("keeps a token the chain could not price, with no amount, and lists none before the worker priced", () => {

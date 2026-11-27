@@ -3981,20 +3981,21 @@ describe("describeDispatchError", () => {
 });
 
 describe("createManualRail", () => {
-  it("quotes identity (with decimal ceil-normalization) and hands out the ephemeral itself", async () => {
+  it("quotes the target in the token's units, rounded up to two decimals, and hands out the ephemeral itself", async () => {
     const rail = createManualRail({ now: () => 1_000, depositExpiryMs: 500 });
     const quote = await rail.getQuote({
       sourceId: "dot-assethub",
-      target: { amount: 5_000_000n, decimals: 6 }, // 5 whole at 6-dec -> 5e10 at 10-dec
+      target: { amount: 5_001_001n, decimals: 6 }, // 5.001001 at 6-dec -> 50_010_010_000 at 10-dec
     });
-    expect(quote.source.amount).toBe(50_000_000_000n);
-    expect(quote.source.formatted).toBe("5");
+    expect(quote.source.amount).toBe(50_100_000_000n);
+    expect(quote.source.formatted).toBe("5.01");
 
     const channel = await rail.requestDepositAddress({
       quote,
       destAddress: "5EphemeralOnAssetHub",
       refundAddress: "unused",
     });
+    expect(channel.deposit).toMatchObject({ amount: 50_100_000_000n, formatted: "5.01" });
     expect(channel.deposit.address).toBe("5EphemeralOnAssetHub");
     expect(channel.deposit.expiresAt).toBe(1_500);
     expect((await rail.getStatus("manual")).status).toBe("waiting");
@@ -4010,7 +4011,7 @@ describe("createManualRail", () => {
     });
     expect(quote.source).toEqual({
       amount: 5_000_000n,
-      formatted: "5",
+      formatted: "5.00",
       assetSymbol: "USDT",
       decimals: 6,
     });
