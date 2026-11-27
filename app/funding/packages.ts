@@ -137,8 +137,8 @@ const meldWithdrawPackage = {
   },
 } satisfies FundingRoutePackage;
 
-/** The withdrawal routes: crypto to Asset Hub, card and bank through a Meld sale. Each package hosts its own journey, so a withdrawal opened from the list loads the same
- *  route. */
+/** The withdrawal routes: crypto to Asset Hub, card and bank through a Meld sale. Each package
+ *  hosts its own journey, so a withdrawal opened from the list loads the same route. */
 export const getcashWithdrawPackages = {
   crypto: {
     packageId: "@getsome/withdraw-crypto",

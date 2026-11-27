@@ -1,8 +1,7 @@
 <script setup lang="ts">
 // The destination address: the network and token already chosen as pills, the address typed,
 // pasted or scanned from a QR code, checked against the destination's own rule. A scanned code
-// made for another network or token says so. Valid turns the disabled Next into Continue with a
-// warning.
+// made for another network says so. Valid turns the disabled Next into Continue with a warning.
 import { computed, ref } from "vue";
 import { CircleAlert, Clipboard, Scan } from "lucide-vue-next";
 import {
