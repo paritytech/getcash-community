@@ -1,0 +1,11 @@
+**/node_modules
+**/out
+**/cache
+**/broadcast
+**/.work
+**/data
+**/deployments
+**/.env*
+!**/.env*.example
+assethub/build
+e2e/RESULTS.md

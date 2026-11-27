@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs a command and stops its whole process tree when the tree's resident memory exceeds a
-# limit, or when the system's free-memory level (kern.memorystatus_level) drops too low.
+# limit, or when the system's free-memory level drops too low (macOS: kern.memorystatus_level,
+# Linux: MemAvailable as a percentage of MemTotal).
 # Usage: memcap.sh <limit-gb> <log-file> -- <command> [args...]
 set -uo pipefail
 
@@ -9,7 +10,14 @@ log=$2
 shift 2
 [ "${1:-}" = "--" ] && shift
 
-min_free_level=${MEMCAP_MIN_FREE_LEVEL:-15}
+if [ "$(uname)" = Darwin ]; then
+    default_min_free_level=15
+    free_level() { sysctl -n kern.memorystatus_level; }
+else
+    default_min_free_level=5
+    free_level() { awk '/^MemTotal:/ {total = $2} /^MemAvailable:/ {avail = $2} END {print int(avail * 100 / total)}' /proc/meminfo; }
+fi
+min_free_level=${MEMCAP_MIN_FREE_LEVEL:-$default_min_free_level}
 interval=${MEMCAP_INTERVAL:-2}
 report_every=${MEMCAP_REPORT_EVERY:-30}
 
@@ -64,7 +72,7 @@ ticks=0
 while kill -0 "$child" 2>/dev/null; do
     rss=$(tree_rss_kb "$child")
     [ "$rss" -gt "$peak" ] && peak=$rss
-    level=$(sysctl -n kern.memorystatus_level)
+    level=$(free_level)
     if [ "$rss" -gt "$limit_kb" ]; then
         echo "$(stamp) stopping: tree uses $((rss / 1024)) MB, limit $((limit_kb / 1024)) MB" >>"$log"
         stop_tree "$child"

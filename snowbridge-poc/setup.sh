@@ -8,13 +8,8 @@ STACK_DIR=$POC_DIR/stack
 PATCH_DIR=$STACK_DIR/patches
 E2E_DIR=$POC_DIR/e2e
 
-SNOWBRIDGE_URL=https://github.com/Snowfork/snowbridge
-SNOWBRIDGE_REV=1641a2869c9c38a2f1354f6df0a83a766396fe3d
-POLKADOT_SDK_URL=https://github.com/paritytech/polkadot-sdk
-POLKADOT_SDK_TAG=polkadot-stable2609-2
-LODESTAR_URL=https://github.com/ChainSafe/lodestar
-LODESTAR_TAG=v1.51.0
-FULU_PATCHED_SOURCE=cumulus/parachains/runtimes/bridge-hubs/bridge-hub-westend/src/bridge_to_ethereum_config.rs
+# shellcheck source=stack/pins.sh
+source "$STACK_DIR/pins.sh"
 
 ETHEREUM_RPC=http://127.0.0.1:8545
 BEACON_HTTP=http://127.0.0.1:9596
@@ -25,6 +20,7 @@ say() { printf '\n== %s\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 warn() { printf '  warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+die_log() { local log=$1; shift; tail -n 30 "$log" >&2 || true; die "$*"; }
 
 usage() {
   cat <<'EOF'
@@ -49,6 +45,7 @@ Environment (all optional):
   OUTPUT_DIR         the stack's output dir (default: /tmp/snowbridge-v2)
   GC_MEMCAP_GB       memory cap for the stack and the builds (default: 12)
   GC_STACK_TIMEOUT   seconds to wait for the stack to come up (default: 3000)
+  GC_NO_NIX          1: take the Snowbridge toolchain (Go, mage, protoc, ...) from PATH instead of its Nix shell (default: 0)
 EOF
 }
 
@@ -117,7 +114,14 @@ check_prereqs() {
     fi
   fi
   if [[ $want_stack == 1 ]]; then
-    if ! command -v nix >/dev/null 2>&1 && [[ ! -x /nix/var/nix/profiles/default/bin/nix ]]; then
+    if [[ ${GC_NO_NIX:-0} == 1 ]]; then
+      need go "install Go (the Snowbridge toolchain comes from PATH with GC_NO_NIX=1)"
+      need mage "install mage"
+      need protoc "install protobuf-compiler"
+      need g++ "install a C++ compiler"
+      need sponge "install moreutils"
+      need direnv "install direnv"
+    elif ! command -v nix >/dev/null 2>&1 && [[ ! -x /nix/var/nix/profiles/default/bin/nix ]]; then
       MISSING+=("nix: install Nix with flakes enabled (https://nixos.org/download)")
     fi
     need geth "install go-ethereum 1.17.x"
@@ -203,8 +207,8 @@ build_lodestar() {
   info "building lodestar with Snowbridge's own build step (1 s slots), log in $LOGS/lodestar-build.log"
   "$STACK_DIR/memcap.sh" 8 "$LOGS/lodestar-build.log" -- env REBUILD_LODESTAR=true "$STACK_DIR/relayer-go.sh" bash -c \
     'cd web/packages/test && from_start_services=true && source scripts/set-env.sh && source scripts/build-binary.sh && build_lodestar' \
-    >>"$LOGS/lodestar-build.log" 2>&1 || die "the lodestar build failed; see $LOGS/lodestar-build.log"
-  lodestar_built || die "lodestar did not come out built with 1 s slots; see $LOGS/lodestar-build.log"
+    >>"$LOGS/lodestar-build.log" 2>&1 || die_log "$LOGS/lodestar-build.log" "the lodestar build failed; see $LOGS/lodestar-build.log"
+  lodestar_built || die_log "$LOGS/lodestar-build.log" "lodestar did not come out built with 1 s slots; see $LOGS/lodestar-build.log"
 }
 
 # Snowbridge's scripts look for lodestar and go-ethereum next to the physical Snowbridge checkout.
@@ -260,14 +264,14 @@ build_polkadot() {
     "$STACK_DIR/memcap.sh" "$MEMCAP_GB" "$LOGS/build-polkadot.log" -- env CARGO_BUILD_JOBS=1 cargo build \
       --manifest-path "$POLKADOT_SDK_DIR/Cargo.toml" --release -j 2 \
       --bin polkadot --bin polkadot-execute-worker --bin polkadot-prepare-worker --features fast-runtime \
-      || die "the polkadot build failed or hit the memory cap; see $LOGS/build-polkadot.log"
+      || die_log "$LOGS/build-polkadot.log" "the polkadot build failed or hit the memory cap; see $LOGS/build-polkadot.log"
   fi
   if (( para_stale )); then
     info "building polkadot-parachain (-j 2, under a ${MEMCAP_GB} GB cap), log in $LOGS/build-parachain.log"
     "$STACK_DIR/memcap.sh" "$MEMCAP_GB" "$LOGS/build-parachain.log" -- env CARGO_BUILD_JOBS=1 cargo build \
       --manifest-path "$POLKADOT_SDK_DIR/Cargo.toml" --release -j 2 \
       -p polkadot-parachain-bin --bin polkadot-parachain --features fast-runtime \
-      || die "the polkadot-parachain build failed or hit the memory cap; see $LOGS/build-parachain.log"
+      || die_log "$LOGS/build-parachain.log" "the polkadot-parachain build failed or hit the memory cap; see $LOGS/build-parachain.log"
   fi
 }
 
