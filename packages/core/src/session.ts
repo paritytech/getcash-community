@@ -14,14 +14,7 @@ import {
 } from "./flow-store";
 import type { HandoffAction, HandoffKey } from "./handoff";
 import { fnv1a32Hex } from "./hash";
-import type {
-  EphemeralSigner,
-  PaymentDeps,
-  RailFailureInfo,
-  SourceAvailability,
-  SourceDescriptor,
-  SwapStatusResult,
-} from "./ports";
+import type { EphemeralSigner, PaymentDeps, RailFailureInfo, SwapStatusResult } from "./ports";
 import { reEnter, reEnterHandoff, type ReEnterOutcome } from "./reenter";
 import type {
   DepositInfo,
@@ -168,23 +161,6 @@ export interface PaymentEvents {
   ): Subscription;
 }
 
-/** Source catalog + per-source availability. */
-export interface SourceController {
-  /** Sync, descriptive, no network. Filtered by config.sources when set. */
-  list(): readonly SourceDescriptor[];
-  /** Sync current cached verdict; 'unknown' before the first probe. */
-  availability(sourceId: SourceId): SourceAvailability;
-  /** Pushes the full availability map on each change. */
-  subscribeAvailability(
-    cb: (byId: Readonly<Record<SourceId, SourceAvailability>>) => void,
-  ): Subscription;
-  /**
-   * Warm the liquidity gate for one (or all) sources. Idempotent: checking/available are not
-   * re-probed.
-   */
-  probe(sourceId?: SourceId): void;
-}
-
 /** Thrown by settled() when the flow ends in a terminal 'failed'. */
 export class PaymentError extends Error {
   readonly failure: PaymentFailure;
@@ -208,8 +184,6 @@ export interface PaymentSession<T> {
   /** Push on every transition. Primary render path. */
   subscribe(cb: (s: PaymentState) => void): Subscription;
   readonly events: PaymentEvents;
-  /** Source catalog + streamed availability. */
-  readonly sources: SourceController;
   /** Switch the source while idle only; no-op mid-flow. */
   selectSource(id: SourceId): void;
   /**
@@ -715,66 +689,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
     await reEnterHandoffNow();
   }
 
-  const availabilityCache = new Map<SourceId, SourceAvailability>();
-  const availabilitySubs = new Set<
-    (byId: Readonly<Record<SourceId, SourceAvailability>>) => void
-  >();
-
-  function listSources(): readonly SourceDescriptor[] {
-    const all = deps.rail.sources();
-    return config.sources ? all.filter((d) => config.sources?.includes(d.sourceId)) : all;
-  }
-
-  function availabilitySnapshot(): Readonly<Record<SourceId, SourceAvailability>> {
-    const out = {} as Record<SourceId, SourceAvailability>;
-    for (const d of listSources()) {
-      out[d.sourceId] = availabilityCache.get(d.sourceId) ?? { status: "unknown" };
-    }
-    return out;
-  }
-
-  function notifyAvailability(): void {
-    const snap = availabilitySnapshot();
-    availabilitySubs.forEach((cb) => cb(snap));
-  }
-
-  function probeOne(id: SourceId): void {
-    const cur = availabilityCache.get(id);
-    // Checking and available verdicts are not re-probed; unavailable is.
-    if (cur && (cur.status === "checking" || cur.status === "available")) return;
-    availabilityCache.set(id, { status: "checking" });
-    notifyAvailability();
-    void deps.rail.probeLiquidity(id).then(
-      (verdict) => {
-        availabilityCache.set(id, verdict);
-        notifyAvailability();
-      },
-      (err: unknown) => {
-        availabilityCache.set(id, {
-          status: "unavailable",
-          reason: err instanceof Error ? err.message : String(err),
-        });
-        notifyAvailability();
-      },
-    );
-  }
-
-  const sourcesController: SourceController = {
-    list: listSources,
-    availability: (id) => availabilityCache.get(id) ?? { status: "unknown" },
-    subscribeAvailability(cb) {
-      availabilitySubs.add(cb);
-      return {
-        unsubscribe() {
-          availabilitySubs.delete(cb);
-        },
-      };
-    },
-    probe(id) {
-      (id ? [id] : listSources().map((d) => d.sourceId)).forEach(probeOne);
-    },
-  };
-
   async function quoteVerb(): Promise<Quote> {
     // quote() is only valid before a flow starts.
     if (flow) throw new Error("a flow is in progress; cancel() it before re-quoting");
@@ -1216,7 +1130,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       };
     },
     events: { on: emitter.on },
-    sources: sourcesController,
     selectSource,
     quote: quoteVerb,
     start,
@@ -1233,7 +1146,6 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
       epoch += 1;
       flow = null;
       subscribers.clear();
-      availabilitySubs.clear();
       emitter.clear();
       // No state change; pending settled() waiters stay pending.
     },

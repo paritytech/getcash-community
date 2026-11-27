@@ -121,12 +121,6 @@ export interface SwapStatusResult {
   raw?: unknown;
 }
 
-export type SourceAvailability =
-  | { status: "unknown" }
-  | { status: "checking" }
-  | { status: "available" }
-  | { status: "unavailable"; reason: string };
-
 export interface SourceDescriptor {
   readonly sourceId: SourceId;
   /** The chain the source deposits on, and its asset there. */
@@ -143,8 +137,6 @@ export interface FundingRail {
   requestDepositAddress(args: OpenChannelArgs): Promise<DepositChannel>;
   /** Mapped, normalized status. */
   getStatus(depositChannelId: string): Promise<SwapStatusResult>;
-  /** Whether the source can serve now. */
-  probeLiquidity(sourceId: SourceId): Promise<SourceAvailability>;
   sources(): readonly SourceDescriptor[];
 }
 

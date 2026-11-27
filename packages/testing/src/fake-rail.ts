@@ -7,7 +7,6 @@ import type {
   OpenChannelArgs,
   Quote,
   ReverseQuoteInput,
-  SourceAvailability,
   SourceDescriptor,
   SwapStatusResult,
 } from "@getsome/core";
@@ -25,9 +24,6 @@ export interface FakeRailOptions {
    * Status results consumed one per getStatus call; the last one repeats. Default: waiting forever.
    */
   statusSequence?: SwapStatusResult[];
-  availability?: SourceAvailability;
-  /** Per-source availability overrides (fall back to `availability`). */
-  availabilityById?: Partial<Record<string, SourceAvailability>>;
   sources?: SourceDescriptor[];
 }
 
@@ -37,7 +33,6 @@ export interface FakeRail extends FundingRail {
     quoteCalls: number;
     channelsOpened: number;
     statusCalls: number;
-    probeCalls: number;
     lastQuoteRequest: ReverseQuoteInput | null;
     lastChannelArgs: OpenChannelArgs | null;
   };
@@ -61,7 +56,6 @@ export function createFakeRail(opts: FakeRailOptions = {}): FakeRail {
     quoteCalls: 0,
     channelsOpened: 0,
     statusCalls: 0,
-    probeCalls: 0,
     lastQuoteRequest: null as ReverseQuoteInput | null,
     lastChannelArgs: null as OpenChannelArgs | null,
   };
@@ -107,11 +101,6 @@ export function createFakeRail(opts: FakeRailOptions = {}): FakeRail {
       const i = Math.min(statusIndex, sequence.length - 1);
       statusIndex += 1;
       return sequence[i] ?? { status: "waiting" };
-    },
-
-    async probeLiquidity(sourceId): Promise<SourceAvailability> {
-      stats.probeCalls += 1;
-      return opts.availabilityById?.[sourceId] ?? opts.availability ?? { status: "available" };
     },
 
     sources(): readonly SourceDescriptor[] {

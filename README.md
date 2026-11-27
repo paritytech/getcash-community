@@ -156,7 +156,7 @@ key whose chain state contradicts the payment stops the job for a person.
 `@getsome/core` owns the session state machine and defines the ports it needs. The rail port
 (`FundingRail` in `packages/core/src/ports.ts`) is the contract a funding source has to
 meet: reverse-quote a target amount, open a deposit channel to the ephemeral, report status,
-probe liquidity, and list its sources. Two rails implement it:
+and list its sources. Two rails implement it:
 
 - `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
   route's deposit asset to the ephemeral; from there the flow is identical to a crypto deposit.

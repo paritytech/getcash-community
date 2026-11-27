@@ -9,7 +9,6 @@ import {
   type OpenChannelArgs,
   type Quote,
   type ReverseQuoteInput,
-  type SourceAvailability,
   type SourceDescriptor,
   type SourceId,
   type SwapStatusResult,
@@ -117,9 +116,6 @@ export function createManualRail(opts: ManualRailOptions = {}): FundingRail {
     async getStatus(): Promise<SwapStatusResult> {
       // No swap to track; arrival is detected by the funding pipeline / funded-gate.
       return { status: "waiting" };
-    },
-    async probeLiquidity(): Promise<SourceAvailability> {
-      return { status: "available" };
     },
     sources(): readonly SourceDescriptor[] {
       return [descriptor];

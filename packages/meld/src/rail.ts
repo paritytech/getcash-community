@@ -9,7 +9,6 @@ import {
   type OpenChannelArgs,
   type Quote,
   type ReverseQuoteInput,
-  type SourceAvailability,
   type SourceDescriptor,
   type SourceId,
 } from "@getsome/core";
@@ -104,10 +103,6 @@ export function createMeldRail(opts: MeldRailOptions): MeldRail {
     },
     getStatus(depositChannelId: string) {
       return getMeldStatus(opts.client, depositChannelId);
-    },
-    async probeLiquidity(): Promise<SourceAvailability> {
-      // Availability is decided by the quote; getQuote fails for an unrouted region or method.
-      return { status: "available" };
     },
     sources(): readonly SourceDescriptor[] {
       return [descriptor];

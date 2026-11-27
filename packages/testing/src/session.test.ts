@@ -557,41 +557,6 @@ describe("createPayment session", () => {
     second.session.dispose();
   });
 
-  it("sources: probe streams checking -> verdict per source; positive verdicts are not re-probed", async () => {
-    const { rail, session } = setup({
-      rail: {
-        availabilityById: { "usdt-assethub": { status: "unavailable", reason: "pool too thin" } },
-      },
-    });
-    const seen: Array<Record<string, { status: string }>> = [];
-    session.sources.subscribeAvailability((byId) => seen.push({ ...byId }));
-
-    expect(session.sources.list().map((d) => d.sourceId)).toEqual([
-      "dot-assethub",
-      "usdt-assethub",
-    ]);
-    expect(session.sources.availability("dot-assethub")).toEqual({ status: "unknown" });
-
-    session.sources.probe();
-    // Both flip to 'checking' synchronously; tiles grey out immediately, individually.
-    expect(session.sources.availability("dot-assethub")).toEqual({ status: "checking" });
-    await flush();
-
-    expect(session.sources.availability("dot-assethub")).toEqual({ status: "available" });
-    expect(session.sources.availability("usdt-assethub")).toEqual({
-      status: "unavailable",
-      reason: "pool too thin",
-    });
-    expect(seen.length).toBeGreaterThanOrEqual(3); // 2× checking + final verdicts
-    expect(rail.stats.probeCalls).toBe(2);
-
-    // available (dot-assethub) is cached; only the unavailable one (usdt-assethub) re-probes.
-    session.sources.probe();
-    await flush();
-    expect(rail.stats.probeCalls).toBe(3);
-    session.dispose();
-  });
-
   it("cancel: dust-level balance is not swept, slot still cleared", async () => {
     const { harness, storage, session } = setup();
     await session.quote();

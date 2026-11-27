@@ -163,9 +163,4 @@ describe("createMeldRail", () => {
     expect(channel.deposit.payUrl).toBe("https://pay.meld/x");
     expect(rail.payUrl("funding-1")).toBe("https://pay.meld/x");
   });
-
-  it("reports available liquidity (route availability is enforced at quote time)", async () => {
-    const rail = createMeldRail({ client: fakeClient(), country: "US" });
-    expect((await rail.probeLiquidity("dot-assethub")).status).toBe("available");
-  });
 });
