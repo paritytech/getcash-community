@@ -108,7 +108,7 @@ describe("the text guards", () => {
       { address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db", secret: `0x${"7".repeat(64)}` },
       {
         address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
-        secret: "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn",
+        secret: "K" + "w".repeat(51),
       },
       {
         address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
