@@ -300,15 +300,6 @@ function applyWorker(
         });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
-      case "no-rail":
-        // Nothing in this build can carry the PAS on; the provider's reading, when there is
-        // one, already spoke above.
-        return failed(next, at, {
-          kind: "unknown",
-          step: "send",
-          message: job.lastError ?? "no provider can carry this withdrawal in this build",
-          recoverable: false,
-        });
       case "too-small":
         // Once the exit's fee and the account's minimum are left behind, the CASH on the key's
         // Asset Hub account is under what any exit can take; it stays there for a person.
